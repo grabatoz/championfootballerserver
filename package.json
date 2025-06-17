@@ -1,0 +1,47 @@
+{
+  "name": "api",
+  "version": "1.0.0",
+  "description": "",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "ts-node-dev --respawn --transpile-only src/index.ts"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@aws-sdk/client-ses": "^3.828.0",
+    "@koa/cors": "^5.0.0",
+    "@koa/router": "^12.0.0",
+    "bcrypt": "^5.1.0",
+    "bcryptjs": "^3.0.2",
+    "colors": "^1.4.0",
+    "dotenv": "^16.5.0",
+    "js-cookie": "^3.0.5",
+    "koa": "^2.14.2",
+    "koa-body": "^6.0.1",
+    "koa-bodyparser": "^4.4.1",
+    "koa-router": "^13.0.1",
+    "mustache": "^4.2.0",
+    "nodemailer": "^6.10.1",
+    "pg": "^8.16.0",
+    "pg-hstore": "^2.3.4",
+    "sequelize": "^6.37.7"
+  },
+  "devDependencies": {
+    "@types/bcrypt": "^5.0.0",
+    "@types/koa": "^2.13.5",
+    "@types/koa__cors": "^4.0.0",
+    "@types/koa__router": "^12.0.0",
+    "@types/koa-bodyparser": "^4.3.10",
+    "@types/koa-router": "^7.4.8",
+    "@types/node": "^18.15.11",
+    "@types/nodemailer": "^6.4.7",
+    "@types/pg": "^8.6.6",
+    "@types/sequelize": "^4.28.15",
+    "ts-node-dev": "^2.0.0",
+    "typescript": "^5.0.4"
+  }
+}
