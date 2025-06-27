@@ -1,7 +1,8 @@
 import { Model, DataTypes, Optional } from 'sequelize';
-import sequelize from '../config/database';
+import sequelize  from '../config/database';
 import User from './User';
 import League from './League';
+import { Vote } from './Vote';
 
 interface MatchAttributes {
   id: string;
@@ -20,11 +21,12 @@ interface MatchAttributes {
   start: Date;
   end: Date;
   notes?: string;
-  createdAt: Date;
-  updatedAt: Date;
+  availableUsers?: User[];
+  homeCaptainId?: string;
+  awayCaptainId?: string;
 }
 
-interface MatchCreationAttributes extends Optional<MatchAttributes, 'id' | 'createdAt' | 'updatedAt'> {}
+interface MatchCreationAttributes extends Optional<MatchAttributes, 'id'> {}
 
 class Match extends Model<MatchAttributes, MatchCreationAttributes> implements MatchAttributes {
   public id!: string;
@@ -43,75 +45,101 @@ class Match extends Model<MatchAttributes, MatchCreationAttributes> implements M
   public start!: Date;
   public end!: Date;
   public notes?: string;
-  public readonly createdAt!: Date;
-  public readonly updatedAt!: Date;
+  public availableUsers?: User[];
+  public homeCaptainId?: string;
+  public awayCaptainId?: string;
 
-  // Instance methods
-  public readonly homeTeamUsers?: (typeof User)[];
-  public readonly awayTeamUsers?: (typeof User)[];
-  public readonly availableUsers?: (typeof User)[];
-  public readonly league?: League;
+  // Static associate function
+  public static associate(models: any) {
+    Match.belongsTo(models.League, {
+      foreignKey: 'leagueId',
+      as: 'league',
+    });
 
-  public async addHomeTeamUser(userId: string): Promise<void> {
-    await (this as any).addHomeTeamUser(userId);
+    Match.belongsToMany(models.User, {
+      through: 'UserHomeMatches',
+      as: 'homeTeamUsers',
+      foreignKey: 'matchId',
+      otherKey: 'userId',
+    });
+
+    Match.belongsToMany(models.User, {
+      through: 'UserAwayMatches',
+      as: 'awayTeamUsers',
+      foreignKey: 'matchId',
+      otherKey: 'userId',
+    });
+
+    Match.belongsToMany(models.User, {
+      through: 'UserMatchAvailability',
+      as: 'availableUsers',
+      foreignKey: 'matchId',
+      otherKey: 'userId',
+    });
+
+    Match.belongsToMany(models.User, {
+      through: 'UserMatchStatistics',
+      as: 'statistics',
+      foreignKey: 'matchId',
+      otherKey: 'userId',
+    });
+
+    Match.hasMany(models.Vote, { foreignKey: 'matchId', as: 'votes' });
+
+    Match.belongsTo(models.User, {
+      as: 'homeCaptain',
+      foreignKey: 'homeCaptainId',
+    });
+
+    Match.belongsTo(models.User, {
+      as: 'awayCaptain',
+      foreignKey: 'awayCaptainId',
+    });
   }
 
-  public async addAwayTeamUser(userId: string): Promise<void> {
-    await (this as any).addAwayTeamUser(userId);
-  }
+  // Association methods
+  public addAvailableUser = async (user: User): Promise<void> => {
+    try {
+      await sequelize.models.UserMatchAvailability.create({
+        userId: user.id,
+        matchId: this.id
+      });
+    } catch (error) {
+      console.error('Error adding available user:', error);
+      throw error;
+    }
+  };
 
-  public async addHomeTeamUsers(userIds: string[]): Promise<void> {
-    await (this as any).addHomeTeamUsers(userIds);
-  }
+  public removeAvailableUser = async (user: User): Promise<void> => {
+    try {
+      const result = await sequelize.models.UserMatchAvailability.destroy({
+        where: {
+          userId: user.id,
+          matchId: this.id
+        }
+      });
+      console.log(`Tried to remove availability for userId=${user.id}, matchId=${this.id}, result=${result}`);
+    } catch (error) {
+      console.error('Error removing available user:', error);
+      throw error;
+    }
+  };
 
-  public async addAwayTeamUsers(userIds: string[]): Promise<void> {
-    await (this as any).addAwayTeamUsers(userIds);
-  }
-
-  public async setHomeTeamUsers(userIds: string[]): Promise<void> {
-    await (this as any).setHomeTeamUsers(userIds);
-  }
-
-  public async setAwayTeamUsers(userIds: string[]): Promise<void> {
-    await (this as any).setAwayTeamUsers(userIds);
-  }
-
-  public async addAvailableUser(userId: string): Promise<void> {
-    await (this as any).addAvailableUser(userId);
-  }
-
-  public async removeAvailableUser(userId: string): Promise<void> {
-    await (this as any).removeAvailableUser(userId);
-  }
-
-  public async getLeague(): Promise<League> {
-    return (this as any).getLeague();
-  }
-
-  // static associate(models: any) {
-  //   Match.belongsTo(models.League, {
-  //     foreignKey: 'leagueId',
-  //     as: 'league',
-  //   });
-
-  //   Match.belongsToMany(models.User, {
-  //     through: 'MatchHomeTeam',
-  //     as: 'homeTeamPlayers',
-  //     foreignKey: 'matchId',
-  //   });
-
-  //   Match.belongsToMany(models.User, {
-  //     through: 'MatchAwayTeam',
-  //     as: 'awayTeamPlayers',
-  //     foreignKey: 'matchId',
-  //   });
-
-  //   Match.belongsToMany(models.User, {
-  //     through: 'MatchAvailableUsers',
-  //     as: 'availablePlayers',
-  //     foreignKey: 'matchId',
-  //   });
-  // }
+  public getAvailableUsers = async (): Promise<User[]> => {
+    try {
+      const availabilities = await sequelize.models.UserMatchAvailability.findAll({
+        where: { matchId: this.id },
+        include: [{
+          model: User,
+          as: 'user'
+        }]
+      });
+      return availabilities.map(a => a.get('user') as User);
+    } catch (error) {
+      console.error('Error getting available users:', error);
+      throw error;
+    }
+  };
 }
 
 Match.init(
@@ -174,13 +202,21 @@ Match.init(
       type: DataTypes.TEXT,
       allowNull: true,
     },
-    createdAt: {
-      type: DataTypes.DATE,
-      allowNull: false,
+    homeCaptainId: {
+      type: DataTypes.UUID,
+      allowNull: true,
+      references: {
+        model: 'users',
+        key: 'id',
+      },
     },
-    updatedAt: {
-      type: DataTypes.DATE,
-      allowNull: false,
+    awayCaptainId: {
+      type: DataTypes.UUID,
+      allowNull: true,
+      references: {
+        model: 'users',
+        key: 'id',
+      },
     },
   },
   {
@@ -190,4 +226,6 @@ Match.init(
   }
 );
 
-export default Match; 
+// Remove duplicate association since it's already defined in the associate method
+export default Match;
+export type { MatchAttributes }; 

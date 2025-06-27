@@ -1,7 +1,7 @@
 import { Model, DataTypes } from 'sequelize';
 import sequelize from '../config/database';
+import User from './User';
 import Match from './Match';
-import userModel from './User';
 
 interface LeagueAttributes {
   id: string;
@@ -25,49 +25,21 @@ class League extends Model<LeagueAttributes> {
   declare readonly updatedAt: Date;
 
   // Instance methods
-  declare users: (typeof userModel)[];
-  declare admins: (typeof userModel)[];
+  declare users: (typeof User)[];
+  declare admins: (typeof User)[];
   declare matches: Match[];
-
-  public async addUser(userId: string): Promise<void> {
-    await (this as any).addUser(userId);
-  }
-
-  public async addAdmin(userId: string): Promise<void> {
-    await (this as any).addAdmin(userId);
-  }
-
-  public async setUsers(userIds: string[]): Promise<void> {
-    await (this as any).setUsers(userIds);
-  }
-
-  public async setAdmins(userIds: string[]): Promise<void> {
-    await (this as any).setAdmins(userIds);
-  }
-
-  public async addUsers(userIds: string[]): Promise<void> {
-    await (this as any).addUsers(userIds);
-  }
-
-  public async addAdmins(userIds: string[]): Promise<void> {
-    await (this as any).addAdmins(userIds);
-  }
-
-  public async removeUser(userId: string): Promise<void> {
-    await (this as any).removeUser(userId);
-  }
 
   static associate(models: any) {
     League.belongsToMany(models.User, {
-      through: 'LeagueUsers',
+      through: 'LeagueMember',
       as: 'members',
       foreignKey: 'leagueId',
       otherKey: 'userId'
     });
 
     League.belongsToMany(models.User, {
-      through: 'LeagueAdmins',
-      as: 'administrators',
+      through: 'LeagueAdmin',
+      as: 'administeredLeagues',
       foreignKey: 'leagueId',
       otherKey: 'userId'
     });
@@ -123,4 +95,5 @@ League.init(
   }
 );
 
-export default League; 
+export default League;
+export type { LeagueAttributes }; 

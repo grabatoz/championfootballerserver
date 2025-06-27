@@ -1,32 +1,30 @@
-import { Model, DataTypes } from 'sequelize';
+import { Model, DataTypes, InferAttributes, InferCreationAttributes, CreationOptional, ForeignKey } from 'sequelize';
 import sequelize from '../config/database';
 import User from './User';
 import Match from './Match';
 
-class Vote extends Model {
-  declare id: string;
-  declare matchId: string;
-  declare byUserId: string;
-  declare forUserId: string;
-  declare readonly createdAt: Date;
-  declare readonly updatedAt: Date;
+export class Vote extends Model<InferAttributes<Vote>, InferCreationAttributes<Vote>> {
+  declare id: CreationOptional<string>;
+  declare matchId: ForeignKey<string>;
+  declare voterId: ForeignKey<string>;
+  declare votedForId: ForeignKey<string>;
 
-  // static associate(models: any) {
-  //   Vote.belongsTo(models.Match, {
-  //     foreignKey: 'matchId',
-  //     as: 'votedMatch'
-  //   });
+  static associate(models: any) {
+    Vote.belongsTo(models.Match, {
+      foreignKey: 'matchId',
+      as: 'votedMatch'
+    });
 
-  //   Vote.belongsTo(models.User, {
-  //     foreignKey: 'byUserId',
-  //     as: 'voter'
-  //   });
+    Vote.belongsTo(models.User, {
+      foreignKey: 'voterId',
+      as: 'voter'
+    });
 
-  //   Vote.belongsTo(models.User, {
-  //     foreignKey: 'forUserId',
-  //     as: 'votedFor'
-  //   });
-  // }
+    Vote.belongsTo(models.User, {
+      foreignKey: 'votedForId',
+      as: 'votedFor'
+    });
+  }
 }
 
 Vote.init(
@@ -40,23 +38,23 @@ Vote.init(
       type: DataTypes.UUID,
       allowNull: false,
       references: {
-        model: Match,
+        model: 'Matches',
         key: 'id',
       },
     },
-    byUserId: {
+    voterId: {
       type: DataTypes.UUID,
       allowNull: false,
       references: {
-        model: User,
+        model: 'users',
         key: 'id',
       },
     },
-    forUserId: {
+    votedForId: {
       type: DataTypes.UUID,
       allowNull: false,
       references: {
-        model: User,
+        model: 'users',
         key: 'id',
       },
     },
@@ -64,6 +62,7 @@ Vote.init(
   {
     sequelize,
     modelName: 'Vote',
+    timestamps: true,
   }
 );
 

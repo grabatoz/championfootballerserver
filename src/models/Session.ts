@@ -1,6 +1,6 @@
 import { Model, DataTypes, Optional } from 'sequelize';
 import sequelize from '../config/database';
-import User from './User';
+import { User } from './User';
 
 interface SessionAttributes {
   id: string;
@@ -19,12 +19,12 @@ class Session extends Model<SessionAttributes, SessionCreationAttributes> implem
   public readonly createdAt!: Date;
   public readonly updatedAt!: Date;
 
-  // static associate(models: any) {
-  //   Session.belongsTo(models.User, {
-  //     foreignKey: 'userId',
-  //     as: 'user'
-  //   });
-  // }
+  static associate(models: any) {
+    Session.belongsTo(models.User, {
+      foreignKey: 'userId',
+      as: 'user'
+    });
+  }
 }
 
 Session.init(
@@ -39,8 +39,8 @@ Session.init(
       allowNull: false,
       references: {
         model: User,
-        key: 'id',
-      },
+        key: 'id'
+      }
     },
     ipAddress: {
       type: DataTypes.STRING,
@@ -49,10 +49,12 @@ Session.init(
     createdAt: {
       type: DataTypes.DATE,
       allowNull: false,
+      defaultValue: DataTypes.NOW,
     },
     updatedAt: {
       type: DataTypes.DATE,
       allowNull: false,
+      defaultValue: DataTypes.NOW,
     },
   },
   {
@@ -61,4 +63,4 @@ Session.init(
   }
 );
 
-export default Session; 
+export default Session;

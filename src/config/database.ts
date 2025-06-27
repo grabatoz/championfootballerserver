@@ -3,37 +3,21 @@ import dotenv from 'dotenv';
 
 dotenv.config();
 
-const sequelize = new Sequelize(
-  process.env.DB_NAME || 'championfootballer',     // Database name
-  process.env.DB_USER || 'postgres',               // Username
-  process.env.DB_PASSWORD || 'salman1209',         // Password
-  {
-    host: process.env.DB_HOST || 'localhost',
-    port: parseInt(process.env.DB_PORT || '5432'),
-    dialect: 'postgres',
-    logging: false,
-    pool: {
-      max: 10,                    // Increased max connections
-      min: 2,                     // Increased min connections
-      acquire: 60000,            // Increased acquire timeout
-      idle: 30000,               // Increased idle timeout
-      evict: 1000                // Run eviction check every 1 second
-    },
-    dialectOptions: {
-      connectTimeout: 30000,     // Increased connection timeout
-      statement_timeout: 60000,  // Set statement timeout
-      idle_in_transaction_session_timeout: 60000 // Set idle transaction timeout
-    },
-    define: {
-      timestamps: true,
-      underscored: true,
-    },
-    retry: {
-      max: 3,                    // Maximum retry attempts
-      match: [/Deadlock/i, /Connection lost/i] // Retry on these errors
-    }
+const sequelize = new Sequelize({
+  dialect: 'postgres',
+  host: process.env.DB_HOST || 'localhost',
+  port: parseInt(process.env.DB_PORT || '5432'),
+  username: process.env.DB_USER || 'postgres',
+  password: process.env.DB_PASSWORD || 'salman1209',
+  database: process.env.DB_NAME || 'championfootballer',
+  logging: false, // Set to console.log to see SQL queries
+  pool: {
+    max: 5,
+    min: 0,
+    acquire: 30000,
+    idle: 10000
   }
-);
+});
 
 // Test connection and sync database
 const initializeDatabase = async () => {

@@ -4,13 +4,15 @@ const app = new Koa()
 import koaBody from "koa-body"
 import router from "./routes"
 import cors from "@koa/cors"
+import serve from 'koa-static';
+import path from 'path';
+import mount from 'koa-mount';
 // Dependencies: extra
-import database from "./modules/database"
 
 // CORS configuration
 app.use(cors({
   origin: 'http://localhost:3000',
-  allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
   allowHeaders: ['Content-Type', 'Authorization', 'Accept', 'Origin'],
   exposeHeaders: ['WWW-Authenticate', 'Server-Authorization'],
   maxAge: 5,
@@ -19,18 +21,26 @@ app.use(cors({
 }));
 
 // Body parser - using koaBody for better multipart support
-app.use(koaBody({
-  multipart: true,
-  json: true,
-  urlencoded: true,
-  text: true,
-  jsonLimit: '1mb',
-  formLimit: '1mb',
-  textLimit: '1mb',
-  formidable: {
-    maxFileSize: 200 * 1024 * 1024 // 200MB
+app.use(async (ctx, next) => {
+  // Skip koaBody for file upload route
+  if (ctx.path === '/profile/picture' && ctx.method === 'POST') {
+    return next();
   }
-}));
+  await koaBody({
+    multipart: true,
+    json: true,
+    urlencoded: true,
+    text: true,
+    jsonLimit: '1mb',
+    formLimit: '1mb',
+    textLimit: '1mb',
+    formidable: {
+      maxFileSize: 200 * 1024 * 1024 // 200MB
+    }
+  })(ctx, next);
+});
+
+app.use(mount('/uploads', serve(path.resolve(process.cwd(), 'uploads'))));
 
 // Client error handling
 app.use(async (ctx, next) => {

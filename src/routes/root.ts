@@ -1,7 +1,7 @@
 import router from "../modules/router"
 import os from "os"
 import { none, required } from "../modules/auth"
-import sendEmail from "../modules/sendEmail"
+import { transporter } from "../modules/sendEmail"
 
 router.get("/", none, async (ctx) => {
   ctx.response.status = 200
@@ -24,7 +24,7 @@ router.post("/contact", none, async (ctx) => {
     message: string
   }
 
-  await sendEmail({
+  await transporter.sendMail({
     to: ["huzaifahj29@gmail.com", "championfootballer@outlook.com"],
     subject: "New message from Champion Footballer contact form",
     html: `<p>From: ${name}</p>

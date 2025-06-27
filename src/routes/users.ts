@@ -1,8 +1,10 @@
-import router from "../modules/router"
+import Router from '@koa/router';
 import { required } from "../modules/auth"
-import { User } from "../models"
+import models from "../models"
 import { hash } from "bcrypt"
-import { League } from "../models"
+const { User, League } = models
+
+const router = new Router({ prefix: '/users' });
 
 interface UserInput {
   firstName?: string;
@@ -20,7 +22,9 @@ interface UserInput {
   shirtNumber?: string;
 }
 
-router.patch("/users/:id", required, async (ctx) => {
+router.patch("/:id", required, async (ctx) => {
+  if (!ctx.session || !ctx.session.userId) ctx.throw(401, "Unauthorized");
+
   let {
     firstName,
     lastName,
@@ -37,11 +41,11 @@ router.patch("/users/:id", required, async (ctx) => {
     shirtNumber,
   } = ctx.request.body.user as UserInput
 
-  if (ctx.params.id !== ctx.session.userId)
+  if (ctx.params.id !== ctx.session!.userId)
     ctx.throw(403, "You can't edit this user.")
 
   if (displayName) {
-    const user = await User.findByPk(ctx.session.userId, {
+    const user = await User.findByPk(ctx.session!.userId, {
       include: [{
         model: League,
         as: 'leaguesJoined',
@@ -60,7 +64,7 @@ router.patch("/users/:id", required, async (ctx) => {
       }
     }
 
-    if (allUsers.find((user) => user.displayName === displayName && user.id !== ctx.session.userId)) {
+    if (allUsers.find((user) => user.displayName === displayName && user.id !== ctx.session!.userId)) {
       ctx.throw(409, "Card name is already being used by another player in your leagues.");
     }
   }
@@ -86,8 +90,10 @@ router.patch("/users/:id", required, async (ctx) => {
   ctx.response.status = 200;
 })
 
-router.delete("/users/:id", required, async (ctx) => {
-  if (ctx.params.id !== ctx.session.userId)
+router.delete("/:id", required, async (ctx) => {
+  if (!ctx.session || !ctx.session.userId) ctx.throw(401, "Unauthorized");
+
+  if (ctx.params.id !== ctx.session!.userId)
     ctx.throw(403, "You can't delete this user.");
 
   await User.destroy({
@@ -96,3 +102,5 @@ router.delete("/users/:id", required, async (ctx) => {
 
   ctx.response.status = 200;
 })
+
+export default router;

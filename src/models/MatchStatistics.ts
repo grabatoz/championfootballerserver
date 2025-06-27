@@ -1,7 +1,5 @@
 import { Model, DataTypes, Optional } from 'sequelize';
 import sequelize from '../config/database';
-import User from './User';
-import Match from './Match';
 
 interface MatchStatisticsAttributes {
   id: string;
@@ -9,6 +7,9 @@ interface MatchStatisticsAttributes {
   match_id: string;
   goals: number;
   assists: number;
+  cleanSheets: number;
+  penalties: number;
+  freeKicks: number;
   yellowCards: number;
   redCards: number;
   minutesPlayed: number;
@@ -27,6 +28,9 @@ class MatchStatistics extends Model<MatchStatisticsAttributes, MatchStatisticsCr
   public match_id!: string;
   public goals!: number;
   public assists!: number;
+  public cleanSheets!: number;
+  public penalties!: number;
+  public freeKicks!: number;
   public yellowCards!: number;
   public redCards!: number;
   public minutesPlayed!: number;
@@ -40,49 +44,59 @@ class MatchStatistics extends Model<MatchStatisticsAttributes, MatchStatisticsCr
   public readonly user?: any;
   public readonly match?: any;
 
-  // static associate(models: any) {
-  //   MatchStatistics.belongsTo(models.Match, {
-  //     foreignKey: 'matchId',
-  //     as: 'statisticsMatch'
-  //   });
+  static associate(models: any) {
+    MatchStatistics.belongsTo(models.User, {
+      foreignKey: 'user_id',
+      as: 'user'
+    });
 
-  //   MatchStatistics.belongsTo(models.User, {
-  //     foreignKey: 'userId',
-  //     as: 'statisticsPlayer'
-  //   });
-  // }
+    MatchStatistics.belongsTo(models.Match, {
+      foreignKey: 'match_id',
+      as: 'match'
+    });
+  }
 }
 
 MatchStatistics.init(
   {
     id: {
-      type: DataTypes.UUID,
+      type: DataTypes.UUID, // ✅ This is the fix
       defaultValue: DataTypes.UUIDV4,
       primaryKey: true,
-    },
+    },    
     user_id: {
       type: DataTypes.UUID,
       allowNull: false,
       references: {
-        model: User,
-        key: 'id',
-      },
-      field: 'user_id',
+        model: 'users',
+        key: 'id'
+      }
     },
     match_id: {
       type: DataTypes.UUID,
       allowNull: false,
       references: {
-        model: Match,
-        key: 'id',
-      },
-      field: 'match_id',
+        model: 'Matches',
+        key: 'id'
+      }
     },
     goals: {
       type: DataTypes.INTEGER,
       defaultValue: 0,
     },
     assists: {
+      type: DataTypes.INTEGER,
+      defaultValue: 0,
+    },
+    cleanSheets: {
+      type: DataTypes.INTEGER,
+      defaultValue: 0,
+    },
+    penalties: {
+      type: DataTypes.INTEGER,
+      defaultValue: 0,
+    },
+    freeKicks: {
       type: DataTypes.INTEGER,
       defaultValue: 0,
     },
@@ -132,16 +146,5 @@ MatchStatistics.init(
     ],
   }
 );
-
-// Define associations
-MatchStatistics.belongsTo(User, {
-  foreignKey: 'user_id',
-  as: 'user',
-});
-
-MatchStatistics.belongsTo(Match, {
-  foreignKey: 'match_id',
-  as: 'match',
-});
 
 export default MatchStatistics; 

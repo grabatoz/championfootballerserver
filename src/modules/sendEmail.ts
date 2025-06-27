@@ -1,47 +1,56 @@
-import nodemailer from "nodemailer";
-import Mustache from "mustache";
+import nodemailer, { Transporter } from 'nodemailer';
+import dotenv from 'dotenv';
+dotenv.config();
 
-export interface sendEmailInput {
-  to: string | string[];
-  html: string;
-  subject: string;
+const {
+  SMTP_HOST,
+  SMTP_USER,
+  SMTP_PASS,
+} = process.env;
+
+// Ensure environment variables are defined (optional but recommended)
+if (!SMTP_HOST || !SMTP_USER || !SMTP_PASS) {
+  throw new Error('Missing required email environment variables');
 }
 
-/**
- * Send an email using Nodemailer via SMTP.
- *
- * Variables which can be used in subject and html:
- * {{platform.url}}
- * {{platform.name}}
- */
-export default async function sendEmail({ to, subject, html }: sendEmailInput) {
-  if (typeof to === "string") to = [to];
+// Create transporter with SMTP config
+const transporter: Transporter = nodemailer.createTransport({
+  host: SMTP_HOST,
+  port: 465,
+  secure: true,
+  auth: {
+    user: SMTP_USER,
+    pass: SMTP_PASS,
+  },
+});
 
-  if (!process.env.SMTP_HOST || !process.env.SMTP_PORT || !process.env.SMTP_USER || !process.env.SMTP_PASS) {
-    throw new Error("SMTP configuration is missing");
+// Verify connection configuration
+transporter.verify((error: Error | null, success: boolean) => {
+  if (error) {
+    console.error('Error connecting to SMTP server:', error);
+  } else {
+    console.log('SMTP server is ready to send emails:', success);
   }
+});
 
-  const transporter = nodemailer.createTransport({
-    host: process.env.SMTP_HOST,
-    port: parseInt(process.env.SMTP_PORT),
-    secure: process.env.SMTP_SECURE === "true", // true for port 465, false for others
-    auth: {
-      user: process.env.SMTP_USER,
-      pass: process.env.SMTP_PASS,
-    },
-  });
+// Define type for mail options
+type MailOptions = {
+  to: string;
+  subject: string;
+  htmlContent: string;
+};
 
-  const enrichment = {};
-
-  const mailOptions = {
-    from: `"Champion Footballer" <notifications@championfootballer.com>`,
-    to: to.join(", "),
-    subject: Mustache.render(subject, enrichment),
-    html: Mustache.render(html, enrichment),
+export const createMailOptions = ({ to, subject, htmlContent }: MailOptions) => {
+  return {
+    from: SMTP_USER,
+    to,
+    subject,
+    html: htmlContent,
   };
+};
 
-  await transporter.sendMail(mailOptions);
-}
+export { transporter };
+
 
 
 

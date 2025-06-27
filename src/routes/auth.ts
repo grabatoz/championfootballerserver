@@ -1,13 +1,14 @@
-import Router from "koa-router";
-import sendEmail from "../modules/sendEmail"
+import Router from '@koa/router';
+import { transporter } from "../modules/sendEmail"
 import { none, required } from "../modules/auth"
-import { League, Match, Session } from "../models"
-import userModel from "../models/User";
+import models from "../models"
+import { User } from "../models/User";
 import { hash, compare } from "bcrypt"
 import { getLoginCode } from "../modules/utils"
 import { Context } from "koa";
 
-const router = new Router();
+const router = new Router({ prefix: '/auth' });
+const { League, Match, Session } = models;
 
 interface UserInput {
   firstName?: string;
@@ -46,56 +47,70 @@ interface CustomContext extends Context {
 //   matchStatistics: MatchWithAssociations[];
 // }
 
-router.post("/signup", none, async (ctx: Context) => {
+router.post("/register", none, async (ctx: Context) => {
   try {
-    const { user } = ctx.request.body as {
-      user: UserInput;
-    };
+    console.log('Received registration request:', {
+      body: ctx.request.body,
+      headers: ctx.request.headers,
+      method: ctx.request.method,
+      url: ctx.request.url
+    });
 
-    console.log('user', user);
+    const userData = ctx.request.body.user || ctx.request.body;
+    console.log('Parsed user data:', userData);
 
-    if (!user || !user.email || !user.password) {
+    if (!userData || !userData.email || !userData.password) {
+      console.log('Missing required fields:', { userData });
       ctx.throw(400, "Email and password are required");
     }
 
     // Validate email format
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    if (!emailRegex.test(user.email)) {
+    if (!emailRegex.test(userData.email)) {
       ctx.throw(400, "Invalid email format");
     }
 
     // Validate password strength
-    if (user.password.length < 6) {
+    if (userData.password.length < 6) {
       ctx.throw(400, "Password must be at least 6 characters long");
     }
 
     // Convert email to lowercase
-    user.email = user.email.toLowerCase();
+    userData.email = userData.email.toLowerCase();
 
     // Check if user already exists
-    const existingUser = await userModel.findOne({ where: { email: user.email } });
+    const existingUser = await User.findOne({ where: { email: userData.email } });
     if (existingUser) {
       ctx.throw(409, "User with that email already exists");
     }
 
+    console.log('Creating new user with data:', {
+      email: userData.email,
+      firstName: userData.firstName,
+      lastName: userData.lastName,
+      age: userData.age,
+      gender: userData.gender
+    });
+
     // Create user with all required fields
-    const newUser = await userModel.create({
-      firstName: user.firstName || '',
-      lastName: user.lastName || '',
-      email: user.email,
-      age: user.age,
-      gender: user.gender,
-      password: user.password,
-      ipAddress: ctx.request.ip,
-      attributes: {
-        Pace: 50,
-        Passing: 50,
-        Physical: 50,
-        Shooting: 50,
-        Defending: 50,
-        Dribbling: 50,
+    const newUser = await User.create({
+      email: userData.email,
+      password: await hash(userData.password, 10),
+      firstName: userData.firstName || '',
+      lastName: userData.lastName || '',
+      age: userData.age ? parseInt(userData.age) : undefined,
+      gender: userData.gender,
+      skills: {
+        dribbling: 50,
+        shooting: 50,
+        passing: 50,
+        pace: 50,
+        defending: 50,
+        physical: 50
       }
     });
+
+    console.log('User created successfully:', newUser.id);
 
     // Create session
     const session = await Session.create({
@@ -103,18 +118,20 @@ router.post("/signup", none, async (ctx: Context) => {
       userId: newUser.id
     });
 
+    console.log('Session created:', session.id);
+
     // Send welcome email
     try {
-      await sendEmail({
+      await transporter.sendMail({
         to: newUser.email,
         subject: `Welcome to Champion Footballer!`,
         html: `<div><img src="https://i.imgur.com/7wOPUk7.png" style="height:30px;" /></div>
         <a href="http://championfootballer.com" style="font-size:20px;font-weight:bold;margin-top:10px;">Login to Champion Footballer.</a>
         <div><img src="https://i.imgur.com/cH3e8JN.jpg" style="height:400px;" /></div>`,
       });
+      console.log('Welcome email sent successfully');
     } catch (emailError) {
       console.error('Error sending welcome email:', emailError);
-      // Don't throw error here, just log it
     }
 
     // Return success response with token and user data
@@ -122,6 +139,7 @@ router.post("/signup", none, async (ctx: Context) => {
     ctx.body = { 
       success: true,
       token: session.id,
+      redirectTo: '/dashboard',
       user: {
         id: newUser.id,
         firstName: newUser.firstName,
@@ -129,7 +147,17 @@ router.post("/signup", none, async (ctx: Context) => {
         email: newUser.email,
         age: newUser.age,
         gender: newUser.gender,
-        attributes: newUser.attributes
+        position: newUser.position,
+        style: newUser.style,
+        preferredFoot: newUser.preferredFoot,
+        shirtNumber: newUser.shirtNumber,
+        profilePicture: newUser.profilePicture,
+        skills: newUser.skills,
+        joinedLeagues: [],
+        managedLeagues: [],
+        homeTeamMatches: [],
+        awayTeamMatches: [],
+        availableMatches: []
       },
       message: "Registration successful"
     };
@@ -160,14 +188,14 @@ router.post("/reset-password", none, async (ctx: CustomContext) => {
   const userEmail = email.toLowerCase();
   const password = getLoginCode();
 
-  const user = await userModel.findOne({ where: { email: userEmail } });
+  const user = await User.findOne({ where: { email: userEmail } });
   if (!user) {
     ctx.throw(404, "We can't find a user with that email.");
   }
 
   await user.update({ password: await hash(password, 10) });
 
-  await sendEmail({
+  await transporter.sendMail({
     to: userEmail,
     subject: `Password reset for Champion Footballer`,
     html: `Please use the new password ${password} to login.`,
@@ -183,9 +211,11 @@ router.post("/login", none, async (ctx: CustomContext) => {
   }
 
   const userEmail = email.toLowerCase();
-  const user = await userModel.findOne({
+  const user = await User.findOne({
     where: { email: userEmail }
   });
+
+  console.log('first',email,user)
 
   if (!user) {
     ctx.throw(404, "We can't find a user with that email");
@@ -205,17 +235,30 @@ router.post("/login", none, async (ctx: CustomContext) => {
   });
 
   // Return success response with token and user data
-  ctx.response.body = { 
+  ctx.status = 200;
+  ctx.body = { 
     success: true,
     token: session.id,
+    redirectTo: '/dashboard',
     user: {
       id: user.id,
       firstName: user.firstName,
       lastName: user.lastName,
       email: user.email,
+      password:user.password,
       age: user.age,
       gender: user.gender,
-      attributes: user.attributes
+      position: user.position,
+      style: user.style,
+      preferredFoot: user.preferredFoot,
+      shirtNumber: user.shirtNumber,
+      profilePicture: user.profilePicture,
+      skills: user.skills,
+      joinedLeagues: [],
+      managedLeagues: [],
+      homeTeamMatches: [],
+      awayTeamMatches: [],
+      availableMatches: []
     }
   };
 });
@@ -225,39 +268,50 @@ router.get("/data", required, async (ctx: CustomContext) => {
     ctx.throw(401, "User not authenticated");
   }
 
-  const user = await userModel.findByPk(ctx.session.userId, {
+  const user = await User.findByPk(ctx.session.userId, {
     include: [{
       model: League,
-      as: 'leaguesJoined',
+      as: 'leagues',
       include: [{
-        model: userModel,
-        as: 'admins'
+        model: User,
+        as: 'members'
       }, {
         model: Match,
         as: 'matches',
-        include: [{
-          model: userModel,
-          as: 'availableUsers'
-        }, {
-          model: userModel,
-          as: 'homeTeamUsers'
-        }, {
-          model: userModel,
-          as: 'awayTeamUsers'
-        }]
+        include: [
+          { model: User, as: 'availableUsers' },
+          { model: User, as: 'homeTeamUsers' },
+          { model: User, as: 'awayTeamUsers' },
+          { model: User, as: 'statistics' }
+        ]
+      }]
+    }, {
+      model: League,
+      as: 'administeredLeagues',
+      include: [{
+        model: User,
+        as: 'members'
       }, {
-        model: userModel,
-        as: 'users',
-        include: [{
-          model: Match,
-          as: 'matchStatistics'
-        }]
+        model: Match,
+        as: 'matches',
+        include: [
+          { model: User, as: 'availableUsers' },
+          { model: User, as: 'homeTeamUsers' },
+          { model: User, as: 'awayTeamUsers' },
+          { model: User, as: 'statistics' }
+        ]
       }]
     }, {
       model: Match,
-      as: 'matchStatistics'
+      as: 'homeTeamMatches'
+    }, {
+      model: Match,
+      as: 'awayTeamMatches'
+    }, {
+      model: Match,
+      as: 'availableMatches'
     }]
-  });
+  }) as any;
 
   if (!user) {
     ctx.throw(404, "User not found");
@@ -267,44 +321,33 @@ router.get("/data", required, async (ctx: CustomContext) => {
   const myUserEmail = "huzaifahj29@gmail.com"
   const extractFromUserEmail = "ru.uddin@hotmail.com"
   if (user.email === myUserEmail) {
-    const extractFromUser = await userModel.findOne({
+    const extractFromUser = await User.findOne({
       where: { email: extractFromUserEmail },
       include: [{
         model: League,
-        as: 'leaguesJoined',
+        as: 'leagues',
         include: [{
-          model: userModel,
-          as: 'admins'
+          model: User,
+          as: 'members'
         }, {
           model: Match,
-          include: [{
-            model: userModel,
-            as: 'availableUsers'
-          }, {
-            model: userModel,
-            as: 'homeTeamUsers'
-          }, {
-            model: userModel,
-            as: 'awayTeamUsers'
-          }]
-        }, {
-          model: userModel,
-          as: 'users',
-          include: [{
-            model: Match,
-            as: 'matchStatistics'
-          }]
+          as: 'matches',
+          include: [
+            { model: User, as: 'availableUsers' },
+            { model: User, as: 'homeTeamUsers' },
+            { model: User, as: 'awayTeamUsers' },
+            { model: User, as: 'statistics' }
+          ]
         }]
       }]
     }) as unknown as { 
       id: string;
       email: string;
-      leaguesJoined: League[];
-      matchStatistics: Match[];
+      leagues: typeof League[];
     };
     if (extractFromUser) {
-      const userWithLeagues = user as unknown as { leaguesJoined: League[] };
-      userWithLeagues.leaguesJoined = [...userWithLeagues.leaguesJoined, ...extractFromUser.leaguesJoined];
+      const userWithLeagues = user as unknown as { leagues: typeof League[] };
+      userWithLeagues.leagues = [...userWithLeagues.leagues, ...extractFromUser.leagues];
     }
   }
 
@@ -316,7 +359,7 @@ router.get("/data", required, async (ctx: CustomContext) => {
     "ipAddress",
     "gender",
   ]
-  const deleteProperties = (input: InstanceType<typeof userModel>[] | InstanceType<typeof userModel>) => {
+  const deleteProperties = (input: User[] | User) => {
     if (Array.isArray(input)) {
       for (const user of input) {
         for (const property of propertiesToDelete) {
@@ -330,17 +373,26 @@ router.get("/data", required, async (ctx: CustomContext) => {
     }
   }
   delete (user as any)["password"]
-  for (const league of (user as any).leaguesJoined) {
-    deleteProperties(league.admins)
-    deleteProperties(league.users)
-    for (const match of league.matches) {
-      deleteProperties(match.availableUsers)
-      deleteProperties(match.homeTeamUsers)
-      deleteProperties(match.awayTeamUsers)
+  
+  // Handle both leagues and administeredLeagues
+  if ((user as any).leagues) {
+    for (const league of (user as any).leagues) {
+      deleteProperties(league.members)
+      deleteProperties(league.matches)
+    }
+  }
+  
+  if ((user as any).administeredLeagues) {
+    for (const league of (user as any).administeredLeagues) {
+      deleteProperties(league.members)
+      deleteProperties(league.matches)
     }
   }
 
-  ctx.body = user;
+  ctx.body = {
+    success: true,
+    user: user,
+  };
 });
 
 router.get("/logout", required, async (ctx: CustomContext) => {
@@ -355,6 +407,73 @@ router.get("/logout", required, async (ctx: CustomContext) => {
   });
 
   ctx.status = 200;
+});
+
+router.get("/status", required, async (ctx: CustomContext) => {
+  if (!ctx.session || !ctx.session.userId) {
+    ctx.throw(401, "Unauthorized");
+    return;
+  }
+
+  const user = await User.findByPk(ctx.session.userId, {
+    include: [
+      {
+        model: League,
+        as: 'leagues',
+        attributes: ['id', 'name', 'inviteCode', 'createdAt'],
+        through: { attributes: [] } 
+      },
+      {
+        model: League,
+        as: 'administeredLeagues',
+        attributes: ['id', 'name', 'inviteCode', 'createdAt'],
+        through: { attributes: [] }
+      },
+      {
+        model: Match,
+        as: 'homeTeamMatches',
+        attributes: ['id', 'date', 'status'],
+      },
+      {
+        model: Match,
+        as: 'awayTeamMatches',
+        attributes: ['id', 'date', 'status'],
+      },
+      {
+        model: Match,
+        as: 'availableMatches',
+        attributes: ['id', 'date', 'status'],
+      }
+    ]
+  }) as any;
+
+  if (!user) {
+    ctx.throw(401, "Unauthorized");
+    return;
+  }
+  
+  ctx.body = {
+    success: true,
+    user: {
+      id: user.id,
+      firstName: user.firstName,
+      lastName: user.lastName,
+      email: user.email,
+      age: user.age,
+      gender: user.gender,
+      position: user.position,
+      style: user.style,
+      preferredFoot: user.preferredFoot,
+      shirtNumber: user.shirtNumber,
+      profilePicture: user.profilePicture,
+      skills: user.skills,
+      leagues: user.leagues || [],
+      adminLeagues: user.administeredLeagues || [],
+      homeTeamMatches: user.homeTeamMatches || [],
+      awayTeamMatches: user.awayTeamMatches || [],
+      availableMatches: user.availableMatches || [],
+    }
+  };
 });
 
 export default router;

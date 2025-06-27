@@ -1,191 +1,180 @@
-import router from "../modules/router"
-import { required } from "../modules/auth"
-import { Match, MatchStatistics, User, Vote } from "../models"
-import { verifyLeagueAdmin } from "../modules/utils"
+import Router from '@koa/router';
+import { required } from '../modules/auth';
+import models from '../models';
+import { QueryTypes } from 'sequelize';
+import sequelize from '../config/database';
+const { Match, Vote, User } = models;
 
-router.patch("/matches/:id", required, async (ctx) => {
-  const {
-    awayTeamGoals,
-    start,
-    end,
-    homeTeamGoals,
-    awayTeamName,
-    location,
-    homeTeamName,
-    homeTeamUsers,
-    awayTeamUsers,
-    notes,
-  } = ctx.request.body.match as Match & {
-    homeTeamUsers?: string[]
-    awayTeamUsers?: string[]
-  }
+const router = new Router({ prefix: '/matches' });
 
-  const match = await Match.findByPk(ctx.params.id)
-  if (!match) ctx.throw(404, "Match not found")
-  const foundMatch = match as NonNullable<typeof match>
+router.post('/:id/votes', required, async (ctx) => {
+    const matchId = ctx.params.id;
+    const voterId = ctx.session!.userId;
+    const { votedForId } = ctx.request.body as { votedForId: string };
 
-  await verifyLeagueAdmin(ctx, foundMatch.leagueId)
+    if (voterId === votedForId) {
+        ctx.throw(400, "You cannot vote for yourself.");
+    }
 
-  if (homeTeamUsers || awayTeamUsers) {
-    await foundMatch.setHomeTeamUsers([])
-    await foundMatch.setAwayTeamUsers([])
-  }
+    // Remove any previous vote by this user for this match
+    await Vote.destroy({
+        where: {
+            matchId,
+            voterId,
+        },
+    });
 
-  await foundMatch.update({
-    notes,
-    awayTeamGoals,
-    start,
-    end,
-    homeTeamGoals,
-    awayTeamName,
-    location,
-    homeTeamName,
-  })
+    // Create the new vote
+    await Vote.create({
+        matchId,
+        voterId,
+        votedForId,
+    });
 
-  if (homeTeamUsers) {
-    await foundMatch.addHomeTeamUsers(homeTeamUsers)
-  }
+    ctx.status = 200;
+    ctx.body = { success: true, message: "Vote cast successfully." };
+});
 
-  if (awayTeamUsers) {
-    await foundMatch.addAwayTeamUsers(awayTeamUsers)
-  }
+router.post('/:matchId/availability', required, async (ctx) => {
+    if (!ctx.session) {
+        ctx.throw(401, 'Unauthorized');
+        return;
+    }
+    const { action } = ctx.request.query;
+    console.log('action',action);
+    
+    const match = await Match.findByPk(ctx.params.matchId, {
+        include: [{ model: User, as: 'availableUsers' }]
+    });
+    if (!match) {
+        ctx.throw(404, 'Match not found');
+        return;
+    }
+    const user = await User.findByPk(ctx.session.userId);
+    if (!user) {
+        ctx.throw(404, 'User not found');
+        return;
+    }
+    if (action === 'available') {
+        const isAlreadyAvailable = match.availableUsers?.some(u => u.id === user.id);
+        if (!isAlreadyAvailable) {
+            await match.addAvailableUser(user);
+        }
+    } else if (action === 'unavailable') {
+        await match.removeAvailableUser(user);
+    }
+    // Fetch the updated match with availableUsers
+    const updatedMatch = await Match.findByPk(ctx.params.matchId, {
+        include: [{ model: User, as: 'availableUsers' }]
+    });
+    ctx.status = 200;
+    ctx.body = { success: true, match: updatedMatch };
+});
 
-  ctx.response.status = 200
-})
+// PATCH endpoint to update match goals
+router.patch('/:matchId/goals', required, async (ctx) => {
+    const { homeGoals, awayGoals } = ctx.request.body;
+    const { matchId } = ctx.params;
+    const match = await Match.findByPk(matchId);
+    if (!match) {
+        ctx.throw(404, 'Match not found');
+        return;
+    }
+    match.homeTeamGoals = homeGoals;
+    match.awayTeamGoals = awayGoals;
+    await match.save();
+    ctx.body = { success: true };
+});
 
-router.post("/matches/:id/availability", required, async (ctx) => {
-  const { action } = ctx.request.query
-  const match = await Match.findByPk(ctx.params.id)
-  if (!match) ctx.throw(404, "Match not found")
-  const foundMatch = match as NonNullable<typeof match>
+// PATCH endpoint to update match note
+router.patch('/:matchId/note', required, async (ctx) => {
+    const { note } = ctx.request.body;
+    const { matchId } = ctx.params;
+    const match = await Match.findByPk(matchId);
+    if (!match) {
+        ctx.throw(404, 'Match not found');
+        return;
+    }
+    match.notes = note;
+    await match.save();
+    ctx.body = { success: true };
+});
 
-  if (action === "available") {
-    await foundMatch.addAvailableUser(ctx.session.userId)
-  } else if (action === "unavailable") {
-    await foundMatch.removeAvailableUser(ctx.session.userId)
-  }
+router.post('/:matchId/stats', required, async (ctx) => {
+    if (!ctx.session) {
+        ctx.throw(401, 'Unauthorized');
+        return;
+    }
+    const { matchId } = ctx.params;
+    const userId = ctx.session!.userId;
+    const { goals, assists, cleanSheets, penalties, freeKicks } = ctx.request.body as {
+        goals: number;
+        assists: number;
+        cleanSheets: number;
+        penalties: number;
+        freeKicks: number;
+    };
 
-  ctx.response.status = 200
-})
+    const match = await Match.findByPk(matchId);
+    if (!match) {
+        ctx.throw(404, 'Match not found');
+        return;
+    }
 
-router.post("/matches/:id/statistics", required, async (ctx) => {
-  const { statistics, userId } = ctx.request.body as {
-    userId: string
-    statistics: {
-      type: string
-      value: number
-    }[]
-  }
+    if (match.status !== 'completed') {
+        ctx.throw(400, 'Statistics can only be added for completed matches.');
+    }
 
-  await MatchStatistics.destroy({
-    where: {
-      user_id: userId,
-      match_id: ctx.params.id,
-    },
-  })
+    // Find existing stats or create a new record
+    const [stats, created] = await models.MatchStatistics.findOrCreate({
+        where: { user_id: userId, match_id: matchId },
+        defaults: {
+            user_id: userId,
+            match_id: matchId,
+            goals,
+            assists,
+            cleanSheets,
+            penalties,
+            freeKicks,
+            yellowCards: 0,
+            redCards: 0,
+            minutesPlayed: 0,
+            rating: 0,
+        }
+    });
 
-  for (const statistic of statistics) {
-    await MatchStatistics.create({
-      type: statistic.type,
-      value: statistic.value,
-      match_id: ctx.params.id,
-      user_id: userId,
-      goals: 0,
-      assists: 0,
-      yellowCards: 0,
-      redCards: 0,
-      saves: 0,
-      cleanSheets: 0
-    } as any)
-  }
+    if (!created) {
+        // If stats existed, update them
+        stats.goals = goals;
+        stats.assists = assists;
+        stats.cleanSheets = cleanSheets;
+        stats.penalties = penalties;
+        stats.freeKicks = freeKicks;
+        await stats.save();
+    }
 
-  ctx.response.status = 200
-})
+    ctx.status = 200;
+    ctx.body = { success: true, message: 'Statistics saved successfully.' };
+});
 
-router.post("/matches/:id/guest-users", required, async (ctx) => {
-  const { firstName, lastName } = ctx.request.body.user as { firstName: string; lastName: string }
+// GET route to fetch votes for each player in a match
+router.get('/:id/votes', required, async (ctx) => {
+  const matchId = ctx.params.id;
+  const userId = ctx.session!.userId;
+  const votes = await Vote.findAll({
+    where: { matchId },
+    attributes: ['votedForId', 'voterId'],
+  });
+  const voteCounts: Record<string, number> = {};
+  let userVote: string | null = null;
+  votes.forEach(vote => {
+    const id = String(vote.votedForId);
+    voteCounts[id] = (voteCounts[id] || 0) + 1;
+    if (String(vote.voterId) === String(userId)) {
+      userVote = id;
+    }
+  });
+  ctx.body = { success: true, votes: voteCounts, userVote };
+});
 
-  const match = await Match.findByPk(ctx.params.id)
-  if (!match) ctx.throw(404, "Match not found")
-  const foundMatch = match as NonNullable<typeof match>
-
-  await verifyLeagueAdmin(ctx, foundMatch.leagueId)
-
-  // Create user
-  const user = await User.create({
-    firstName,
-    lastName,
-    matchGuestForId: ctx.params.id,
-    attributes: {
-      Pace: 50,
-      Passing: 50,
-      Physical: 50,
-      Shooting: 50,
-      Defending: 50,
-      Dribbling: 50,
-    },
-  } as any)
-
-  // Add to league
-  const league = await foundMatch.getLeague()
-  await league.addUser(user.id)
-
-  // Make available for match
-  await foundMatch.addAvailableUser(user.id)
-
-  ctx.response.status = 200
-})
-
-router.delete(
-  "/matches/:id/guest-users/:userId",
-  required,
-  async (ctx) => {
-    const match = await Match.findByPk(ctx.params.id)
-    if (!match) ctx.throw(404, "Match not found")
-    const foundMatch = match as NonNullable<typeof match>
-
-    await verifyLeagueAdmin(ctx, foundMatch.leagueId)
-
-    // Delete user
-    await User.destroy({
-      where: {
-        id: ctx.params.userId,
-      },
-    })
-
-    ctx.response.status = 200
-  }
-)
-
-router.post("/matches/:id/votes", required, async (ctx) => {
-  const { userId } = ctx.request.body as {
-    userId: string
-  }
-
-  await Vote.destroy({
-    where: {
-      matchId: ctx.params.id,
-      byUserId: ctx.session.userId,
-    },
-  })
-
-  await Vote.create({
-    matchId: ctx.params.id,
-    byUserId: ctx.session.userId,
-    forUserId: userId,
-  })
-
-  ctx.response.status = 200
-})
-
-router.delete("/matches/:id", required, async (ctx) => {
-  const match = await Match.findByPk(ctx.params.id)
-  if (!match) ctx.throw(404, "Match not found")
-  const foundMatch = match as NonNullable<typeof match>
-
-  await verifyLeagueAdmin(ctx, foundMatch.leagueId)
-
-  await foundMatch.destroy()
-
-  ctx.response.status = 200
-})
+export default router;

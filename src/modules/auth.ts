@@ -1,10 +1,12 @@
 import { Context, Next } from "koa"
-import { Session } from "../models"
+import models from "../models"
 
 interface CustomContext extends Context {
   token?: string;
-  session?: Session;
+  session?: InstanceType<typeof models.Session>;
 }
+
+const Session = models.Session;
 
 const verifyToken = async (ctx: CustomContext) => {
   try {

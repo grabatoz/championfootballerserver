@@ -1,7 +1,8 @@
 import { Context } from "koa"
 import db from "./database"
-import { League, User } from "../models"
 import { ModelStatic } from "sequelize"
+import User from "../models/User";
+import League from "../models/League";
 
 type ModelName = keyof typeof db.models;
 
@@ -61,11 +62,11 @@ export async function verifyLeagueAdmin(ctx: Context, leagueId: string) {
     const league = await League.findByPk(leagueId, {
         include: [{
             model: User,
-            as: 'admins'
+            as: 'administeredLeagues'
         }]
-    }) as League & { admins: any[] };
+    }) as League & { administeredLeagues: any[] };
 
-    if (!league?.admins?.find((user: { id: string }) => user.id === ctx.session.userId)) {
+    if (!league?.administeredLeagues?.find((user: { id: string }) => user.id === ctx.session.userId)) {
         ctx.throw(403, "You are not a league admin.")
     }
 }
