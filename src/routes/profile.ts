@@ -65,6 +65,7 @@ router.get('/', required, async (ctx: CustomContext) => {
       age: user.age,
       gender: user.gender,
       position: user.position,
+      positionType: user.positionType,
       style: user.style,
       preferredFoot: user.preferredFoot,
       shirtNumber: user.shirtNumber,
@@ -85,7 +86,8 @@ router.put('/', required, async (ctx: CustomContext) => {
     ctx.throw(401, "User not authenticated");
   }
   console.log('Profile PUT: userId', ctx.session.userId, 'update data', ctx.request.body);
-  const { firstName, lastName, email, age, gender, position, style, preferredFoot, shirtNumber, skills, password } = ctx.request.body;
+  const { firstName, lastName, email, age, gender, position, positionType, style, preferredFoot, shirtNumber, skills, password } = ctx.request.body;
+  console.log('Extracted positionType:', positionType);
   const user = await User.findByPk(ctx.session.userId);
   console.log('Profile PUT: found user', user ? user.id : null);
   if (!user) {
@@ -100,19 +102,35 @@ router.put('/', required, async (ctx: CustomContext) => {
     ...(age !== undefined && { age }),
     ...(gender !== undefined && { gender }),
     ...(position !== undefined && { position }),
+    ...(positionType !== undefined && { positionType }),
     ...(style !== undefined && { style }),
     ...(preferredFoot !== undefined && { preferredFoot }),
     ...(shirtNumber !== undefined && { shirtNumber }),
     ...(skills !== undefined && { skills }),
   };
+  
+  console.log('Update data to be saved:', updateData);
 
   // Handle password update with hashing
   if (password !== undefined && password !== "") {
+    console.log('🔐 Password update detected:', {
+      hasPassword: !!password,
+      passwordLength: password?.length,
+      willHash: true
+    });
     updateData.password = await hash(password, 10);
+    console.log('🔐 Password hashed successfully, new hash length:', updateData.password.length);
+  } else {
+    console.log('🔐 No password update - keeping existing password');
   }
 
   // Only update fields that are present in the request
   await user.update(updateData);
+  
+  console.log('✅ User updated successfully');
+  if (updateData.password) {
+    console.log('🔐 Password was updated in database');
+  }
 
   // Delete sensitive data
   const propertiesToDelete = [
@@ -134,6 +152,7 @@ router.put('/', required, async (ctx: CustomContext) => {
       age: user.age,
       gender: user.gender,
       position: user.position,
+      positionType: user.positionType,
       style: user.style,
       preferredFoot: user.preferredFoot,
       shirtNumber: user.shirtNumber,

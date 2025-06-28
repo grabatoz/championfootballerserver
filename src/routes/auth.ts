@@ -16,6 +16,8 @@ interface UserInput {
   age?: number;
   email: string;
   gender?: string;
+  position?: string;
+  positionType?: string;
   password: string;
 }
 
@@ -100,6 +102,8 @@ router.post("/register", none, async (ctx: Context) => {
       lastName: userData.lastName || '',
       age: userData.age ? parseInt(userData.age) : undefined,
       gender: userData.gender,
+      position: userData.position,
+      positionType: userData.positionType,
       skills: {
         dribbling: 50,
         shooting: 50,
@@ -148,6 +152,7 @@ router.post("/register", none, async (ctx: Context) => {
         age: newUser.age,
         gender: newUser.gender,
         position: newUser.position,
+        positionType: newUser.positionType,
         style: newUser.style,
         preferredFoot: newUser.preferredFoot,
         shirtNumber: newUser.shirtNumber,
@@ -225,7 +230,16 @@ router.post("/login", none, async (ctx: CustomContext) => {
     ctx.throw(400, "User has no password. Please reset it now.");
   }
 
-  if (!(await compare(password, user.password))) {
+  console.log('🔍 Password comparison:', {
+    providedPassword: password,
+    hashedPassword: user.password,
+    passwordLength: user.password?.length
+  });
+
+  const passwordMatch = await compare(password, user.password);
+  console.log('🔍 Password match result:', passwordMatch);
+
+  if (!passwordMatch) {
     ctx.throw(401, "Incorrect login details.");
   }
 
@@ -249,6 +263,7 @@ router.post("/login", none, async (ctx: CustomContext) => {
       age: user.age,
       gender: user.gender,
       position: user.position,
+      positionType: user.positionType,
       style: user.style,
       preferredFoot: user.preferredFoot,
       shirtNumber: user.shirtNumber,
@@ -473,6 +488,32 @@ router.get("/status", required, async (ctx: CustomContext) => {
       awayTeamMatches: user.awayTeamMatches || [],
       availableMatches: user.availableMatches || [],
     }
+  };
+});
+
+// Simple password reset without email (for testing)
+router.post("/reset-password-simple", none, async (ctx: CustomContext) => {
+  const { email, newPassword } = ctx.request.body;
+  if (!email || !newPassword) {
+    ctx.throw(400, "Email and newPassword are required");
+  }
+  
+  const userEmail = email.toLowerCase();
+  const user = await User.findOne({ where: { email: userEmail } });
+  
+  if (!user) {
+    ctx.throw(404, "We can't find a user with that email.");
+  }
+
+  // Hash the new password
+  const hashedPassword = await hash(newPassword, 10);
+  await user.update({ password: hashedPassword });
+
+  console.log(`🔧 Password reset for ${userEmail}: ${newPassword} -> ${hashedPassword}`);
+
+  ctx.body = { 
+    success: true,
+    message: `Password reset successfully for ${userEmail}. You can now login with: ${newPassword}`
   };
 });
 

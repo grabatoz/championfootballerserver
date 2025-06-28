@@ -3,6 +3,7 @@ import { required } from '../modules/auth';
 import models from '../models';
 import { QueryTypes } from 'sequelize';
 import sequelize from '../config/database';
+import { calculateAndAwardXPAchievements } from '../utils/xpAchievementsEngine';
 const { Match, Vote, User } = models;
 
 const router = new Router({ prefix: '/matches' });
@@ -175,6 +176,42 @@ router.get('/:id/votes', required, async (ctx) => {
     }
   });
   ctx.body = { success: true, votes: voteCounts, userVote };
+});
+
+// Add XP calculation when match is completed
+router.patch('/:matchId/complete', required, async (ctx) => {
+  const { matchId } = ctx.params;
+  const match = await Match.findByPk(matchId, {
+    include: [
+      { model: User, as: 'homeTeamUsers' },
+      { model: User, as: 'awayTeamUsers' }
+    ]
+  });
+
+  if (!match) {
+    ctx.throw(404, 'Match not found');
+    return;
+  }
+
+  // Mark match as completed
+  await match.update({ status: 'completed' });
+
+  // Calculate XP for all players in this match
+  const allPlayers = [
+    ...((match as any).homeTeamUsers || []),
+    ...((match as any).awayTeamUsers || [])
+  ];
+
+  for (const player of allPlayers) {
+    try {
+      await calculateAndAwardXPAchievements(player.id, match.leagueId);
+    } catch (error) {
+      console.error(`Error calculating XP for player ${player.id}:`, error);
+    }
+  }
+
+  ctx.status = 200;
+  ctx.body = { success: true, message: 'Match completed and XP calculated' };
 });
 
 export default router;

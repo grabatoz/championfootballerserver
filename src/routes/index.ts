@@ -4,6 +4,7 @@ import usersRouter from './users';
 import matchesRouter from './matches';
 import leaguesRouter from './leagues';
 import profileRouter from './profile';
+import dreamTeamRouter from './dreamTeam';
 import { Context } from 'koa';
 
 const router = new Router();
@@ -14,6 +15,7 @@ router.use(usersRouter.routes(), usersRouter.allowedMethods());
 router.use(matchesRouter.routes(), matchesRouter.allowedMethods());
 router.use(leaguesRouter.routes(), leaguesRouter.allowedMethods());
 router.use(profileRouter.routes(), profileRouter.allowedMethods());
+router.use(dreamTeamRouter.routes(), dreamTeamRouter.allowedMethods());
 
 // Root route
 router.get('/', async (ctx: Context) => {

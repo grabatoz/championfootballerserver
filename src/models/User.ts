@@ -10,6 +10,7 @@ export interface UserAttributes {
   age?: number;
   gender?: string;
   position?: string;
+  positionType?: string;
   style?: string;
   preferredFoot?: string;
   shirtNumber?: string;
@@ -22,6 +23,8 @@ export interface UserAttributes {
     defending: number;
     physical: number;
   };
+  xp?: number;
+  achievements?: string[];
   createdAt?: Date;
   updatedAt?: Date;
 }
@@ -35,6 +38,7 @@ export class User extends Model<UserAttributes> implements UserAttributes {
   public age!: number;
   public gender!: string;
   public position!: string;
+  public positionType!: string;
   public style!: string;
   public preferredFoot!: string;
   public shirtNumber!: string;
@@ -47,6 +51,8 @@ export class User extends Model<UserAttributes> implements UserAttributes {
     defending: number;
     physical: number;
   };
+  public xp!: number;
+  public achievements!: string[];
   public readonly createdAt!: Date;
   public readonly updatedAt!: Date;
 
@@ -88,6 +94,7 @@ export class User extends Model<UserAttributes> implements UserAttributes {
 
     User.hasMany(models.Vote, { foreignKey: 'voterId', as: 'givenVotes' });
     User.hasMany(models.Vote, { foreignKey: 'votedForId', as: 'receivedVotes' });
+    User.hasMany(models.MatchStatistics, { foreignKey: 'user_id', as: 'statistics' });
   }
 }
 
@@ -127,6 +134,10 @@ User.init(
       type: DataTypes.STRING,
       allowNull: true,
     },
+    positionType: {
+      type: DataTypes.STRING,
+      allowNull: true,
+    },
     style: {
       type: DataTypes.STRING,
       allowNull: true,
@@ -154,6 +165,16 @@ User.init(
         defending: 50,
         physical: 50
       }
+    },
+    xp: {
+      type: DataTypes.INTEGER,
+      allowNull: false,
+      defaultValue: 0,
+    },
+    achievements: {
+      type: DataTypes.ARRAY(DataTypes.STRING),
+      allowNull: false,
+      defaultValue: [],
     }
   },
   {

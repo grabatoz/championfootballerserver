@@ -6,6 +6,7 @@ import { getInviteCode, verifyLeagueAdmin } from '../modules/utils';
 import type { LeagueAttributes } from '../models/League';
 import { transporter } from '../modules/sendEmail';
 import { Op } from 'sequelize';
+import { calculateAndAwardXPAchievements } from '../utils/xpAchievementsEngine';
 
 const router = new Router({ prefix: '/leagues' });
 
@@ -121,6 +122,11 @@ router.get("/:id", required, async (ctx) => {
   if (!league) {
     ctx.throw(404, "League not found");
     return;
+  }
+
+  // Award XP to all members for this league
+  for (const member of (league as any).members || []) {
+    await calculateAndAwardXPAchievements(member.id, league.id);
   }
 
   const isMember = (league as any).members?.some((member: any) => member.id === ctx.session!.userId);
@@ -511,6 +517,36 @@ router.delete("/:id/users/:userId", required, async (ctx) => {
   await (league as any).removeMember(ctx.params.userId);
 
   ctx.response.status = 200;
+});
+
+// Add XP calculation when league ends
+router.patch('/:id/end', required, async (ctx) => {
+  await verifyLeagueAdmin(ctx, ctx.params.id);
+
+  const league = await League.findByPk(ctx.params.id, {
+    include: [{ model: User, as: 'members' }]
+  });
+
+  if (!league) {
+    ctx.throw(404, "League not found");
+    return;
+  }
+
+  // Mark league as inactive
+  await league.update({ active: false });
+
+  // Calculate final XP for all league members
+  for (const member of (league as any).members || []) {
+    try {
+      await calculateAndAwardXPAchievements(member.id, league.id);
+      console.log(`Final XP calculated for user ${member.id} in league ${league.id}`);
+    } catch (error) {
+      console.error(`Error calculating final XP for user ${member.id}:`, error);
+    }
+  }
+
+  ctx.status = 200;
+  ctx.body = { success: true, message: "League ended and final XP calculated" };
 });
 
 export default router;
