@@ -59,6 +59,10 @@ export const doesObjectExist = async (
  * Throws if user is not league admin
  */
 export async function verifyLeagueAdmin(ctx: Context, leagueId: string) {
+    if (!ctx.state.user?.userId) {
+        ctx.throw(401, 'User not authenticated');
+    }
+
     const league = await League.findByPk(leagueId, {
         include: [{
             model: User,
@@ -66,7 +70,7 @@ export async function verifyLeagueAdmin(ctx: Context, leagueId: string) {
         }]
     }) as League & { administeredLeagues: any[] };
 
-    if (!league?.administeredLeagues?.find((user: { id: string }) => user.id === ctx.session.userId)) {
+    if (!league?.administeredLeagues?.find((user: { id: string }) => user.id === ctx.state.user.userId)) {
         ctx.throw(403, "You are not a league admin.")
     }
 }

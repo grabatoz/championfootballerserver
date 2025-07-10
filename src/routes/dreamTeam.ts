@@ -1,7 +1,6 @@
 import Router from '@koa/router';
 import { required } from '../modules/auth';
 import models from '../models';
-import { Op } from 'sequelize';
 const { User, Match, MatchStatistics, Vote } = models;
 
 const router = new Router({ prefix: '/dream-team' });
@@ -10,14 +9,24 @@ const router = new Router({ prefix: '/dream-team' });
 router.get('/', required, async (ctx) => {
   try {
     const leagueId = ctx.query.leagueId as string | undefined;
-    // Get all users with their statistics for the selected league
-    const userWhere: any = {};
-    const statsWhere: any = {};
-    if (leagueId) {
-      statsWhere['$statistics.match.leagueId$'] = leagueId;
+    if (!leagueId) {
+      ctx.throw(400, 'leagueId is required');
+      return;
     }
+
+    // Get league and its members
+    const league = await models.League.findByPk(leagueId, {
+      include: [{ model: models.User, as: 'members' }]
+    });
+    if (!league) {
+      ctx.throw(404, 'League not found');
+      return;
+    }
+    const memberIds = (league as any).members.map((m: any) => m.id);
+
+    // Only get users who are members of this league
     const users = await User.findAll({
-      where: userWhere,
+      where: { id: memberIds },
       include: [
         {
           model: MatchStatistics,
@@ -25,7 +34,7 @@ router.get('/', required, async (ctx) => {
           include: [{
             model: Match,
             as: 'match',
-            where: { status: 'completed', ...(leagueId ? { leagueId } : {}) }
+            where: { status: 'completed', leagueId }
           }]
         },
         {
@@ -132,18 +141,35 @@ router.get('/', required, async (ctx) => {
     // Sort players by performance score
     playersWithStats.sort((a, b) => calculatePerformanceScore(b) - calculatePerformanceScore(a));
 
-    // Group by position (1 GK, 2 DEF, 1 MID, 1 FWD)
+    // Group by position, pick the best for each, max 6 total
+    const positionTypes = ['goalkeeper', 'defenders', 'midfielders', 'forwards'];
+    const bestPlayers: any[] = [];
+
+    for (const pos of positionTypes) {
+      const candidates = playersWithStats.filter(p => categorizePlayer(p.position) === pos);
+      if (candidates.length > 0) {
+        // Pick the best (first, since sorted by score)
+        bestPlayers.push(candidates[0]);
+      }
+    }
+
+    // If more than 6, pick top 6 by score
+    const dreamTeamPlayers = bestPlayers
+      .sort((a, b) => calculatePerformanceScore(b) - calculatePerformanceScore(a))
+      .slice(0, 6);
+
+    // For frontend, group by position (but only one per position)
     const dreamTeam = {
-      goalkeeper: playersWithStats.filter(p => categorizePlayer(p.position) === 'goalkeeper').slice(0, 1),
-      defenders: playersWithStats.filter(p => categorizePlayer(p.position) === 'defenders').slice(0, 2),
-      midfielders: playersWithStats.filter(p => categorizePlayer(p.position) === 'midfielders').slice(0, 1),
-      forwards: playersWithStats.filter(p => categorizePlayer(p.position) === 'forwards').slice(0, 1)
+      goalkeeper: dreamTeamPlayers.filter(p => categorizePlayer(p.position) === 'goalkeeper'),
+      defenders: dreamTeamPlayers.filter(p => categorizePlayer(p.position) === 'defenders'),
+      midfielders: dreamTeamPlayers.filter(p => categorizePlayer(p.position) === 'midfielders'),
+      forwards: dreamTeamPlayers.filter(p => categorizePlayer(p.position) === 'forwards'),
     };
 
     ctx.body = {
       success: true,
       dreamTeam,
-      totalPlayers: playersWithStats.length
+      totalPlayers: dreamTeamPlayers.length
     };
 
   } catch (error) {

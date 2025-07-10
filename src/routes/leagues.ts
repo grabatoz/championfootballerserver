@@ -10,15 +10,55 @@ import { calculateAndAwardXPAchievements } from '../utils/xpAchievementsEngine';
 
 const router = new Router({ prefix: '/leagues' });
 
-// Get all leagues for the current user
-router.get("/", required, async (ctx) => {
-  if (!ctx.session || !ctx.session.userId) {
+// Get all leagues for the current user (for /leagues/user)
+router.get('/user', required, async (ctx) => {
+  if (!ctx.state.user || !ctx.state.user.userId) {
     ctx.throw(401, "Unauthorized");
     return;
   }
 
   try {
-    const user = await User.findByPk(ctx.session.userId, {
+    const user = await User.findByPk(ctx.state.user.userId, {
+      include: [{
+        model: League,
+        as: 'leagues',
+        include: [
+          { model: User, as: 'members' },
+          { model: User, as: 'administeredLeagues' },
+          {
+            model: Match,
+            as: 'matches',
+            include: [
+              { model: User, as: 'homeTeamUsers' },
+              { model: User, as: 'awayTeamUsers' },
+              { model: User, as: 'statistics' }
+            ]
+          }
+        ]
+      }]
+    });
+
+    if (!user) {
+      ctx.throw(404, "User not found");
+      return;
+    }
+
+    ctx.body = { success: true, leagues: (user as any).leagues || [] };
+  } catch (error) {
+    console.error("Error fetching leagues for user:", error);
+    ctx.throw(500, "Failed to retrieve leagues.");
+  }
+});
+
+// Get all leagues for the current user
+router.get("/", required, async (ctx) => {
+  if (!ctx.state.user || !ctx.state.user.userId) {
+    ctx.throw(401, "Unauthorized");
+    return;
+  }
+
+  try {
+    const user = await User.findByPk(ctx.state.user.userId, {
       include: [{
         model: League,
         as: 'leagues',
@@ -52,7 +92,7 @@ router.get("/", required, async (ctx) => {
 
 // Get league details by ID
 router.get("/:id", required, async (ctx) => {
-  if (!ctx.session || !ctx.session.userId) ctx.throw(401, "Unauthorized");
+  if (!ctx.state.user || !ctx.state.user.userId) ctx.throw(401, "Unauthorized");
   
   const leagueId = ctx.params.id;
 
@@ -129,8 +169,8 @@ router.get("/:id", required, async (ctx) => {
     await calculateAndAwardXPAchievements(member.id, league.id);
   }
 
-  const isMember = (league as any).members?.some((member: any) => member.id === ctx.session!.userId);
-  const isAdmin = (league as any).administeredLeagues?.some((admin: any) => admin.id === ctx.session!.userId);
+  const isMember = (league as any).members?.some((member: any) => member.id === ctx.state.user!.userId);
+  const isAdmin = (league as any).administeredLeagues?.some((admin: any) => admin.id === ctx.state.user!.userId);
 
   if (!isMember && !isAdmin) {
     ctx.throw(403, "You don't have access to this league");
@@ -155,57 +195,53 @@ router.get("/:id", required, async (ctx) => {
 
 // Create a new league
 router.post("/", required, async (ctx) => {
-  if (!ctx.session || !ctx.session.userId) {
+  if (!ctx.state.user || !ctx.state.user.userId) {
     ctx.throw(401, "Unauthorized");
+    return;
   }
 
-  const { name } = ctx.request.body as { name: string };
-
-  if (!name || typeof name !== 'string' || name.trim() === '') {
-    ctx.throw(400, "League name is required and must be a non-empty string.");
+  const { name, maxGames, showPoints } = ctx.request.body as LeagueAttributes;
+  if (!name) {
+    ctx.throw(400, "League name is required");
   }
 
   try {
-    const league = await League.create({
-      name: name.trim(),
-      maxGames: 20,
-      inviteCode: await getInviteCode(),
-      active: true,
-      showPoints: true,
+    const newLeague = await League.create({
+      name,
+      inviteCode: getInviteCode(),
+      maxGames,
+      showPoints,
     } as any);
 
-    const user = await User.findByPk(ctx.session!.userId);
-    if (!user) {
-        ctx.throw(404, "User not found");
-        return;
-    }
-
-    await (league as any).addMember(user.id);
-    await (league as any).addAdministeredLeague(user.id);
+    const user = await User.findByPk(ctx.state.user.userId);
+    if (user) {
+      await (newLeague as any).addMember(user);
+      await (newLeague as any).addAdministeredLeague(user);
 
     const emailHtml = `
       <h1>Congratulations!</h1>
-      <p>You have successfully created the league: <strong>${league.name}</strong>.</p>
-      <p>Your invite code is: <strong>${league.inviteCode}</strong>. Share it with others to join!</p>
+        <p>You have successfully created the league: <strong>${newLeague.name}</strong>.</p>
+        <p>Your invite code is: <strong>${newLeague.inviteCode}</strong>. Share it with others to join!</p>
       <p>Happy competing!</p>
     `;
 
     await transporter.sendMail({
       to: user.email,
-      subject: `You've created a new league: ${league.name}`,
+        subject: `You've created a new league: ${newLeague.name}`,
       html: emailHtml,
     });
     console.log(`Creation email sent to ${user.email}`);
+    }
 
     ctx.status = 201; 
     ctx.body = {
       success: true,
       message: "League created successfully",
       league: {
-        id: league.id,
-        name: league.name,
-        inviteCode: league.inviteCode,
-        createdAt: league.createdAt,
+        id: newLeague.id,
+        name: newLeague.name,
+        inviteCode: newLeague.inviteCode,
+        createdAt: newLeague.createdAt,
       },
     };
   } catch (error) {
@@ -216,38 +252,41 @@ router.post("/", required, async (ctx) => {
 
 // Update a league's general settings
 router.patch("/:id", required, async (ctx) => {
-  const { name, active, maxGames, users, admins, showPoints } = ctx.request.body
-    .league as LeagueAttributes & {
-    users: string[]
-    admins: string[]
-  }
-
-  await verifyLeagueAdmin(ctx, ctx.params.id)
-
-  const league = await League.findByPk(ctx.params.id)
-  if (!league) {
-    ctx.throw(404, "League not found")
+  if (!ctx.state.user || !ctx.state.user.userId) {
+    ctx.throw(401, "Unauthorized");
     return;
   }
 
-  if (users) {
-    await (league as any).setMembers(users)
+  await verifyLeagueAdmin(ctx, ctx.params.id);
+
+  const league = await League.findByPk(ctx.params.id);
+  if (!league) {
+    ctx.throw(404, "League not found");
+    return;
   }
 
-  if (admins) {
-    await (league as any).setAdministeredLeagues(admins)
-  }
+  const { name, maxGames, showPoints, active, admins } = ctx.request.body as (LeagueAttributes & { active?: boolean, admins?: string[] });
 
   await league.update({
     name,
-    active,
     maxGames,
     showPoints,
-  })
+    active,
+  });
+
+  if (admins && admins.length > 0) {
+    const newAdmin = await User.findByPk(admins[0]);
+    if (newAdmin) {
+      await (league as any).setAdministeredLeagues([newAdmin]);
+    } else {
+      ctx.throw(404, 'Selected admin user not found.');
+      return;
+    }
+  }
 
   ctx.status = 200;
   ctx.body = { success: true, message: "League updated successfully." };
-})
+});
 
 // Delete a league
 router.del("/:id", required, async (ctx) => {
@@ -274,6 +313,8 @@ router.post("/:id/matches", required, async (ctx) => {
     homeTeamUsers,
     date,
     end: rawEnd,
+    homeCaptain, // <-- add this
+    awayCaptain  // <-- add this
   } = ctx.request.body as {
     homeTeamUsers?: string[],
     awayTeamUsers?: string[],
@@ -282,6 +323,8 @@ router.post("/:id/matches", required, async (ctx) => {
     awayTeamName: string,
     homeTeamName: string,
     location: string,
+    homeCaptain?: string, // <-- add this
+    awayCaptain?: string  // <-- add this
   };
 
   if (!homeTeamName || !awayTeamName || !date) {
@@ -314,7 +357,9 @@ router.post("/:id/matches", required, async (ctx) => {
     date: matchDate,
     start: matchDate,
     end: endDate,
-    status: 'scheduled'
+    status: 'scheduled',
+    homeCaptainId: homeCaptain || null, // <-- save captain
+    awayCaptainId: awayCaptain || null  // <-- save captain
   } as any);
   console.log('match create',match)
 
@@ -384,6 +429,8 @@ router.patch("/:leagueId/matches/:matchId", required, async (ctx) => {
     location,
     homeTeamUsers,
     awayTeamUsers,
+    homeCaptainId,
+    awayCaptainId,
   } = ctx.request.body as {
     homeTeamName: string;
     awayTeamName: string;
@@ -391,6 +438,8 @@ router.patch("/:leagueId/matches/:matchId", required, async (ctx) => {
     location: string;
     homeTeamUsers: string[];
     awayTeamUsers: string[];
+    homeCaptainId:string;
+    awayCaptainId:string;
   };
 
   const matchDate = new Date(date);
@@ -407,6 +456,8 @@ router.patch("/:leagueId/matches/:matchId", required, async (ctx) => {
     start: matchDate,
     end: matchDate,
     location,
+    homeCaptainId: ctx.request.body.homeCaptainId, // <-- add this
+    awayCaptainId: ctx.request.body.awayCaptainId, // <-- add this
   });
 
   if (homeTeamUsers) {
@@ -432,9 +483,12 @@ router.patch("/:leagueId/matches/:matchId", required, async (ctx) => {
 
 // Join a league with an invite code
 router.post("/join", required, async (ctx) => {
-  if (!ctx.session || !ctx.session.userId) ctx.throw(401, "Unauthorized");
+  if (!ctx.state.user || !ctx.state.user.userId) {
+    ctx.throw(401, "Unauthorized");
+    return;
+  }
   
-  const { inviteCode } = ctx.request.body;
+  const { inviteCode } = ctx.request.body as { inviteCode: string };
   if (!inviteCode) {
     ctx.throw(400, "Invite code is required");
   }
@@ -448,7 +502,7 @@ router.post("/join", required, async (ctx) => {
     return;
   }
 
-  const isAlreadyMember = await (league as any).hasMember(ctx.session!.userId);
+  const isAlreadyMember = await (league as any).hasMember(ctx.state.user.userId);
 
   if (isAlreadyMember) {
     ctx.body = {
@@ -458,7 +512,7 @@ router.post("/join", required, async (ctx) => {
     return;
   }
 
-  const user = await User.findByPk(ctx.session!.userId);
+  const user = await User.findByPk(ctx.state.user.userId);
   if (!user) {
     ctx.throw(404, "User not found");
     return;
@@ -492,14 +546,17 @@ router.post("/join", required, async (ctx) => {
 
 // Leave a league
 router.post("/:id/leave", required, async (ctx) => {
-  if (!ctx.session || !ctx.session.userId) ctx.throw(401, "Unauthorized");
+  if (!ctx.state.user || !ctx.state.user.userId) {
+    ctx.throw(401, "Unauthorized");
+    return;
+  }
   const league = await League.findByPk(ctx.params.id);
   if (!league) {
     ctx.throw(404, "League not found");
     return;
   }
 
-  await (league as any).removeMember(ctx.session!.userId);
+  await (league as any).removeMember(ctx.state.user.userId);
 
   ctx.response.status = 200;
 });

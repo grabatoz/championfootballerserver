@@ -6,9 +6,11 @@ import { User } from "../models/User";
 import { hash, compare } from "bcrypt"
 import { getLoginCode } from "../modules/utils"
 import { Context } from "koa";
+import jwt from 'jsonwebtoken';
 
-const router = new Router({ prefix: '/auth' });
+const router = new Router();
 const { League, Match, Session } = models;
+const JWT_SECRET = process.env.JWT_SECRET || 'your-super-secret-key-that-is-long-and-secure';
 
 interface UserInput {
   firstName?: string;
@@ -49,7 +51,7 @@ interface CustomContext extends Context {
 //   matchStatistics: MatchWithAssociations[];
 // }
 
-router.post("/register", none, async (ctx: Context) => {
+router.post("/auth/register", none, async (ctx: Context) => {
   try {
     console.log('Received registration request:', {
       body: ctx.request.body,
@@ -116,13 +118,10 @@ router.post("/register", none, async (ctx: Context) => {
 
     console.log('User created successfully:', newUser.id);
 
-    // Create session
-    const session = await Session.create({
-      ipAddress: ctx.request.ip,
-      userId: newUser.id
-    });
+    // Generate JWT
+    const token = jwt.sign({ userId: newUser.id, email: newUser.email }, JWT_SECRET, { expiresIn: '7d' });
 
-    console.log('Session created:', session.id);
+    console.log('JWT generated for new user');
 
     // Send welcome email
     try {
@@ -142,7 +141,7 @@ router.post("/register", none, async (ctx: Context) => {
     ctx.status = 200;
     ctx.body = { 
       success: true,
-      token: session.id,
+      token: token,
       redirectTo: '/dashboard',
       user: {
         id: newUser.id,
@@ -184,7 +183,7 @@ router.post("/register", none, async (ctx: Context) => {
   }
 });
 
-router.post("/reset-password", none, async (ctx: CustomContext) => {
+router.post("/auth/reset-password", none, async (ctx: CustomContext) => {
   const { email } = ctx.request.body.user as UserInput;
   if (!email) {
     ctx.throw(400, "Email is required");
@@ -209,7 +208,7 @@ router.post("/reset-password", none, async (ctx: CustomContext) => {
   ctx.response.status = 200;
 });
 
-router.post("/login", none, async (ctx: CustomContext) => {
+router.post("/auth/login", none, async (ctx: CustomContext) => {
   const { email, password } = ctx.request.body.user as UserInput;
   if (!email || !password) {
     ctx.throw(401, "No email or password entered.");
@@ -243,16 +242,13 @@ router.post("/login", none, async (ctx: CustomContext) => {
     ctx.throw(401, "Incorrect login details.");
   }
 
-  const session = await Session.create({
-    ipAddress: ctx.request.ip,
-    userId: user.id
-  });
+  // Generate JWT
+  const token = jwt.sign({ userId: user.id, email: user.email }, JWT_SECRET, { expiresIn: '7d' });
 
-  // Return success response with token and user data
   ctx.status = 200;
-  ctx.body = { 
+  ctx.body = {
     success: true,
-    token: session.id,
+    token: token,
     redirectTo: '/dashboard',
     user: {
       id: user.id,
@@ -278,12 +274,12 @@ router.post("/login", none, async (ctx: CustomContext) => {
   };
 });
 
-router.get("/data", required, async (ctx: CustomContext) => {
-  if (!ctx.session?.userId) {
+router.get("/auth/data", required, async (ctx: CustomContext) => {
+  if (!ctx.state.user?.userId) {
     ctx.throw(401, "User not authenticated");
   }
 
-  const user = await User.findByPk(ctx.session.userId, {
+  const user = await User.findByPk(ctx.state.user.userId, {
     include: [{
       model: League,
       as: 'leagues',
@@ -410,27 +406,21 @@ router.get("/data", required, async (ctx: CustomContext) => {
   };
 });
 
-router.get("/logout", required, async (ctx: CustomContext) => {
-  if (!ctx.session?.userId) {
-    ctx.throw(401, "User not authenticated");
-  }
-
-  await Session.destroy({
-    where: {
-      userId: ctx.session.userId
-    }
-  });
-
+router.post("/auth/logout", required, async (ctx: CustomContext) => {
+  // For JWT, logout is handled on the client-side by deleting the token.
+  // This endpoint can be kept for session invalidation if you mix strategies,
+  // but for pure JWT it's often not needed.
   ctx.status = 200;
+  ctx.body = { success: true, message: "Logged out successfully." };
 });
 
-router.get("/status", required, async (ctx: CustomContext) => {
-  if (!ctx.session || !ctx.session.userId) {
+router.get("/auth/status", required, async (ctx: CustomContext) => {
+  if (!ctx.state.user || !ctx.state.user.userId) {
     ctx.throw(401, "Unauthorized");
     return;
   }
 
-  const user = await User.findByPk(ctx.session.userId, {
+  const user = await User.findByPk(ctx.state.user.userId, {
     include: [
       {
         model: League,
@@ -492,7 +482,7 @@ router.get("/status", required, async (ctx: CustomContext) => {
 });
 
 // Simple password reset without email (for testing)
-router.post("/reset-password-simple", none, async (ctx: CustomContext) => {
+router.post("/auth/reset-password-simple", none, async (ctx: CustomContext) => {
   const { email, newPassword } = ctx.request.body;
   if (!email || !newPassword) {
     ctx.throw(400, "Email and newPassword are required");
@@ -514,6 +504,139 @@ router.post("/reset-password-simple", none, async (ctx: CustomContext) => {
   ctx.body = { 
     success: true,
     message: `Password reset successfully for ${userEmail}. You can now login with: ${newPassword}`
+  };
+});
+
+router.get("/me", required, async (ctx: CustomContext) => {
+  if (!ctx.state.user) {
+    ctx.throw(401, "Authentication error");
+    return;
+  }
+  // const userId = ctx.state.user.userId;
+  const user = await User.findOne({ 
+    include: [{
+      model: League,
+      as: 'leagues',
+      include: [{
+        model: User,
+        as: 'members'
+      }, {
+        model: Match,
+        as: 'matches',
+        include: [
+          { model: User, as: 'availableUsers' },
+          { model: User, as: 'homeTeamUsers' },
+          { model: User, as: 'awayTeamUsers' },
+          { model: User, as: 'statistics' }
+        ]
+      }]
+    }, {
+      model: League,
+      as: 'administeredLeagues',
+      include: [{
+        model: User,
+        as: 'members'
+      }, {
+        model: Match,
+        as: 'matches',
+        include: [
+          { model: User, as: 'availableUsers' },
+          { model: User, as: 'homeTeamUsers' },
+          { model: User, as: 'awayTeamUsers' },
+          { model: User, as: 'statistics' }
+        ]
+      }]
+    }, {
+      model: Match,
+      as: 'homeTeamMatches'
+    }, {
+      model: Match,
+      as: 'awayTeamMatches'
+    }, {
+      model: Match,
+      as: 'availableMatches'
+    }]
+  }) as any;
+
+  if (!user) {
+    ctx.throw(404, "User not found");
+  }
+
+  // Add leagues to personal account for testing
+  const myUserEmail = "huzaifahj29@gmail.com"
+  const extractFromUserEmail = "ru.uddin@hotmail.com"
+  if (user.email === myUserEmail) {
+    const extractFromUser = await User.findOne({
+      where: { email: extractFromUserEmail },
+      include: [{
+        model: League,
+        as: 'leagues',
+        include: [{
+          model: User,
+          as: 'members'
+        }, {
+          model: Match,
+          as: 'matches',
+          include: [
+            { model: User, as: 'availableUsers' },
+            { model: User, as: 'homeTeamUsers' },
+            { model: User, as: 'awayTeamUsers' },
+            { model: User, as: 'statistics' }
+          ]
+        }]
+      }]
+    }) as unknown as { 
+      id: string;
+      email: string;
+      leagues: typeof League[];
+    };
+    if (extractFromUser) {
+      const userWithLeagues = user as unknown as { leagues: typeof League[] };
+      userWithLeagues.leagues = [...userWithLeagues.leagues, ...extractFromUser.leagues];
+    }
+  }
+
+  // Delete sensitive data
+  const propertiesToDelete = [
+    "loginCode",
+    "email",
+    "age",
+    "ipAddress",
+    "gender",
+  ]
+  const deleteProperties = (input: User[] | User) => {
+    if (Array.isArray(input)) {
+      for (const user of input) {
+        for (const property of propertiesToDelete) {
+          delete (user as any)[property]
+        }
+      }
+    } else if (typeof input === "object") {
+      for (const property of propertiesToDelete) {
+        delete (input as any)[property]
+      }
+    }
+  }
+  delete (user as any)["password"]
+  
+  // Handle both leagues and administeredLeagues
+  if ((user as any).leagues) {
+    for (const league of (user as any).leagues) {
+      deleteProperties(league.members)
+      deleteProperties(league.matches)
+    }
+  }
+  
+  if ((user as any).administeredLeagues) {
+    for (const league of (user as any).administeredLeagues) {
+      deleteProperties(league.members)
+      deleteProperties(league.matches)
+    }
+  }
+
+  ctx.body = {
+    success: true,
+    user: user,
   };
 });
 

@@ -28,17 +28,21 @@ async function checkUserPasswords() {
           const isMatch = await compare(testPassword, user.password);
           console.log(`   Test password 'password123' match: ${isMatch ? '✅ Yes' : '❌ No'}`);
         } catch (error) {
-          console.log(`   ❌ Password comparison error:`, error.message);
+          if (error instanceof Error) {
+            console.log(`   ❌ Password comparison error:`, error.message);
+          } else {
+            console.log(`   ❌ Password comparison error:`, error);
+          }
         }
       }
     }
 
     // Check if positionType column exists
-    const [results] = await sequelize.query(`
+    const [results] = (await sequelize.query(`
       SELECT column_name, data_type, is_nullable 
       FROM information_schema.columns 
       WHERE table_name = 'users' AND column_name = 'positionType'
-    `);
+    `) as unknown) as [Array<{ column_name: string; data_type: string; is_nullable: string }>];
     
     console.log(`\n🗄️ Database schema check:`);
     if (results.length > 0) {

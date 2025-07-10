@@ -12,6 +12,8 @@ interface MatchStatisticsAttributes {
   freeKicks: number;
   yellowCards: number;
   redCards: number;
+  defence: number;
+  impact: number;
   minutesPlayed: number;
   rating: number;
   type?: string;
@@ -33,6 +35,8 @@ class MatchStatistics extends Model<MatchStatisticsAttributes, MatchStatisticsCr
   public freeKicks!: number;
   public yellowCards!: number;
   public redCards!: number;
+  public defence!: number;
+  public impact!: number;
   public minutesPlayed!: number;
   public rating!: number;
   public type!: string;
@@ -105,6 +109,14 @@ MatchStatistics.init(
       defaultValue: 0,
     },
     redCards: {
+      type: DataTypes.INTEGER,
+      defaultValue: 0,
+    },
+    impact: {
+      type: DataTypes.INTEGER,
+      defaultValue: 0,
+    },
+    defence: {
       type: DataTypes.INTEGER,
       defaultValue: 0,
     },

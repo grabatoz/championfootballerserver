@@ -11,11 +11,11 @@ const router = new Router({ prefix: '/profile' });
 
 // Get user profile with all associations
 router.get('/', required, async (ctx: CustomContext) => {
-  if (!ctx.session?.userId) {
+  if (!ctx.state.user?.userId) {
     ctx.throw(401, "User not authenticated");
   }
-  console.log('Profile GET: userId', ctx.session.userId);
-  const user = await User.findByPk(ctx.session.userId, {
+  console.log('Profile GET: userId', ctx.state.user.userId);
+  const user = await User.findByPk(ctx.state.user.userId, {
     include: [{
       model: User,
       as: 'joinedLeagues',
@@ -82,13 +82,13 @@ router.get('/', required, async (ctx: CustomContext) => {
 
 // Update user profile
 router.put('/', required, async (ctx: CustomContext) => {
-  if (!ctx.session?.userId) {
+  if (!ctx.state.user?.userId) {
     ctx.throw(401, "User not authenticated");
   }
-  console.log('Profile PUT: userId', ctx.session.userId, 'update data', ctx.request.body);
+  console.log('Profile PUT: userId', ctx.state.user.userId, 'update data', ctx.request.body);
   const { firstName, lastName, email, age, gender, position, positionType, style, preferredFoot, shirtNumber, skills, password } = ctx.request.body;
   console.log('Extracted positionType:', positionType);
-  const user = await User.findByPk(ctx.session.userId);
+  const user = await User.findByPk(ctx.state.user.userId);
   console.log('Profile PUT: found user', user ? user.id : null);
   if (!user) {
     ctx.throw(404, "User not found");
@@ -164,11 +164,11 @@ router.put('/', required, async (ctx: CustomContext) => {
 
 // Get user statistics
 router.get('/statistics', required, async (ctx: CustomContext) => {
-  if (!ctx.session?.userId) {
+  if (!ctx.state.user?.userId) {
     ctx.throw(401, "User not authenticated");
   }
 
-  const user = await User.findByPk(ctx.session.userId, {
+  const user = await User.findByPk(ctx.state.user.userId, {
     include: [{
       model: User,
       as: 'homeTeamMatches'
@@ -202,11 +202,11 @@ router.get('/statistics', required, async (ctx: CustomContext) => {
 
 // Get user's league history
 router.get('/leagues', required, async (ctx: CustomContext) => {
-  if (!ctx.session?.userId) {
+  if (!ctx.state.user?.userId) {
     ctx.throw(401, "User not authenticated");
   }
 
-  const user = await User.findByPk(ctx.session.userId, {
+  const user = await User.findByPk(ctx.state.user.userId, {
     include: [{
       model: User,
       as: 'joinedLeagues',
@@ -240,11 +240,11 @@ router.get('/leagues', required, async (ctx: CustomContext) => {
 
 // Get user's match history
 router.get('/matches', required, async (ctx: CustomContext) => {
-  if (!ctx.session?.userId) {
+  if (!ctx.state.user?.userId) {
     ctx.throw(401, "User not authenticated");
   }
 
-  const user = await User.findByPk(ctx.session.userId, {
+  const user = await User.findByPk(ctx.state.user.userId, {
     include: [{
       model: User,
       as: 'homeTeamMatches'
@@ -275,12 +275,12 @@ router.get('/matches', required, async (ctx: CustomContext) => {
 
 // Delete user profile
 router.delete('/', required, async (ctx: CustomContext) => {
-  if (!ctx.session?.userId) {
+  if (!ctx.state.user?.userId) {
     ctx.throw(401, "User not authenticated");
   }
   // Delete all sessions for this user before deleting the user
-  await Session.destroy({ where: { userId: ctx.session.userId } });
-  const user = await User.findByPk(ctx.session.userId);
+  await Session.destroy({ where: { userId: ctx.state.user.userId } });
+  const user = await User.findByPk(ctx.state.user.userId);
   if (!user) {
     ctx.throw(404, "User not found");
   }
@@ -290,9 +290,14 @@ router.delete('/', required, async (ctx: CustomContext) => {
 
 // Add after other routes, before export default router
 router.post('/picture', required, upload.single('profilePicture'), async (ctx: CustomContext) => {
-  if (!ctx.session?.userId) ctx.throw(401, "User not authenticated");
-  const user = await User.findByPk(ctx.session.userId);
-  if (!user) ctx.throw(404, "User not found");
+  if (!ctx.state.user?.userId) {
+    ctx.throw(401, 'User not authenticated');
+  }
+
+  const user = await User.findByPk(ctx.state.user.userId);
+  if (!user) {
+    ctx.throw(404, 'User not found');
+  }
 
   // Save file path to user
   user.profilePicture = `/uploads/${ctx.file.filename}`;

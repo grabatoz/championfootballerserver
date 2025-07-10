@@ -9,8 +9,12 @@ const { Match, Vote, User } = models;
 const router = new Router({ prefix: '/matches' });
 
 router.post('/:id/votes', required, async (ctx) => {
+    if (!ctx.state.user?.userId) {
+        ctx.throw(401, 'Unauthorized');
+        return;
+    }
     const matchId = ctx.params.id;
-    const voterId = ctx.session!.userId;
+    const voterId = ctx.state.user.userId;
     const { votedForId } = ctx.request.body as { votedForId: string };
 
     if (voterId === votedForId) {
@@ -37,7 +41,7 @@ router.post('/:id/votes', required, async (ctx) => {
 });
 
 router.post('/:matchId/availability', required, async (ctx) => {
-    if (!ctx.session) {
+    if (!ctx.state.user?.userId) {
         ctx.throw(401, 'Unauthorized');
         return;
     }
@@ -51,7 +55,7 @@ router.post('/:matchId/availability', required, async (ctx) => {
         ctx.throw(404, 'Match not found');
         return;
     }
-    const user = await User.findByPk(ctx.session.userId);
+    const user = await User.findByPk(ctx.state.user.userId);
     if (!user) {
         ctx.throw(404, 'User not found');
         return;
@@ -102,18 +106,20 @@ router.patch('/:matchId/note', required, async (ctx) => {
 });
 
 router.post('/:matchId/stats', required, async (ctx) => {
-    if (!ctx.session) {
+    if (!ctx.state.user?.userId) {
         ctx.throw(401, 'Unauthorized');
         return;
     }
     const { matchId } = ctx.params;
-    const userId = ctx.session!.userId;
-    const { goals, assists, cleanSheets, penalties, freeKicks } = ctx.request.body as {
+    const userId = ctx.state.user.userId;
+    const { goals, assists, cleanSheets, penalties, freeKicks, defence, impact } = ctx.request.body as {
         goals: number;
         assists: number;
         cleanSheets: number;
         penalties: number;
         freeKicks: number;
+        defence: number;
+        impact: number;
     };
 
     const match = await Match.findByPk(matchId);
@@ -137,6 +143,8 @@ router.post('/:matchId/stats', required, async (ctx) => {
             cleanSheets,
             penalties,
             freeKicks,
+            defence,
+            impact,
             yellowCards: 0,
             redCards: 0,
             minutesPlayed: 0,
@@ -151,6 +159,8 @@ router.post('/:matchId/stats', required, async (ctx) => {
         stats.cleanSheets = cleanSheets;
         stats.penalties = penalties;
         stats.freeKicks = freeKicks;
+        stats.defence = defence;
+        stats.impact = impact;
         await stats.save();
     }
 
@@ -160,8 +170,12 @@ router.post('/:matchId/stats', required, async (ctx) => {
 
 // GET route to fetch votes for each player in a match
 router.get('/:id/votes', required, async (ctx) => {
+  if (!ctx.state.user?.userId) {
+    ctx.throw(401, 'Unauthorized');
+    return;
+  }
   const matchId = ctx.params.id;
-  const userId = ctx.session!.userId;
+  const userId = ctx.state.user.userId;
   const votes = await Vote.findAll({
     where: { matchId },
     attributes: ['votedForId', 'voterId'],
@@ -212,6 +226,46 @@ router.patch('/:matchId/complete', required, async (ctx) => {
 
   ctx.status = 200;
   ctx.body = { success: true, message: 'Match completed and XP calculated' };
+});
+
+// GET /matches/:matchId - fetch a match by ID with teams and users and match-specific stats
+router.get('/:matchId', async (ctx) => {
+    const { matchId } = ctx.params;
+    const match = await Match.findByPk(matchId, {
+        include: [
+            {
+                model: User,
+                as: 'homeTeamUsers',
+                include: [
+                    {
+                        model: models.MatchStatistics,
+                        as: 'statistics',
+                        where: { match_id: matchId },
+                        required: false
+                    }
+                ]
+            },
+            {
+                model: User,
+                as: 'awayTeamUsers',
+                include: [
+                    {
+                        model: models.MatchStatistics,
+                        as: 'statistics',
+                        where: { match_id: matchId },
+                        required: false
+                    }
+                ]
+            },
+            { model: User, as: 'availableUsers' }
+        ]
+    });
+    if (!match) {
+        ctx.status = 404;
+        ctx.body = { success: false, message: 'Match not found' };
+        return;
+    }
+    ctx.body = { success: true, match };
 });
 
 export default router;
