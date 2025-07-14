@@ -56,6 +56,6 @@
     "@types/sequelize": "^4.28.15",
     "@types/streamifier": "^0.1.2",
     "ts-node-dev": "^2.0.0",
-    "typescript": "^5.0.4"
+    "typescript": "^5.8.3"
   }
 }
