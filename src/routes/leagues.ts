@@ -173,7 +173,29 @@ router.get("/:id", required, async (ctx) => {
   const isAdmin = (league as any).administeredLeagues?.some((admin: any) => admin.id === ctx.state.user!.userId);
 
   if (!isMember && !isAdmin) {
-    ctx.throw(403, "You don't have access to this league");
+    // New logic: allow if user has ever shared any league with any member
+    // 1. Get all league IDs for the current user
+    const userWithLeagues = await User.findByPk(ctx.state.user!.userId, {
+      include: [{ model: League, as: 'leagues', attributes: ['id'] }]
+    });
+    const userLeagueIds = (userWithLeagues as any)?.leagues?.map((l: any) => l.id) || [];
+    // 2. For each member of this league, check if there is any overlap
+    const memberIds = (league as any).members?.map((m: any) => m.id) || [];
+    let hasCommonLeague = false;
+    for (const memberId of memberIds) {
+      if (memberId === ctx.state.user!.userId) continue;
+      const memberWithLeagues = await User.findByPk(memberId, {
+        include: [{ model: League, as: 'leagues', attributes: ['id'] }]
+      });
+      const memberLeagueIds = (memberWithLeagues as any)?.leagues?.map((l: any) => l.id) || [];
+      if (userLeagueIds.some((id: any) => memberLeagueIds.includes(id))) {
+        hasCommonLeague = true;
+        break;
+      }
+    }
+    if (!hasCommonLeague) {
+      ctx.throw(403, "You don't have access to this league");
+    }
   }
 
   ctx.body = { 

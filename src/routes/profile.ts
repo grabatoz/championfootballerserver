@@ -2,7 +2,7 @@ import Router from '@koa/router';
 import { required } from '../modules/auth';
 import { CustomContext } from '../types';
 import models from '../models';
-import { upload } from '../middleware/upload';
+import { upload, uploadToCloudinary } from '../middleware/upload';
 import { hash } from 'bcrypt';
 import jwt from 'jsonwebtoken';
 const { User, Session } = models;
@@ -299,8 +299,12 @@ router.post('/picture', required, upload.single('profilePicture'), async (ctx: C
     ctx.throw(404, 'User not found');
   }
 
-  // Save file path to user
-  user.profilePicture = `/uploads/${ctx.file.filename}`;
+  // Upload to Cloudinary and save URL
+  if (!ctx.file) {
+    ctx.throw(400, 'No file uploaded');
+  }
+  const imageUrl = await uploadToCloudinary(ctx.file.buffer, 'profile-pictures');
+  user.profilePicture = imageUrl;
   await user.save();
 
   ctx.body = { success: true, user };

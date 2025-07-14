@@ -1,10 +1,10 @@
-import { xpAchievements } from '../../../src/types/xpAchievements';
 import MatchStatistics from '../models/MatchStatistics';
 import Match from '../models/Match';
 import Vote from '../models/Vote';
 import { Op } from 'sequelize';
 import User from '../models/User';
 import League from '../models/League';
+import { xpAchievements } from './xpAchievements';
 
 // Helper: Get all matches for a user in a league
 async function getUserLeagueMatches(userId: string, leagueId: string) {

@@ -79,7 +79,7 @@ router.get('/:id/stats', required, async (ctx) => {
         const { leagueId, year } = ctx.query as { leagueId?: string, year?: string };
 
         const player = await UserModel.findByPk(playerId, {
-            attributes: ['id', 'firstName', 'lastName', 'profilePicture', 'xp', 'position']
+            attributes: ['id', 'firstName', 'lastName', 'profilePicture', 'xp', 'position', 'age', 'style', 'positionType', 'preferredFoot', 'shirtNumber']
         });
 
         if (!player) {
@@ -87,29 +87,61 @@ router.get('/:id/stats', required, async (ctx) => {
             return;
         }
         
-        // Find all matches the user has played in by checking team associations
-        const userWithMatches = await UserModel.findByPk(playerId, {
+        // Find ALL leagues where the player has EVER been a member (historical join)
+        // Use Sequelize association instead of LeagueMember join table
+        const playerWithLeagues = await UserModel.findByPk(playerId, {
             include: [
-                { model: LeagueModel, as: 'leagues', include: [{ model: MatchModel, as: 'matches', where: { status: 'completed' }, required: false, include: [{ model: UserModel, as: 'homeTeamUsers'}, { model: UserModel, as: 'awayTeamUsers' }] }] }
+                {
+                    model: LeagueModel,
+                    as: 'leagues', // Make sure this matches your association alias
+                    include: [
+                        {
+                            model: UserModel,
+                            as: 'members',
+                            attributes: ['id', 'firstName', 'lastName', 'position', 'positionType']
+                        },
+                        {
+                            model: MatchModel,
+                            as: 'matches',
+                            required: false,
+                            include: [
+                                { model: UserModel, as: 'homeTeamUsers' },
+                                { model: UserModel, as: 'awayTeamUsers' }
+                            ]
+                        }
+                    ]
+                }
             ]
         });
+        const allLeagues = (playerWithLeagues as any)?.leagues || [];
+        const playerLeagues = allLeagues;
 
-        const allLeagues = (userWithMatches as any)?.leagues || [];
-        if (allLeagues.length === 0) {
-            // Return empty stats if player has no leagues
-            const emptyStats = { Goals: 0, Assist: 0, 'Clean Sheet': 0, 'MOTM Votes': 0, 'Best Win': 0, 'Total Wins': 0, 'xWin %': 0 };
-            ctx.body = {
-                success: true,
-                data: {
-                    player: { name: `${player.firstName} ${player.lastName}`, position: player.position || 'N/A', rating: player.xp || 0, avatar: player.profilePicture },
-                    leagues: [], years: [], currentStats: emptyStats, accumulativeStats: emptyStats, trophies: {},
-                }
-            };
-            return;
-        }
+        // --- Filter matches by year and player participation for stats, but not for league list ---
+        const selectedYear = year && year !== 'all' ? Number(year) : null;
+        const filteredLeagues = selectedYear
+          ? playerLeagues.filter((league: any) =>
+              (league.matches || []).some((match: any) =>
+                new Date(match.date).getFullYear() === selectedYear &&
+                (
+                  (match.homeTeamUsers && match.homeTeamUsers.some((u: any) => String(u.id) === String(playerId))) ||
+                  (match.awayTeamUsers && match.awayTeamUsers.some((u: any) => String(u.id) === String(playerId)))
+                )
+              )
+            )
+          : playerLeagues;
 
-        const allMatches = allLeagues.flatMap((l: any) => l.matches);
-        const allMatchIds = allMatches.map((m: any) => m.id);
+        // Filter matches: only those in the selected year where player played
+        const allMatches = filteredLeagues.flatMap((l: any) =>
+          (l.matches || []).filter((match: any) =>
+            (!selectedYear || new Date(match.date).getFullYear() === selectedYear) &&
+            (
+              (match.homeTeamUsers && match.homeTeamUsers.some((u: any) => String(u.id) === String(playerId))) ||
+              (match.awayTeamUsers && match.awayTeamUsers.some((u: any) => String(u.id) === String(playerId)))
+            )
+          )
+        );
+
+        // const allMatchIds = allMatches.map((m: any) => m.id);
 
         const getYearsFromMatches = (matches: any[]) => {
             return [...new Set(matches.map(m => new Date(m.date).getFullYear()))].sort((a, b) => b - a);
@@ -168,12 +200,21 @@ router.get('/:id/stats', required, async (ctx) => {
         const accumulativeStats = await buildStats(allMatches);
         
         // --- Calculate Accumulative Trophies ---
-        let titles = 0, runnerUps = 0, ballonDors = 0, goats = 0, goldenBoots = 0, kingPlaymakers = 0, legendaryShields = 0, darkHorses = 0;
+        const trophyMap: Record<string, { leagueId: string, leagueName: string }[]> = {
+          'Champion Footballer': [],
+          'Runner Up': [],
+          "Ballon d'Or": [],
+          'GOAT': [],
+          'Golden Boot': [],
+          'King Playmaker': [],
+          'Legendary Shield': [],
+          'The Dark Horse': []
+        };
 
-        for (const league of allLeagues) {
+        for (const league of filteredLeagues) {
             // if ((league.matches || []).length < league.maxGames) continue; // Skip incomplete leagues
 
-            const leaguePlayerIds = (league.members || []).map((m: any) => m.id);
+            const leaguePlayerIds = ((league as any).members || []).map((m: any) => m.id);
             if(leaguePlayerIds.length === 0) continue;
 
             const playerStats: Record<string, { wins: number; losses: number; draws: number; played: number; goals: number; assists: number; motmVotes: number; teamGoalsConceded: number; }> = {};
@@ -227,21 +268,20 @@ router.get('/:id/stats', required, async (ctx) => {
             }
 
             const sortedLeagueTable = [...leaguePlayerIds].sort((a, b) => (playerStats[b].wins * 3 + playerStats[b].draws) - (playerStats[a].wins * 3 + playerStats[a].draws));
-            
-            if (sortedLeagueTable[0] === playerId) titles++;
-            if (sortedLeagueTable[1] === playerId) runnerUps++;
-            if ([...leaguePlayerIds].sort((a, b) => playerStats[b].motmVotes - playerStats[a].motmVotes)[0] === playerId) ballonDors++;
-            if ([...leaguePlayerIds].sort((a, b) => ((playerStats[b].wins / playerStats[b].played) || 0) - ((playerStats[a].wins / playerStats[a].played) || 0) || playerStats[b].motmVotes - playerStats[a].motmVotes)[0] === playerId) goats++;
-            if ([...leaguePlayerIds].sort((a, b) => playerStats[b].goals - playerStats[a].goals)[0] === playerId) goldenBoots++;
-            if ([...leaguePlayerIds].sort((a, b) => playerStats[b].assists - playerStats[a].assists)[0] === playerId) kingPlaymakers++;
+            if (sortedLeagueTable[0] === playerId) trophyMap['Champion Footballer'].push({ leagueId: league.id, leagueName: league.name });
+            if (sortedLeagueTable[1] === playerId) trophyMap['Runner Up'].push({ leagueId: league.id, leagueName: league.name });
+            if ([...leaguePlayerIds].sort((a, b) => playerStats[b].motmVotes - playerStats[a].motmVotes)[0] === playerId) trophyMap["Ballon d'Or"].push({ leagueId: league.id, leagueName: league.name });
+            if ([...leaguePlayerIds].sort((a, b) => ((playerStats[b].wins / playerStats[b].played) || 0) - ((playerStats[a].wins / playerStats[a].played) || 0) || playerStats[b].motmVotes - playerStats[a].motmVotes)[0] === playerId) trophyMap['GOAT'].push({ leagueId: league.id, leagueName: league.name });
+            if ([...leaguePlayerIds].sort((a, b) => playerStats[b].goals - playerStats[a].goals)[0] === playerId) trophyMap['Golden Boot'].push({ leagueId: league.id, leagueName: league.name });
+            if ([...leaguePlayerIds].sort((a, b) => playerStats[b].assists - playerStats[a].assists)[0] === playerId) trophyMap['King Playmaker'].push({ leagueId: league.id, leagueName: league.name });
 
-            const defensivePlayerIds = (league.members || []).filter((p: any) => p.position === 'Defender' || p.position === 'Goalkeeper').map((p: any) => p.id);
+            const defensivePlayerIds = ((league as any).members || []).filter((p: any) => p.position === 'Defender' || p.position === 'Goalkeeper').map((p: any) => p.id);
             if (defensivePlayerIds.length > 0 && defensivePlayerIds.sort((a: string, b: string) => ((playerStats[a].teamGoalsConceded / playerStats[a].played) || Infinity) - ((playerStats[b].teamGoalsConceded / playerStats[b].played) || Infinity))[0] === playerId) {
-                legendaryShields++;
+                trophyMap['Legendary Shield'].push({ leagueId: league.id, leagueName: league.name });
             }
 
             if (sortedLeagueTable.length > 3 && sortedLeagueTable.slice(3).sort((a, b) => playerStats[b].motmVotes - playerStats[a].motmVotes)[0] === playerId) {
-                darkHorses++;
+                trophyMap['The Dark Horse'].push({ leagueId: league.id, leagueName: league.name });
             }
         }
 
@@ -255,21 +295,107 @@ router.get('/:id/stats', required, async (ctx) => {
         }
         const currentStats = await buildStats(filteredMatches);
         
+        // Build leagues array with matches for this player in this year
+        const playerLeaguesWithMatches = await Promise.all(playerLeagues.map(async (league: any) => {
+          // For each league, filter matches by year if requested
+          let filteredMatches = league.matches || [];
+          if (selectedYear) {
+            filteredMatches = filteredMatches.filter((match: any) => new Date(match.date).getFullYear() === selectedYear);
+          }
+          // Get player stats for each match
+          const matchesWithStats = await Promise.all(filteredMatches.map(async (match: any) => {
+            const playerStats = await MatchStatistics.findOne({
+              where: { 
+                user_id: playerId, 
+                match_id: match.id 
+              },
+              attributes: ['goals', 'assists', 'clean_sheets']
+            });
+            const motmVotes = await Vote.count({
+              where: { 
+                votedForId: playerId, 
+                matchId: match.id 
+              }
+            });
+            return {
+              ...match.toJSON(),
+              playerStats: playerStats ? {
+                goals: playerStats.goals || 0,
+                assists: playerStats.assists || 0,
+                cleanSheets: playerStats.cleanSheets || 0,
+                motmVotes: motmVotes
+              } : null
+            };
+          }));
+          return {
+            id: league.id,
+            name: league.name,
+            matches: matchesWithStats,
+            members: (league as any).members || [],
+          };
+        }));
+
         ctx.body = {
             success: true,
             data: {
-                player: { name: `${player.firstName} ${player.lastName}`, position: player.position || 'N/A', rating: player.xp || 0, avatar: player.profilePicture },
-                leagues: allLeagues.map((l: any) => ({ id: l.id, name: l.name })),
+                player: {
+                    id: player.id,
+                    name: `${player.firstName} ${player.lastName}`,
+                    position: player.position || 'N/A',
+                    rating: player.xp || 0,
+                    avatar: player.profilePicture,
+                    age: player.age || null,
+                    style: player.style || null,
+                    positionType: player.positionType || null,
+                    preferredFoot: player.preferredFoot || null,
+                    shirtNo: player.shirtNumber ? String(player.shirtNumber) : '-',
+                },
+                leagues: playerLeaguesWithMatches, // <-- always all leagues ever joined
                 years: getYearsFromMatches(allMatches),
                 currentStats,
                 accumulativeStats,
-                trophies: { 'Titles': titles, 'Runner Up': runnerUps, "Ballon d'Or": ballonDors, 'GOAT': goats, 'Golden Boot': goldenBoots, 'King Playmaker': kingPlaymakers, 'Legendary Shield': legendaryShields, 'The Dark Horse': darkHorses }
+                trophies: trophyMap // <-- now includes league info for each trophy
             }
         };
     } catch (error) {
         console.error('Error fetching player stats:', error);
         ctx.throw(500, 'Failed to fetch player stats.');
     }
+});
+
+// GET /api/player/:playerId/leagues-matches?year=2025
+router.get('/:playerId/leagues-matches', async (ctx) => {
+  try {
+    const { playerId } = ctx.params;
+    const { year } = ctx.query;
+
+    if (!year) {
+      ctx.status = 400;
+      ctx.body = { error: 'Year is required' };
+      return;
+    }
+
+    const leagues = await LeagueModel.findAll({ include: [{ model: MatchModel, as: 'matches' }] });
+
+    const filteredLeagues = leagues
+      .map((league: any) => {
+        const matches = (league.matches || []).filter((match: any) =>
+          new Date(match.date).getFullYear() === Number(year) &&
+          (
+            (match.homeTeamUsers && match.homeTeamUsers.some((u: any) => String(u.id) === String(playerId))) ||
+            (match.awayTeamUsers && match.awayTeamUsers.some((u: any) => String(u.id) === String(playerId)))
+          )
+        );
+        return matches.length > 0 ? { ...league.toJSON(), matches } : null;
+      })
+      .filter(Boolean);
+
+    ctx.body = filteredLeagues;
+  } catch (err) {
+    console.error(err);
+    ctx.status = 500;
+    ctx.body = { error: 'Server error' };
+  }
 });
 
 export default router; 

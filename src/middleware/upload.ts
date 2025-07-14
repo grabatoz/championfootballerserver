@@ -1,31 +1,19 @@
 import multer from '@koa/multer';
-import path from 'path';
+import { v2 as cloudinary } from 'cloudinary';
+import streamifier from 'streamifier';
 import { ApiError } from '../utils/error';
-interface MulterFile {
-  fieldname: string;
-  originalname: string;
-  encoding: string;
-  mimetype: string;
-  size: number;
-  destination: string;
-  filename: string;
-  path: string;
-  buffer: Buffer;
-}
-// Configure storage
-const storage = multer.diskStorage({
-  destination: (req: any, file: MulterFile, cb: (error: Error | null, destination: string) => void) => {
-    // ✅ Always use absolute path
-    cb(null, path.resolve(process.cwd(), 'uploads/'));
-  },
-  filename: (req: any, file: MulterFile, cb: (error: Error | null, filename: string) => void) => {
-    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
-    cb(null, file.fieldname + '-' + uniqueSuffix + path.extname(file.originalname));
-  }
+
+// Configure Cloudinary
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME!,
+  api_key: process.env.CLOUDINARY_API_KEY!,
+  api_secret: process.env.CLOUDINARY_API_SECRET!,
 });
 
-// File filter
-const fileFilter = (req: any, file: any, cb: any) => {
+// Use memory storage for multer
+const storage = multer.memoryStorage();
+
+const fileFilter = (req: any, file: Express.Multer.File, cb: any) => {
   if (file.mimetype.startsWith('image/')) {
     cb(null, true);
   } else {
@@ -33,7 +21,6 @@ const fileFilter = (req: any, file: any, cb: any) => {
   }
 };
 
-// Export multer instance
 export const upload = multer({
   storage: storage,
   fileFilter: fileFilter,
@@ -41,3 +28,17 @@ export const upload = multer({
     fileSize: 5 * 1024 * 1024 // 5MB max
   }
 });
+
+// Helper to upload buffer to Cloudinary
+export const uploadToCloudinary = (fileBuffer: Buffer, folder = 'uploads'): Promise<string> => {
+  return new Promise((resolve, reject) => {
+    const uploadStream = cloudinary.uploader.upload_stream(
+      { folder },
+      (error, result) => {
+        if (error) return reject(error);
+        resolve(result?.secure_url || '');
+      }
+    );
+    streamifier.createReadStream(fileBuffer).pipe(uploadStream);
+  });
+};
