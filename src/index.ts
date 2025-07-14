@@ -7,6 +7,8 @@ import cors from "@koa/cors"
 import serve from 'koa-static';
 import path from 'path';
 import mount from 'koa-mount';
+import { triggerImmediateXPCalculation } from './utils/xpAchievementsEngine';
+
 // Dependencies: extra
 
 // CORS configuration
@@ -20,6 +22,16 @@ app.use(cors({
   keepHeadersOnError: true
 }));
 
+
+// Manual XP calculation endpoint
+app.use(async (ctx: Koa.Context, next: Koa.Next) => {
+  if (ctx.path === '/api/trigger-xp-calculation' && ctx.method === 'POST') {
+    await triggerImmediateXPCalculation();
+    ctx.body = { success: true, message: 'XP calculation triggered' };
+    return;
+  }
+  await next();
+});
 // Body parser - using koaBody for better multipart support
 app.use(async (ctx, next) => {
   // Skip koaBody for file upload route
