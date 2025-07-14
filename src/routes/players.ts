@@ -3,7 +3,7 @@ import { required } from '../modules/auth';
 import models from '../models';
 import { Op } from 'sequelize';
 import sequelize from '../config/database';
-import { League } from '../../../src/types/user';
+import { League } from '../types/user';
 
 const { User: UserModel, Match: MatchModel, MatchStatistics, League: LeagueModel, Vote } = models;
 
