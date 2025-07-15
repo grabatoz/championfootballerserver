@@ -280,7 +280,7 @@ router.patch("/:id/status", required, async (ctx) => {
   const { active } = ctx.request.body as { active: boolean };
 
   // Verify user is an admin of the league
-  await verifyLeagueAdmin(ctx.state.user.userId, leagueId);
+  await verifyLeagueAdmin(ctx, leagueId);
 
   const league = await League.findByPk(leagueId, {
     include: [{ model: User, as: 'members' }]
