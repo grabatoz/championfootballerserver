@@ -164,10 +164,7 @@ router.get("/:id", required, async (ctx) => {
     return;
   }
 
-  // Award XP to all members for this league
-  for (const member of (league as any).members || []) {
-    await calculateAndAwardXPAchievements(member.id, league.id);
-  }
+  // (XP calculation removed from here)
 
   const isMember = (league as any).members?.some((member: any) => member.id === ctx.state.user!.userId);
   const isAdmin = (league as any).administeredLeagues?.some((admin: any) => admin.id === ctx.state.user!.userId);
@@ -270,6 +267,47 @@ router.post("/", required, async (ctx) => {
     console.error("Error creating league:", error);
     ctx.throw(500, "Something went wrong. Please contact support.");
   }
+});
+
+// New endpoint to update league status
+router.patch("/:id/status", required, async (ctx) => {
+  if (!ctx.state.user || !ctx.state.user.userId) {
+    ctx.throw(401, "Unauthorized");
+    return;
+  }
+
+  const leagueId = ctx.params.id;
+  const { active } = ctx.request.body as { active: boolean };
+
+  // Verify user is an admin of the league
+  await verifyLeagueAdmin(ctx.state.user.userId, leagueId);
+
+  const league = await League.findByPk(leagueId, {
+    include: [{ model: User, as: 'members' }]
+  });
+
+  if (!league) {
+    ctx.throw(404, "League not found");
+    return;
+  }
+
+  // Update the league status
+  league.active = active;
+  await league.save();
+
+  // If the league is being made inactive, run final XP calculation for all members
+  if (active === false) {
+    console.log(`League ${league.name} (${league.id}) is ending. Running final XP calculation.`);
+    for (const member of (league as any).members || []) {
+      try {
+        await calculateAndAwardXPAchievements(member.id, league.id);
+      } catch (error) {
+        console.error(`Error during final XP calculation for user ${member.id} in league ${league.id}:`, error);
+      }
+    }
+  }
+
+  ctx.body = { success: true, league };
 });
 
 // Update a league's general settings
