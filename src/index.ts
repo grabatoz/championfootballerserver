@@ -10,6 +10,15 @@ import mount from 'koa-mount';
 import { triggerImmediateXPCalculation } from './utils/xpAchievementsEngine';
 
 // Dependencies: extra
+app.use(async (ctx, next) => {
+  if (ctx.path === '/' && ctx.method === 'GET') {
+    ctx.set('Access-Control-Allow-Origin', '*'); // ensure CORS header is sent
+    ctx.set('Access-Control-Allow-Credentials', 'true');
+    ctx.body = { status: 'ok', message: 'ChampionFootballer API root' };
+    return;
+  }
+  await next();
+});
 
 app.use(cors({
   origin: 'https://championfootballer-client.vercel.app',
@@ -41,13 +50,7 @@ app.use(async (ctx: Koa.Context, next: Koa.Next) => {
   await next();
 });
 // Root route for health check and CORS
-app.use(async (ctx, next) => {
-  if (ctx.path === '/' && ctx.method === 'GET') {
-    ctx.body = { status: 'ok', message: 'ChampionFootballer API root' };
-    return;
-  }
-  await next();
-});
+
 // Body parser - using koaBody for better multipart support
 app.use(async (ctx, next) => {
   // Skip koaBody for file upload route
