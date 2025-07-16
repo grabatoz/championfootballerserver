@@ -32,6 +32,14 @@ app.use(async (ctx: Koa.Context, next: Koa.Next) => {
   }
   await next();
 });
+// Root route for health check and CORS
+app.use(async (ctx, next) => {
+  if (ctx.path === '/' && ctx.method === 'GET') {
+    ctx.body = { status: 'ok', message: 'ChampionFootballer API root' };
+    return;
+  }
+  await next();
+});
 // Body parser - using koaBody for better multipart support
 app.use(async (ctx, next) => {
   // Skip koaBody for file upload route
