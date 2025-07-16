@@ -481,32 +481,6 @@ router.get("/auth/status", required, async (ctx: CustomContext) => {
   };
 });
 
-// Simple password reset without email (for testing)
-router.post("/auth/reset-password-simple", none, async (ctx: CustomContext) => {
-  const { email, newPassword } = ctx.request.body;
-  if (!email || !newPassword) {
-    ctx.throw(400, "Email and newPassword are required");
-  }
-  
-  const userEmail = email.toLowerCase();
-  const user = await User.findOne({ where: { email: userEmail } });
-  
-  if (!user) {
-    ctx.throw(404, "We can't find a user with that email.");
-  }
-
-  // Hash the new password
-  const hashedPassword = await hash(newPassword, 10);
-  await user.update({ password: hashedPassword });
-
-  console.log(`🔧 Password reset for ${userEmail}: ${newPassword} -> ${hashedPassword}`);
-
-  ctx.body = { 
-    success: true,
-    message: `Password reset successfully for ${userEmail}. You can now login with: ${newPassword}`
-  };
-});
-
 router.get("/me", required, async (ctx: CustomContext) => {
   if (!ctx.state.user) {
     ctx.throw(401, "Authentication error");
