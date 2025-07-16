@@ -5,7 +5,7 @@
   "main": "dist/index.js",
   "scripts": {
     "build": "tsc",
-    "start": "node --max-old-space-size=4096 dist/server.js",
+    "start": "node --max-old-space-size=4096 dist/index.js",
     "dev": "ts-node-dev --respawn --transpile-only src/index.ts",
     "check-models": "ts-node check-models.ts"
   },
