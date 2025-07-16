@@ -11,16 +11,24 @@ import { triggerImmediateXPCalculation } from './utils/xpAchievementsEngine';
 
 // Dependencies: extra
 
-// CORS configuration
 app.use(cors({
-  origin: '*',
+  origin: 'https://championfootballer-client.vercel.app',
   allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
   allowHeaders: ['Content-Type', 'Authorization', 'Accept', 'Origin'],
-  exposeHeaders: ['WWW-Authenticate', 'Server-Authorization'],
-  maxAge: 5,
-  credentials: true,
-  keepHeadersOnError: true
+  credentials: true
 }));
+
+
+// CORS configuration
+// app.use(cors({
+//   origin: '*',
+//   allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
+//   allowHeaders: ['Content-Type', 'Authorization', 'Accept', 'Origin'],
+//   exposeHeaders: ['WWW-Authenticate', 'Server-Authorization'],
+//   maxAge: 5,
+//   credentials: true,
+//   keepHeadersOnError: true
+// }));
 
 
 // Manual XP calculation endpoint
