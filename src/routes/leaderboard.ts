@@ -16,27 +16,33 @@ const METRIC_MAP: Record<string, string> = {
 router.get('/', async (ctx) => {
   const metric = (ctx.query.metric as string) || 'goals';
   const leagueId = ctx.query.leagueId as string | undefined;
+  const positionType = ctx.query.positionType as string | undefined;
   let orderField = METRIC_MAP[metric] || 'goals';
 
   // MOTM: aggregate from Vote model, filter by league
   if (metric === 'motm' && leagueId) {
     // Join Vote -> Match (as 'votedMatch') -> filter by leagueId
-    const votes = await models.Vote.findAll({
-      attributes: [
-        'votedForId',
-        [fn('COUNT', col('Vote.id')), 'voteCount']
-      ],
-      include: [{
+    const voteInclude: any[] = [
+      {
         model: models.Match,
         as: 'votedMatch',
         attributes: [],
         where: { leagueId },
         required: true
-      }, {
+      },
+      {
         model: models.User,
         as: 'votedFor',
-        attributes: ['id', 'firstName', 'lastName', 'position', 'profilePicture']
-      }],
+        attributes: ['id', 'firstName', 'lastName', 'positionType', 'profilePicture'],
+        ...(positionType ? { where: { positionType } } : {})
+      }
+    ];
+    const votes = await models.Vote.findAll({
+      attributes: [
+        'votedForId',
+        [fn('COUNT', col('Vote.id')), 'voteCount']
+      ],
+      include: voteInclude,
       group: ['votedForId', 'votedFor.id'],
       order: [[fn('COUNT', col('Vote.id')), 'DESC']],
       limit: 5
@@ -44,7 +50,7 @@ router.get('/', async (ctx) => {
     const players = votes.map((vote: any) => ({
       id: vote.votedFor.id,
       name: `${vote.votedFor.firstName} ${vote.votedFor.lastName}`,
-      position: vote.votedFor.position,
+      positionType: vote.votedFor.positionType,
       profilePicture: vote.votedFor.profilePicture,
       value: vote.get('voteCount')
     }));
@@ -52,12 +58,13 @@ router.get('/', async (ctx) => {
     return;
   }
 
-  // Other metrics: aggregate from MatchStatistics, filter by league
+  // Other metrics: aggregate from MatchStatistics, filter by league and positionType
   const include: any[] = [
     {
       model: models.User,
       as: 'user',
-      attributes: ['id', 'firstName', 'lastName', 'position', 'profilePicture']
+      attributes: ['id', 'firstName', 'lastName', 'positionType', 'profilePicture'],
+      ...(positionType ? { where: { positionType } } : {})
     }
   ];
   if (leagueId) {
@@ -84,7 +91,7 @@ router.get('/', async (ctx) => {
   const players = stats.map((stat: any) => ({
     id: stat.user.id,
     name: `${stat.user.firstName} ${stat.user.lastName}`,
-    position: stat.user.position,
+    positionType: stat.user.positionType,
     profilePicture: stat.user.profilePicture,
     value: stat.get('value')
   }));
