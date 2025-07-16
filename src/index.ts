@@ -62,6 +62,15 @@ app.use(async (ctx, next) => {
 
 app.use(mount('/uploads', serve(path.resolve(process.cwd(), 'uploads'))));
 
+// Always send CORS headers on 404 responses
+app.use(async (ctx, next) => {
+  await next();
+  if (ctx.status === 404) {
+    ctx.set('Access-Control-Allow-Origin', '*'); // or your allowed origin
+    ctx.set('Access-Control-Allow-Credentials', 'true');
+  }
+});
+
 // Client error handling
 app.use(async (ctx, next) => {
   const start = Date.now()
