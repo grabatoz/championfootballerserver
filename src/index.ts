@@ -20,6 +20,7 @@ app.use(async (ctx, next) => {
   await next();
 });
 
+// origin: 'http://localhost:3000',
 app.use(cors({
   origin: 'https://championfootballer-client.vercel.app',
   allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],

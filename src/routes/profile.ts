@@ -80,16 +80,16 @@ router.get('/', required, async (ctx: CustomContext) => {
   };
 });
 
-// Update user profile
-router.put('/', required, async (ctx: CustomContext) => {
+// Patch (partial update) user profile
+router.patch('/', required, async (ctx: CustomContext) => {
   if (!ctx.state.user?.userId) {
     ctx.throw(401, "User not authenticated");
   }
-  console.log('Profile PUT: userId', ctx.state.user.userId, 'update data', ctx.request.body);
+  console.log('Profile PATCH: userId', ctx.state.user.userId, 'update data', ctx.request.body);
   const { firstName, lastName, email, age, gender, position, positionType, style, preferredFoot, shirtNumber, skills, password } = ctx.request.body;
   console.log('Extracted positionType:', positionType);
   const user = await User.findByPk(ctx.state.user.userId);
-  console.log('Profile PUT: found user', user ? user.id : null);
+  console.log('Profile PATCH: found user', user ? user.id : null);
   if (!user) {
     ctx.throw(404, "User not found");
   }
