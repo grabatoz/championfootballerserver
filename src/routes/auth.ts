@@ -10,7 +10,7 @@ import jwt from 'jsonwebtoken';
 
 const router = new Router();
 const { League, Match, Session } = models;
-const JWT_SECRET = process.env.JWT_SECRET || 'your-super-secret-key-that-is-long-and-secure';
+const JWT_SECRET = process.env.JWT_SECRET || 'catsay\'s hello';
 
 interface UserInput {
   firstName?: string;
@@ -104,8 +104,12 @@ router.post("/auth/register", none, async (ctx: Context) => {
       lastName: userData.lastName || '',
       age: userData.age ? parseInt(userData.age) : undefined,
       gender: userData.gender,
-      position: userData.position,
-      positionType: userData.positionType,
+      position: userData.position || 'Goalkeeper (GK)',
+      positionType: userData.positionType || 'Goalkeeper',
+      style: userData.style || 'Axe',
+      preferredFoot: userData.preferredFoot || 'Right',
+      shirtNumber: userData.shirtNumber || 1,
+      profilePicture: userData.profilePicture || 'https://i.imgur.com/cH3e8JN.jpg',
       skills: {
         dribbling: 50,
         shooting: 50,
