@@ -254,12 +254,12 @@ router.post("/auth/login", none, async (ctx: CustomContext) => {
     success: true,
     token: token,
     redirectTo: '/dashboard',
-    user: {
+    data: {
       id: user.id,
       firstName: user.firstName,
       lastName: user.lastName,
       email: user.email,
-      password:user.password,
+      // password: user.password, // REMOVE THIS!
       age: user.age,
       gender: user.gender,
       position: user.position,
