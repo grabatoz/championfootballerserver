@@ -259,7 +259,6 @@ router.post("/auth/login", none, async (ctx: CustomContext) => {
       firstName: user.firstName,
       lastName: user.lastName,
       email: user.email,
-      // password:user.password,
       age: user.age,
       gender: user.gender,
       position: user.position,
