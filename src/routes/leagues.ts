@@ -95,7 +95,10 @@ router.get("/", required, async (ctx) => {
 
 // Get league details by ID
 router.get("/:id", required, async (ctx) => {
-  if (!ctx.state.user || !ctx.state.user.userId) ctx.throw(401, "Unauthorized");
+  if (!ctx.state.user || !ctx.state.user.userId) {
+    ctx.throw(401, "Unauthorized");
+    return;
+  }
   
   const leagueId = ctx.params.id;
 
