@@ -18,6 +18,7 @@ interface MatchStatisticsAttributes {
   rating: number;
   type?: string;
   value?: number;
+  xpAwarded: number;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -41,6 +42,7 @@ class MatchStatistics extends Model<MatchStatisticsAttributes, MatchStatisticsCr
   public rating!: number;
   public type!: string;
   public value!: number;
+  public xpAwarded!: number;
   public readonly createdAt!: Date;
   public readonly updatedAt!: Date;
 
@@ -135,6 +137,11 @@ MatchStatistics.init(
     value: {
       type: DataTypes.INTEGER,
       allowNull: true,
+    },
+    xpAwarded: {
+      type: DataTypes.INTEGER,
+      allowNull: true,
+      defaultValue: 0,
     },
     createdAt: {
       type: DataTypes.DATE,

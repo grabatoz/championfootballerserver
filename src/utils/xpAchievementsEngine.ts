@@ -5,13 +5,7 @@ import { Op } from 'sequelize';
 import User from '../models/User';
 import League from '../models/League';
 import { xpAchievements } from './xpAchievements';
-
-// Helper: Get all matches for a user in a league
-async function getUserLeagueMatches(userId: string, leagueId: string) {
-  return await Match.findAll({
-    where: { leagueId, status: 'completed' }
-  });
-}
+import { xpPointsTable } from './xpPointsTable';
 
 // Helper: Get all stats for a user in a league
 async function getUserLeagueStats(userId: string, leagueId: string) {
@@ -255,6 +249,80 @@ export async function calculateAndAwardXPAchievements(userId: string, leagueId?:
     console.log(`🎉 User ${userId} awarded ${awarded.length} new achievements:`, awarded);
   } else {
     console.log(`📝 User ${userId} - No new achievements awarded`);
+  }
+
+  // --- XP Awarding Logic for Completed Match ---
+  if (leagueId) {
+    // Find all completed matches for this user in this league
+    const matches = await Match.findAll({
+      where: { leagueId, status: 'completed' },
+      include: [
+        { model: User, as: 'homeTeamUsers' },
+        { model: User, as: 'awayTeamUsers' },
+        { model: Vote, as: 'votes' },
+      ]
+    });
+    // Find the most recent completed match (the one just completed)
+    const match = matches[matches.length - 1];
+    if (!match) return;
+    // Get all users in this match
+    const homeTeamUsers = ((match as any).homeTeamUsers || []);
+    const awayTeamUsers = ((match as any).awayTeamUsers || []);
+    const allPlayers = [...homeTeamUsers, ...awayTeamUsers];
+    // Get all stats for this match
+    const stats = await MatchStatistics.findAll({ where: { match_id: match.id } });
+    // Get all votes for this match
+    const votes = await Vote.findAll({ where: { matchId: match.id } });
+    // Determine MOTM (most votes)
+    const voteCounts: Record<string, number> = {};
+    votes.forEach(vote => {
+      const id = String(vote.votedForId);
+      voteCounts[id] = (voteCounts[id] || 0) + 1;
+    });
+    let motmId: string | null = null;
+    let maxVotes = 0;
+    Object.entries(voteCounts).forEach(([id, count]) => {
+      if (count > maxVotes) {
+        motmId = id;
+        maxVotes = count;
+      }
+    });
+    // Award XP for each player
+    for (const player of allPlayers) {
+      let xp = 0;
+      const stat = stats.find(s => s.user_id === player.id);
+      const isHome = homeTeamUsers.some((u: any) => u.id === player.id);
+      const isAway = awayTeamUsers.some((u: any) => u.id === player.id);
+      const homeGoals = match.homeTeamGoals ?? 0;
+      const awayGoals = match.awayTeamGoals ?? 0;
+      // Win/Draw/Loss
+      let teamResult: 'win' | 'draw' | 'lose' = 'lose';
+      if (isHome && homeGoals > awayGoals) teamResult = 'win';
+      else if (isAway && awayGoals > homeGoals) teamResult = 'win';
+      else if (homeGoals === awayGoals) teamResult = 'draw';
+      if (teamResult === 'win') xp += xpPointsTable.winningTeam;
+      else if (teamResult === 'draw') xp += xpPointsTable.draw;
+      else xp += xpPointsTable.losingTeam;
+      // Goals
+      if (stat && stat.goals) xp += (teamResult === 'win' ? xpPointsTable.goal.win : xpPointsTable.goal.lose) * stat.goals;
+      // Assists
+      if (stat && stat.assists) xp += (teamResult === 'win' ? xpPointsTable.assist.win : xpPointsTable.assist.lose) * stat.assists;
+      // Clean Sheets (Goalkeeper)
+      if (stat && stat.cleanSheets) xp += xpPointsTable.cleanSheet * stat.cleanSheets;
+      // MOTM
+      if (motmId === player.id) xp += (teamResult === 'win' ? xpPointsTable.motm.win : xpPointsTable.motm.lose);
+      // MOTM Votes
+      if (voteCounts[player.id]) xp += (teamResult === 'win' ? xpPointsTable.motmVote.win : xpPointsTable.motmVote.lose) * voteCounts[player.id];
+      // TODO: Captain's Bonus (if you have logic to determine captain picks, add here)
+      // TODO: Streak Bonuses (if you have logic to determine streaks, add here)
+      // Award XP
+      const user = await User.findByPk(player.id);
+      if (user) {
+        user.xp = (user.xp || 0) + xp;
+        await user.save();
+        console.log(`💰 XP REWARD! User ${user.id}: +${xp} XP for match ${match.id}`);
+      }
+    }
   }
 }
 

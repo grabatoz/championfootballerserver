@@ -7,6 +7,9 @@ import type { LeagueAttributes } from '../models/League';
 import { transporter } from '../modules/sendEmail';
 import { Op } from 'sequelize';
 import { calculateAndAwardXPAchievements } from '../utils/xpAchievementsEngine';
+import Vote from '../models/Vote';
+import MatchStatistics from '../models/MatchStatistics';
+import { xpPointsTable } from '../utils/xpPointsTable';
 
 const router = new Router({ prefix: '/leagues' });
 
@@ -664,6 +667,187 @@ router.patch('/:id/end', required, async (ctx) => {
 
   ctx.status = 200;
   ctx.body = { success: true, message: "League ended and final XP calculated" };
+});
+
+// GET /leagues/:leagueId/xp - Return XP for each member in the league (sum of xpAwarded for completed matches in this league)
+router.get('/:leagueId/xp', async (ctx) => {
+  const { leagueId } = ctx.params;
+  const league = await models.League.findByPk(leagueId, {
+    include: [{ model: models.User, as: 'members' }]
+  });
+  if (!league) {
+    ctx.status = 404;
+    ctx.body = { success: false, message: 'League not found' };
+    return;
+  }
+  // Fix type for members
+  //@ts-ignore
+  const members = (league.members || []) as any[];
+  const xp: Record<string, number> = {};
+  for (const member of members) {
+    // Get all completed matches for this league for this user
+    const stats = await models.MatchStatistics.findAll({
+      where: { user_id: member.id },
+      include: [{
+        model: models.Match,
+        as: 'match',
+        where: { leagueId, status: 'completed' }
+      }]
+    });
+    xp[member.id] = stats.reduce((sum, s) => sum + (s.xpAwarded || 0), 0);
+  }
+  ctx.body = { success: true, xp };
+});
+
+// Debug endpoint: Get XP breakdown for a user in a league
+router.get('/:leagueId/xp-breakdown/:userId', required, async (ctx) => {
+  const { leagueId, userId } = ctx.params;
+  const league = await League.findByPk(leagueId);
+  if (!league) {
+    ctx.throw(404, 'League not found');
+    return;
+  }
+  // Get all completed matches in this league
+  const matches = await Match.findAll({
+    where: { leagueId, status: 'completed' },
+    order: [['date', 'ASC']],
+    include: [
+      { model: User, as: 'homeTeamUsers' },
+      { model: User, as: 'awayTeamUsers' },
+    ]
+  });
+  const matchIds = matches.map(m => m.id);
+  const allStats = await MatchStatistics.findAll({ where: { match_id: matchIds, user_id: userId } });
+  const allVotes = await Vote.findAll({ where: { matchId: matchIds } });
+  const breakdown: any[] = [];
+  let runningTotal = 0;
+  for (const match of matches) {
+    const homeTeamUsers = ((match as any).homeTeamUsers || []);
+    const awayTeamUsers = ((match as any).awayTeamUsers || []);
+    const isOnTeam = [...homeTeamUsers, ...awayTeamUsers].some((u: any) => u.id === userId);
+    if (!isOnTeam) continue;
+    const homeGoals = match.homeTeamGoals ?? 0;
+    const awayGoals = match.awayTeamGoals ?? 0;
+    let teamResult: 'win' | 'draw' | 'lose' = 'lose';
+    const isHome = homeTeamUsers.some((u: any) => u.id === userId);
+    const isAway = awayTeamUsers.some((u: any) => u.id === userId);
+    if (isHome && homeGoals > awayGoals) teamResult = 'win';
+    else if (isAway && awayGoals > homeGoals) teamResult = 'win';
+    else if (homeGoals === awayGoals) teamResult = 'draw';
+    let matchXP = 0;
+    const details: any[] = [];
+    if (teamResult === 'win') { matchXP += xpPointsTable.winningTeam; details.push({ type: 'Win', points: xpPointsTable.winningTeam }); }
+    else if (teamResult === 'draw') { matchXP += xpPointsTable.draw; details.push({ type: 'Draw', points: xpPointsTable.draw }); }
+    else { matchXP += xpPointsTable.losingTeam; details.push({ type: 'Loss', points: xpPointsTable.losingTeam }); }
+    const stat = allStats.find(s => s.match_id === match.id);
+    if (stat) {
+      if (stat.goals) { const pts = (teamResult === 'win' ? xpPointsTable.goal.win : xpPointsTable.goal.lose) * stat.goals; matchXP += pts; details.push({ type: 'Goals', count: stat.goals, points: pts }); }
+      if (stat.assists) { const pts = (teamResult === 'win' ? xpPointsTable.assist.win : xpPointsTable.assist.lose) * stat.assists; matchXP += pts; details.push({ type: 'Assists', count: stat.assists, points: pts }); }
+      if (stat.cleanSheets) { const pts = xpPointsTable.cleanSheet * stat.cleanSheets; matchXP += pts; details.push({ type: 'Clean Sheets', count: stat.cleanSheets, points: pts }); }
+    }
+    const votes = allVotes.filter(v => v.matchId === match.id);
+    const voteCounts: Record<string, number> = {};
+    votes.forEach(vote => {
+      const id = String(vote.votedForId);
+      voteCounts[id] = (voteCounts[id] || 0) + 1;
+    });
+    let motmId: string | null = null;
+    let maxVotes = 0;
+    Object.entries(voteCounts).forEach(([id, count]) => {
+      if (count > maxVotes) {
+        motmId = id;
+        maxVotes = count;
+      }
+    });
+    if (motmId === userId) { const pts = (teamResult === 'win' ? xpPointsTable.motm.win : xpPointsTable.motm.lose); matchXP += pts; details.push({ type: 'MOTM', points: pts }); }
+    if (voteCounts[userId]) { const pts = (teamResult === 'win' ? xpPointsTable.motmVote.win : xpPointsTable.motmVote.lose) * voteCounts[userId]; matchXP += pts; details.push({ type: 'MOTM Votes', count: voteCounts[userId], points: pts }); }
+    runningTotal += matchXP;
+    breakdown.push({
+      matchId: match.id,
+      matchDate: match.date,
+      details,
+      matchXP,
+      runningTotal
+    });
+  }
+  ctx.body = { userId, leagueId, breakdown };
+});
+
+// POST endpoint to reset all users' XP in a league to the correct value
+router.post('/:id/reset-xp', required, async (ctx) => {
+  const leagueId = ctx.params.id;
+  const league = await League.findByPk(leagueId, {
+    include: [{ model: User, as: 'members' }]
+  });
+  if (!league) {
+    ctx.throw(404, 'League not found');
+    return;
+  }
+  // Get all completed matches in this league
+  const matches = await Match.findAll({
+    where: { leagueId, status: 'completed' },
+    include: [
+      { model: User, as: 'homeTeamUsers' },
+      { model: User, as: 'awayTeamUsers' },
+    ]
+  });
+  const matchIds = matches.map(m => m.id);
+  const allStats = await MatchStatistics.findAll({ where: { match_id: matchIds } });
+  const allVotes = await Vote.findAll({ where: { matchId: matchIds } });
+  for (const member of (league as any).members || []) {
+    let userXP = 0;
+    for (const match of matches) {
+      const homeTeamUsers = ((match as any).homeTeamUsers || []);
+      const awayTeamUsers = ((match as any).awayTeamUsers || []);
+      // Only count the user once per match
+      const isOnTeam = [...homeTeamUsers, ...awayTeamUsers].some((u: any) => u.id === member.id);
+      if (!isOnTeam) continue;
+      const homeGoals = match.homeTeamGoals ?? 0;
+      const awayGoals = match.awayTeamGoals ?? 0;
+      // Win/Draw/Loss
+      let teamResult: 'win' | 'draw' | 'lose' = 'lose';
+      const isHome = homeTeamUsers.some((u: any) => u.id === member.id);
+      const isAway = awayTeamUsers.some((u: any) => u.id === member.id);
+      if (isHome && homeGoals > awayGoals) teamResult = 'win';
+      else if (isAway && awayGoals > homeGoals) teamResult = 'win';
+      else if (homeGoals === awayGoals) teamResult = 'draw';
+      // Only one of these applies:
+      if (teamResult === 'win') userXP += xpPointsTable.winningTeam;
+      else if (teamResult === 'draw') userXP += xpPointsTable.draw;
+      else userXP += xpPointsTable.losingTeam;
+      // Get stats for this user in this match (from pre-fetched allStats)
+      const stat = allStats.find(s => s.user_id === member.id && s.match_id === match.id);
+      if (stat) {
+        if (stat.goals) userXP += (teamResult === 'win' ? xpPointsTable.goal.win : xpPointsTable.goal.lose) * stat.goals;
+        if (stat.assists) userXP += (teamResult === 'win' ? xpPointsTable.assist.win : xpPointsTable.assist.lose) * stat.assists;
+        if (stat.cleanSheets) userXP += xpPointsTable.cleanSheet * stat.cleanSheets;
+      }
+      // Votes for MOTM (from pre-fetched allVotes)
+      const votes = allVotes.filter(v => v.matchId === match.id);
+      const voteCounts: Record<string, number> = {};
+      votes.forEach(vote => {
+        const id = String(vote.votedForId);
+        voteCounts[id] = (voteCounts[id] || 0) + 1;
+      });
+      let motmId: string | null = null;
+      let maxVotes = 0;
+      Object.entries(voteCounts).forEach(([id, count]) => {
+        if (count > maxVotes) {
+          motmId = id;
+          maxVotes = count;
+        }
+      });
+      if (motmId === member.id) userXP += (teamResult === 'win' ? xpPointsTable.motm.win : xpPointsTable.motm.lose);
+      if (voteCounts[member.id]) userXP += (teamResult === 'win' ? xpPointsTable.motmVote.win : xpPointsTable.motmVote.lose) * voteCounts[member.id];
+    }
+    // Update the user's XP in the database
+    const user = await User.findByPk(member.id);
+    if (user) {
+      user.xp = userXP;
+      await user.save();
+    }
+  }
+  ctx.body = { success: true, message: 'XP reset for all users in this league.' };
 });
 
 export default router;

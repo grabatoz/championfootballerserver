@@ -4,6 +4,7 @@ import models from '../models';
 import { QueryTypes } from 'sequelize';
 import sequelize from '../config/database';
 import { calculateAndAwardXPAchievements } from '../utils/xpAchievementsEngine';
+import { xpPointsTable } from '../utils/xpPointsTable';
 const { Match, Vote, User } = models;
 
 const router = new Router({ prefix: '/matches' });
@@ -149,6 +150,7 @@ router.post('/:matchId/stats', required, async (ctx) => {
             redCards: 0,
             minutesPlayed: 0,
             rating: 0,
+            xpAwarded: 0,
         }
     });
 
@@ -210,22 +212,65 @@ router.patch('/:matchId/complete', required, async (ctx) => {
   // Mark match as completed
   await match.update({ status: 'completed' });
 
-  // Calculate XP for all players in this match
-  const allPlayers = [
-    ...((match as any).homeTeamUsers || []),
-    ...((match as any).awayTeamUsers || [])
-  ];
-
+  // Calculate and save per-match XP for each user
+  const homeTeamUsers = ((match as any).homeTeamUsers || []);
+  const awayTeamUsers = ((match as any).awayTeamUsers || []);
+  const allPlayers = [...homeTeamUsers, ...awayTeamUsers];
+  const homeGoals = match.homeTeamGoals ?? 0;
+  const awayGoals = match.awayTeamGoals ?? 0;
+  // Fetch all votes for this match
+  const votes = await Vote.findAll({ where: { matchId } });
+  const voteCounts: Record<string, number> = {};
+  votes.forEach(vote => {
+    const id = String(vote.votedForId);
+    voteCounts[id] = (voteCounts[id] || 0) + 1;
+  });
+  let motmId: string | null = null;
+  let maxVotes = 0;
+  Object.entries(voteCounts).forEach(([id, count]) => {
+    if (count > maxVotes) {
+      motmId = id;
+      maxVotes = count;
+    }
+  });
   for (const player of allPlayers) {
-    try {
-      await calculateAndAwardXPAchievements(player.id, match.leagueId);
-    } catch (error) {
-      console.error(`Error calculating XP for player ${player.id}:`, error);
+    // Only count the user once per match
+    const isHome = homeTeamUsers.some((u: any) => u.id === player.id);
+    const isAway = awayTeamUsers.some((u: any) => u.id === player.id);
+    let teamResult: 'win' | 'draw' | 'lose' = 'lose';
+    if (isHome && homeGoals > awayGoals) teamResult = 'win';
+    else if (isAway && awayGoals > homeGoals) teamResult = 'win';
+    else if (homeGoals === awayGoals) teamResult = 'draw';
+    let matchXP = 0;
+    if (teamResult === 'win') matchXP += xpPointsTable.winningTeam;
+    else if (teamResult === 'draw') matchXP += xpPointsTable.draw;
+    else matchXP += xpPointsTable.losingTeam;
+    // Get stats for this user in this match
+    const stat = await models.MatchStatistics.findOne({ where: { user_id: player.id, match_id: match.id } });
+    if (stat) {
+      if (stat.goals) matchXP += (teamResult === 'win' ? xpPointsTable.goal.win : xpPointsTable.goal.lose) * stat.goals;
+      if (stat.assists) matchXP += (teamResult === 'win' ? xpPointsTable.assist.win : xpPointsTable.assist.lose) * stat.assists;
+      if (stat.cleanSheets) matchXP += xpPointsTable.cleanSheet * stat.cleanSheets;
+      // MOTM
+      if (motmId === player.id) matchXP += (teamResult === 'win' ? xpPointsTable.motm.win : xpPointsTable.motm.lose);
+      // MOTM Votes
+      if (voteCounts[player.id]) matchXP += (teamResult === 'win' ? xpPointsTable.motmVote.win : xpPointsTable.motmVote.lose) * voteCounts[player.id];
+      // Save XP for this match
+      stat.xpAwarded = matchXP;
+      await stat.save();
+      // Update user's total XP (sum of all xpAwarded)
+      const allStats = await models.MatchStatistics.findAll({ where: { user_id: player.id } });
+      const totalXP = allStats.reduce((sum, s) => sum + (s.xpAwarded || 0), 0);
+      const user = await models.User.findByPk(player.id);
+      if (user) {
+        user.xp = totalXP;
+        await user.save();
+      }
     }
   }
 
   ctx.status = 200;
-  ctx.body = { success: true, message: 'Match completed and XP calculated' };
+  ctx.body = { success: true, message: 'Match completed and XP saved.' };
 });
 
 // GET /matches/:matchId - fetch a match by ID with teams and users and match-specific stats
