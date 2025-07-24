@@ -134,11 +134,11 @@ console.log("ENV DB_USER:", process.env.DB_USER);
 
 
 const sequelize = new Sequelize(
-  process.env.DB_NAME || '',
-  process.env.DB_USER || '',
-  process.env.DB_PASSWORD || '',
+  process.env.DB_NAME || 'postgres',
+  process.env.DB_USER || 'salman1209',
+  process.env.DB_PASSWORD || 'Malik,g12',
   {
-    host: process.env.DB_HOST || 'localhost',
+    host: process.env.DB_HOST || 'championfootballerserver.postgres.database.azure.com',
     dialect: 'postgres',
     port: parseInt(process.env.DB_PORT || '5432'),
     dialectOptions: {
