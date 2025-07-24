@@ -22,7 +22,7 @@
     "bcryptjs": "^3.0.2",
     "cloudinary": "^2.7.0",
     "colors": "^1.4.0",
-    "dotenv": "^16.5.0",
+    "dotenv": "^16.6.1",
     "js-cookie": "^3.0.5",
     "jsonwebtoken": "^9.0.2",
     "koa": "^2.14.2",
@@ -35,7 +35,7 @@
     "multer": "^2.0.1",
     "mustache": "^4.2.0",
     "nodemailer": "^6.10.1",
-    "pg": "^8.16.0",
+    "pg": "^8.16.3",
     "pg-hstore": "^2.3.4",
     "sequelize": "^6.37.7",
     "streamifier": "^0.1.1"
