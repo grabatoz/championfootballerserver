@@ -1,5 +1,6 @@
 // Simple in-memory cache with TTL
 // Usage: cache.set(key, value, ttlSeconds); cache.get(key)
+// Default TTL for all endpoints is now 10 minutes (600 seconds)
 
 interface CacheEntry<T> {
   value: T;

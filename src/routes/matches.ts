@@ -388,7 +388,7 @@ router.get('/', async (ctx) => {
       ],
     });
     const result = { success: true, matches };
-    cache.set(cacheKey, result, 30); // cache for 30 seconds
+    cache.set(cacheKey, result, 600); // cache for 30 seconds
     ctx.body = result;
   } catch (error) {
     console.error('Error fetching matches:', error);

@@ -33,7 +33,7 @@ router.get('/', async (ctx) => {
         positionType: p.positionType,
       })),
     };
-    cache.set(cacheKey, result, 30); // cache for 30 seconds
+    cache.set(cacheKey, result, 600); // cache for 30 seconds
     ctx.body = result;
   } catch (error) {
     console.error('Error fetching all players:', error);
@@ -394,7 +394,7 @@ router.get('/:id/stats', required, async (ctx) => {
                 trophies: trophyMap // <-- now includes league info for each trophy
             }
         };
-        cache.set(cacheKey, result, 30); // cache for 30 seconds
+        cache.set(cacheKey, result, 600); // cache for 30 seconds
         ctx.body = result;
     } catch (error) {
         console.error('Error fetching player stats:', error);

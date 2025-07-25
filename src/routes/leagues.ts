@@ -21,8 +21,16 @@ router.get('/user', required, async (ctx) => {
     return;
   }
 
+  const userId = ctx.state.user.userId;
+  const cacheKey = `user_leagues_${userId}`;
+  const cached = cache.get(cacheKey);
+  if (cached) {
+    ctx.body = cached;
+    return;
+  }
+
   try {
-    const user = await User.findByPk(ctx.state.user.userId, {
+    const user = await User.findByPk(userId, {
       include: [{
         model: League,
         as: 'leagues',
@@ -47,7 +55,9 @@ router.get('/user', required, async (ctx) => {
       return;
     }
 
-    ctx.body = { success: true, leagues: (user as any).leagues || [] };
+    const result = { success: true, leagues: (user as any).leagues || [] };
+    cache.set(cacheKey, result, 600); // cache for 30 seconds
+    ctx.body = result;
   } catch (error) {
     console.error("Error fetching leagues for user:", error);
     ctx.throw(500, "Failed to retrieve leagues.");
@@ -895,7 +905,7 @@ router.get('/', async (ctx) => {
     }
 
     const leagues = (user as any).leagues || [];
-    cache.set(cacheKey, { success: true, leagues }, 30); // cache for 30 seconds
+    cache.set(cacheKey, { success: true, leagues }, 600); // cache for 30 seconds
     ctx.body = { success: true, leagues };
   } catch (error) {
     console.error("Error fetching leagues for user:", error);

@@ -179,7 +179,7 @@ router.get('/', required, async (ctx) => {
       dreamTeam,
       totalPlayers: dreamTeamPlayers.length
     };
-    cache.set(cacheKey, result, 30); // cache for 30 seconds
+    cache.set(cacheKey, result, 600); // cache for 30 seconds
     ctx.body = result;
 
   } catch (error) {

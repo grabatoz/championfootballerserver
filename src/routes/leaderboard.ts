@@ -111,7 +111,7 @@ router.get('/', async (ctx) => {
     players,
     message: allZero ? 'Abhi kisi user ko assign nahi hua.' : undefined
   };
-  cache.set(cacheKey, result, 30); // cache for 30 seconds
+  cache.set(cacheKey, result, 600); // cache for 30 seconds
   ctx.body = result;
 });
 
