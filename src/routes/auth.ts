@@ -109,7 +109,7 @@ router.post("/auth/register", none, async (ctx: Context) => {
       style: userData.style || 'Axe',
       preferredFoot: userData.preferredFoot || 'Right',
       shirtNumber: userData.shirtNumber || 1,
-      profilePicture: userData.profilePicture || 'https://i.imgur.com/cH3e8JN.jpg',
+      profilePicture: userData.profilePicture,
       skills: {
         dribbling: 50,
         shooting: 50,
@@ -132,10 +132,12 @@ router.post("/auth/register", none, async (ctx: Context) => {
       await transporter.sendMail({
         to: newUser.email,
         subject: `Welcome to Champion Footballer!`,
-        html: `<div><img src="https://i.imgur.com/7wOPUk7.png" style="height:30px;" /></div>
+        html: `<div></div>
         <a href="https://championfootballer-client.vercel.app" style="font-size:20px;font-weight:bold;margin-top:10px;">Login to Champion Footballer.</a>
-        <div><img src="https://i.imgur.com/cH3e8JN.jpg" style="height:400px;" /></div>`,
+        <div></div>`,
       });
+      // <img src="https://i.imgur.com/cH3e8JN.jpg" style="height:400px;" />
+      // <img src="https://i.imgur.com/7wOPUk7.png" style="height:30px;" />
       console.log('Welcome email sent successfully');
     } catch (emailError) {
       console.error('Error sending welcome email:', emailError);
