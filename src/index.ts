@@ -22,24 +22,24 @@ app.use(async (ctx, next) => {
 
 // origin: 'http://localhost:3000',
 // origin: 'http://localhost:3000',
-// app.use(cors({
-//   origin: 'https://championfootballer-client.vercel.app',
-//   allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
-//   allowHeaders: ['Content-Type', 'Authorization', 'Accept', 'Origin'],
-//   credentials: true
-// }));
-
-
-// CORS configuration
 app.use(cors({
   origin: 'https://championfootballer-client.vercel.app',
   allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
   allowHeaders: ['Content-Type', 'Authorization', 'Accept', 'Origin'],
-  exposeHeaders: ['WWW-Authenticate', 'Server-Authorization'],
-  maxAge: 5,
-  credentials: true,
-  keepHeadersOnError: true
+  credentials: true
 }));
+
+
+// CORS configuration
+// app.use(cors({
+//   origin: '*',
+//   allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
+//   allowHeaders: ['Content-Type', 'Authorization', 'Accept', 'Origin'],
+//   exposeHeaders: ['WWW-Authenticate', 'Server-Authorization'],
+//   maxAge: 5,
+//   credentials: true,
+//   keepHeadersOnError: true
+// }));
 
 
 // Manual XP calculation endpoint
