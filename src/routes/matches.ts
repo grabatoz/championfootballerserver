@@ -166,8 +166,65 @@ router.post('/:matchId/stats', required, async (ctx) => {
         await stats.save();
     }
 
+    // XP calculation for this user
+    // Get teams and votes for XP logic
+    const matchWithTeams = await Match.findByPk(matchId, {
+        include: [
+            { model: User, as: 'homeTeamUsers' },
+            { model: User, as: 'awayTeamUsers' }
+        ]
+    });
+    const homeTeamUsers = ((matchWithTeams as any)?.homeTeamUsers || []);
+    const awayTeamUsers = ((matchWithTeams as any)?.awayTeamUsers || []);
+    const isHome = homeTeamUsers.some((u: any) => u.id === userId);
+    const isAway = awayTeamUsers.some((u: any) => u.id === userId);
+    const homeGoals = matchWithTeams?.homeTeamGoals ?? 0;
+    const awayGoals = matchWithTeams?.awayTeamGoals ?? 0;
+    let teamResult: 'win' | 'draw' | 'lose' = 'lose';
+    if (isHome && homeGoals > awayGoals) teamResult = 'win';
+    else if (isAway && awayGoals > homeGoals) teamResult = 'win';
+    else if (homeGoals === awayGoals) teamResult = 'draw';
+    let matchXP = 0;
+    if (teamResult === 'win') matchXP += xpPointsTable.winningTeam;
+    else if (teamResult === 'draw') matchXP += xpPointsTable.draw;
+    else matchXP += xpPointsTable.losingTeam;
+    // Get votes for this match
+    const votes = await Vote.findAll({ where: { matchId } });
+    const voteCounts: Record<string, number> = {};
+    votes.forEach(vote => {
+        const id = String(vote.votedForId);
+        voteCounts[id] = (voteCounts[id] || 0) + 1;
+    });
+    let motmId: string | null = null;
+    let maxVotes = 0;
+    Object.entries(voteCounts).forEach(([id, count]) => {
+        if (count > maxVotes) {
+            motmId = id;
+            maxVotes = count;
+        }
+    });
+    // XP for stats
+    if (stats.goals) matchXP += (teamResult === 'win' ? xpPointsTable.goal.win : xpPointsTable.goal.lose) * stats.goals;
+    if (stats.assists) matchXP += (teamResult === 'win' ? xpPointsTable.assist.win : xpPointsTable.assist.lose) * stats.assists;
+    if (stats.cleanSheets) matchXP += xpPointsTable.cleanSheet * stats.cleanSheets;
+    // MOTM
+    if (motmId === String(userId)) matchXP += (teamResult === 'win' ? xpPointsTable.motm.win : xpPointsTable.motm.lose);
+    // MOTM Votes
+    if (voteCounts[String(userId)]) matchXP += (teamResult === 'win' ? xpPointsTable.motmVote.win : xpPointsTable.motmVote.lose) * voteCounts[String(userId)];
+    // Save XP for this match
+    stats.xpAwarded = matchXP;
+    await stats.save();
+    // Update user's total XP (sum of all xpAwarded)
+    const allStats = await models.MatchStatistics.findAll({ where: { user_id: userId } });
+    const totalXP = allStats.reduce((sum, s) => sum + (s.xpAwarded || 0), 0);
+    const user = await models.User.findByPk(userId);
+    if (user) {
+        user.xp = totalXP;
+        await user.save();
+    }
+
     ctx.status = 200;
-    ctx.body = { success: true, message: 'Statistics saved successfully.' };
+    ctx.body = { success: true, message: 'Statistics and XP saved successfully.' };
 });
 
 // GET route to fetch votes for each player in a match
@@ -195,83 +252,83 @@ router.get('/:id/votes', required, async (ctx) => {
 });
 
 // Add XP calculation when match is completed
-router.patch('/:matchId/complete', required, async (ctx) => {
-  const { matchId } = ctx.params;
-  const match = await Match.findByPk(matchId, {
-    include: [
-      { model: User, as: 'homeTeamUsers' },
-      { model: User, as: 'awayTeamUsers' }
-    ]
-  });
+// router.patch('/:matchId/complete', required, async (ctx) => {
+//   const { matchId } = ctx.params;
+//   const match = await Match.findByPk(matchId, {
+//     include: [
+//       { model: User, as: 'homeTeamUsers' },
+//       { model: User, as: 'awayTeamUsers' }
+//     ]
+//   });
 
-  if (!match) {
-    ctx.throw(404, 'Match not found');
-    return;
-  }
+//   if (!match) {
+//     ctx.throw(404, 'Match not found');
+//     return;
+//   }
 
-  // Mark match as completed
-  await match.update({ status: 'completed' });
+//   // Mark match as completed
+//   await match.update({ status: 'completed' });
 
-  // Calculate and save per-match XP for each user
-  const homeTeamUsers = ((match as any).homeTeamUsers || []);
-  const awayTeamUsers = ((match as any).awayTeamUsers || []);
-  const allPlayers = [...homeTeamUsers, ...awayTeamUsers];
-  const homeGoals = match.homeTeamGoals ?? 0;
-  const awayGoals = match.awayTeamGoals ?? 0;
-  // Fetch all votes for this match
-  const votes = await Vote.findAll({ where: { matchId } });
-  const voteCounts: Record<string, number> = {};
-  votes.forEach(vote => {
-    const id = String(vote.votedForId);
-    voteCounts[id] = (voteCounts[id] || 0) + 1;
-  });
-  let motmId: string | null = null;
-  let maxVotes = 0;
-  Object.entries(voteCounts).forEach(([id, count]) => {
-    if (count > maxVotes) {
-      motmId = id;
-      maxVotes = count;
-    }
-  });
-  for (const player of allPlayers) {
-    // Only count the user once per match
-    const isHome = homeTeamUsers.some((u: any) => u.id === player.id);
-    const isAway = awayTeamUsers.some((u: any) => u.id === player.id);
-    let teamResult: 'win' | 'draw' | 'lose' = 'lose';
-    if (isHome && homeGoals > awayGoals) teamResult = 'win';
-    else if (isAway && awayGoals > homeGoals) teamResult = 'win';
-    else if (homeGoals === awayGoals) teamResult = 'draw';
-    let matchXP = 0;
-    if (teamResult === 'win') matchXP += xpPointsTable.winningTeam;
-    else if (teamResult === 'draw') matchXP += xpPointsTable.draw;
-    else matchXP += xpPointsTable.losingTeam;
-    // Get stats for this user in this match
-    const stat = await models.MatchStatistics.findOne({ where: { user_id: player.id, match_id: match.id } });
-    if (stat) {
-      if (stat.goals) matchXP += (teamResult === 'win' ? xpPointsTable.goal.win : xpPointsTable.goal.lose) * stat.goals;
-      if (stat.assists) matchXP += (teamResult === 'win' ? xpPointsTable.assist.win : xpPointsTable.assist.lose) * stat.assists;
-      if (stat.cleanSheets) matchXP += xpPointsTable.cleanSheet * stat.cleanSheets;
-      // MOTM
-      if (motmId === player.id) matchXP += (teamResult === 'win' ? xpPointsTable.motm.win : xpPointsTable.motm.lose);
-      // MOTM Votes
-      if (voteCounts[player.id]) matchXP += (teamResult === 'win' ? xpPointsTable.motmVote.win : xpPointsTable.motmVote.lose) * voteCounts[player.id];
-      // Save XP for this match
-      stat.xpAwarded = matchXP;
-      await stat.save();
-      // Update user's total XP (sum of all xpAwarded)
-      const allStats = await models.MatchStatistics.findAll({ where: { user_id: player.id } });
-      const totalXP = allStats.reduce((sum, s) => sum + (s.xpAwarded || 0), 0);
-      const user = await models.User.findByPk(player.id);
-      if (user) {
-        user.xp = totalXP;
-        await user.save();
-      }
-    }
-  }
+//   // Calculate and save per-match XP for each user
+//   const homeTeamUsers = ((match as any).homeTeamUsers || []);
+//   const awayTeamUsers = ((match as any).awayTeamUsers || []);
+//   const allPlayers = [...homeTeamUsers, ...awayTeamUsers];
+//   const homeGoals = match.homeTeamGoals ?? 0;
+//   const awayGoals = match.awayTeamGoals ?? 0;
+//   // Fetch all votes for this match
+//   const votes = await Vote.findAll({ where: { matchId } });
+//   const voteCounts: Record<string, number> = {};
+//   votes.forEach(vote => {
+//     const id = String(vote.votedForId);
+//     voteCounts[id] = (voteCounts[id] || 0) + 1;
+//   });
+//   let motmId: string | null = null;
+//   let maxVotes = 0;
+//   Object.entries(voteCounts).forEach(([id, count]) => {
+//     if (count > maxVotes) {
+//       motmId = id;
+//       maxVotes = count;
+//     }
+//   });
+//   for (const player of allPlayers) {
+//     // Only count the user once per match
+//     const isHome = homeTeamUsers.some((u: any) => u.id === player.id);
+//     const isAway = awayTeamUsers.some((u: any) => u.id === player.id);
+//     let teamResult: 'win' | 'draw' | 'lose' = 'lose';
+//     if (isHome && homeGoals > awayGoals) teamResult = 'win';
+//     else if (isAway && awayGoals > homeGoals) teamResult = 'win';
+//     else if (homeGoals === awayGoals) teamResult = 'draw';
+//     let matchXP = 0;
+//     if (teamResult === 'win') matchXP += xpPointsTable.winningTeam;
+//     else if (teamResult === 'draw') matchXP += xpPointsTable.draw;
+//     else matchXP += xpPointsTable.losingTeam;
+//     // Get stats for this user in this match
+//     const stat = await models.MatchStatistics.findOne({ where: { user_id: player.id, match_id: match.id } });
+//     if (stat) {
+//       if (stat.goals) matchXP += (teamResult === 'win' ? xpPointsTable.goal.win : xpPointsTable.goal.lose) * stat.goals;
+//       if (stat.assists) matchXP += (teamResult === 'win' ? xpPointsTable.assist.win : xpPointsTable.assist.lose) * stat.assists;
+//       if (stat.cleanSheets) matchXP += xpPointsTable.cleanSheet * stat.cleanSheets;
+//       // MOTM
+//       if (motmId === player.id) matchXP += (teamResult === 'win' ? xpPointsTable.motm.win : xpPointsTable.motm.lose);
+//       // MOTM Votes
+//       if (voteCounts[player.id]) matchXP += (teamResult === 'win' ? xpPointsTable.motmVote.win : xpPointsTable.motmVote.lose) * voteCounts[player.id];
+//       // Save XP for this match
+//       stat.xpAwarded = matchXP;
+//       await stat.save();
+//       // Update user's total XP (sum of all xpAwarded)
+//       const allStats = await models.MatchStatistics.findAll({ where: { user_id: player.id } });
+//       const totalXP = allStats.reduce((sum, s) => sum + (s.xpAwarded || 0), 0);
+//       const user = await models.User.findByPk(player.id);
+//       if (user) {
+//         user.xp = totalXP;
+//         await user.save();
+//       }
+//     }
+//   }
 
-  ctx.status = 200;
-  ctx.body = { success: true, message: 'Match completed and XP saved.' };
-});
+//   ctx.status = 200;
+//   ctx.body = { success: true, message: 'Match completed and XP saved.' };
+// });
 
 // GET /matches/:matchId - fetch a match by ID with teams and users and match-specific stats
 router.get('/:matchId', async (ctx) => {
