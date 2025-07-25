@@ -4,10 +4,42 @@ import models from '../models';
 import { Op } from 'sequelize';
 import sequelize from '../config/database';
 import { League } from '../types/user';
+import cache from '../utils/cache';
 
 const { User: UserModel, Match: MatchModel, MatchStatistics, League: LeagueModel, Vote } = models;
 
 const router = new Router({ prefix: '/players' });
+
+// Add a GET /players endpoint with caching
+router.get('/', async (ctx) => {
+  const cacheKey = 'players_all';
+  const cached = cache.get(cacheKey);
+  if (cached) {
+    ctx.body = cached;
+    return;
+  }
+  try {
+    const players = await UserModel.findAll({
+      attributes: ['id', 'firstName', 'lastName', 'profilePicture', 'xp', 'position', 'positionType'],
+    });
+    const result = {
+      success: true,
+      players: players.map(p => ({
+        id: p.id,
+        name: `${p.firstName} ${p.lastName}`,
+        profilePicture: p.profilePicture,
+        rating: p.xp || 0,
+        position: p.position,
+        positionType: p.positionType,
+      })),
+    };
+    cache.set(cacheKey, result, 30); // cache for 30 seconds
+    ctx.body = result;
+  } catch (error) {
+    console.error('Error fetching all players:', error);
+    ctx.throw(500, 'Failed to fetch players.');
+  }
+});
 
 // Get all players the current user has played with or against
 router.get('/played-with', required, async (ctx) => {
@@ -74,10 +106,15 @@ router.get('/played-with', required, async (ctx) => {
 
 // GET player career stats
 router.get('/:id/stats', required, async (ctx) => {
+    const { id: playerId } = ctx.params;
+    const { leagueId, year } = ctx.query as { leagueId?: string, year?: string };
+    const cacheKey = `player_stats_${playerId}_${leagueId || 'all'}_${year || 'all'}`;
+    const cached = cache.get(cacheKey);
+    if (cached) {
+      ctx.body = cached;
+      return;
+    }
     try {
-        const { id: playerId } = ctx.params;
-        const { leagueId, year } = ctx.query as { leagueId?: string, year?: string };
-
         const player = await UserModel.findByPk(playerId, {
             attributes: ['id', 'firstName', 'lastName', 'profilePicture', 'xp', 'position', 'age', 'style', 'positionType', 'preferredFoot', 'shirtNumber']
         });
@@ -335,7 +372,7 @@ router.get('/:id/stats', required, async (ctx) => {
           };
         }));
 
-        ctx.body = {
+        const result = {
             success: true,
             data: {
                 player: {
@@ -357,6 +394,8 @@ router.get('/:id/stats', required, async (ctx) => {
                 trophies: trophyMap // <-- now includes league info for each trophy
             }
         };
+        cache.set(cacheKey, result, 30); // cache for 30 seconds
+        ctx.body = result;
     } catch (error) {
         console.error('Error fetching player stats:', error);
         ctx.throw(500, 'Failed to fetch player stats.');

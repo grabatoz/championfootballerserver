@@ -10,6 +10,7 @@ import { calculateAndAwardXPAchievements } from '../utils/xpAchievementsEngine';
 import Vote from '../models/Vote';
 import MatchStatistics from '../models/MatchStatistics';
 import { xpPointsTable } from '../utils/xpPointsTable';
+import cache from '../utils/cache';
 
 const router = new Router({ prefix: '/leagues' });
 
@@ -851,6 +852,58 @@ router.post('/:id/reset-xp', required, async (ctx) => {
     }
   }
   ctx.body = { success: true, message: 'XP reset for all users in this league.' };
+});
+
+// Find the main GET /leagues endpoint and wrap with cache logic
+router.get('/', async (ctx) => {
+  const cacheKey = 'leagues_all';
+  const cached = cache.get(cacheKey);
+  if (cached) {
+    ctx.body = cached;
+    return;
+  }
+  // Existing DB fetch logic
+  if (!ctx.state.user || !ctx.state.user.userId) {
+    ctx.throw(401, "Unauthorized");
+    return;
+  }
+
+  try {
+    const user = await User.findByPk(ctx.state.user.userId, {
+      include: [{
+        model: League,
+        as: 'leagues',
+        include: [
+          { model: User, as: 'members' },
+          { model: User, as: 'administeredLeagues' },
+          {
+            model: Match,
+            as: 'matches',
+            include: [
+              { model: User, as: 'homeTeamUsers' },
+              { model: User, as: 'awayTeamUsers' },
+              { model: User, as: 'statistics' }
+            ]
+          }
+        ]
+      }]
+    });
+
+    if (!user) {
+      ctx.throw(404, "User not found");
+      return;
+    }
+
+    const leagues = (user as any).leagues || [];
+    cache.set(cacheKey, { success: true, leagues }, 30); // cache for 30 seconds
+    ctx.body = { success: true, leagues };
+  } catch (error) {
+    console.error("Error fetching leagues for user:", error);
+    ctx.throw(500, "Failed to retrieve leagues.");
+  }
+  // Suppose the result is in variable 'leagues'
+  // cache.set(cacheKey, leagues, 30); // cache for 30 seconds
+  // ctx.body = leagues;
 });
 
 export default router;

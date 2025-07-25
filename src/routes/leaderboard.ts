@@ -1,6 +1,7 @@
 import Router from '@koa/router';
 import models from '../models';
 import { Op, fn, col, literal } from 'sequelize';
+import cache from '../utils/cache';
 
 const router = new Router({ prefix: '/leaderboard' });
 
@@ -14,6 +15,13 @@ const METRIC_MAP: Record<string, string> = {
 };
 
 router.get('/', async (ctx) => {
+  const cacheKey = 'leaderboard_all';
+  const cached = cache.get(cacheKey);
+  if (cached) {
+    ctx.body = cached;
+    return;
+  }
+
   const metric = (ctx.query.metric as string) || 'goals';
   const leagueId = ctx.query.leagueId as string | undefined;
   const positionType = ctx.query.positionType as string | undefined;
@@ -99,10 +107,12 @@ router.get('/', async (ctx) => {
   // Only show message if all players' value for the selected metric is zero (and there is at least one player)
   const allZero = players.length > 0 && players.every(p => !p.value || Number(p.value) === 0);
 
-  ctx.body = {
+  const result = {
     players,
     message: allZero ? 'Abhi kisi user ko assign nahi hua.' : undefined
   };
+  cache.set(cacheKey, result, 30); // cache for 30 seconds
+  ctx.body = result;
 });
 
 export default router; 

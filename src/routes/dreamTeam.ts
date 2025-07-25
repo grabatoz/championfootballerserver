@@ -1,12 +1,20 @@
 import Router from '@koa/router';
 import { required } from '../modules/auth';
 import models from '../models';
+import cache from '../utils/cache';
 const { User, Match, MatchStatistics, Vote } = models;
 
 const router = new Router({ prefix: '/dream-team' });
 
 // Get dream team - best players by position
 router.get('/', required, async (ctx) => {
+  const cacheKey = 'dreamteam_all';
+  const cached = cache.get(cacheKey);
+  if (cached) {
+    ctx.body = cached;
+    return;
+  }
+
   try {
     const leagueId = ctx.query.leagueId as string | undefined;
     if (!leagueId) {
@@ -166,11 +174,13 @@ router.get('/', required, async (ctx) => {
       forwards: dreamTeamPlayers.filter(p => categorizePlayer(p.position) === 'forwards'),
     };
 
-    ctx.body = {
+    const result = {
       success: true,
       dreamTeam,
       totalPlayers: dreamTeamPlayers.length
     };
+    cache.set(cacheKey, result, 30); // cache for 30 seconds
+    ctx.body = result;
 
   } catch (error) {
     console.error('Error fetching dream team:', error);

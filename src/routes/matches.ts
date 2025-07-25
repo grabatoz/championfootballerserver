@@ -5,6 +5,7 @@ import { QueryTypes } from 'sequelize';
 import sequelize from '../config/database';
 import { calculateAndAwardXPAchievements } from '../utils/xpAchievementsEngine';
 import { xpPointsTable } from '../utils/xpPointsTable';
+import cache from '../utils/cache';
 const { Match, Vote, User } = models;
 
 const router = new Router({ prefix: '/matches' });
@@ -368,6 +369,31 @@ router.get('/:matchId', async (ctx) => {
         return;
     }
     ctx.body = { success: true, match };
+});
+
+router.get('/', async (ctx) => {
+  const cacheKey = 'matches_all';
+  const cached = cache.get(cacheKey);
+  if (cached) {
+    ctx.body = cached;
+    return;
+  }
+  try {
+    // Existing DB fetch logic
+    const matches = await Match.findAll({
+      include: [
+        { model: User, as: 'homeTeamUsers' },
+        { model: User, as: 'awayTeamUsers' },
+        { model: Vote, as: 'votes' },
+      ],
+    });
+    const result = { success: true, matches };
+    cache.set(cacheKey, result, 30); // cache for 30 seconds
+    ctx.body = result;
+  } catch (error) {
+    console.error('Error fetching matches:', error);
+    ctx.throw(500, 'Failed to fetch matches.');
+  }
 });
 
 export default router;
