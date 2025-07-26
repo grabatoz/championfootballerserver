@@ -15,17 +15,15 @@ const METRIC_MAP: Record<string, string> = {
 };
 
 router.get('/', async (ctx) => {
-  const cacheKey = 'leaderboard_all';
+  const metric = (ctx.query.metric as string) || 'goals';
+  const leagueId = ctx.query.leagueId as string | undefined;
+  const positionType = ctx.query.positionType as string | undefined;
+  const cacheKey = `leaderboard_${metric}_${leagueId || 'all'}_${positionType || 'all'}`;
   const cached = cache.get(cacheKey);
   if (cached) {
     ctx.body = cached;
     return;
   }
-
-  const metric = (ctx.query.metric as string) || 'goals';
-  const leagueId = ctx.query.leagueId as string | undefined;
-  const positionType = ctx.query.positionType as string | undefined;
-  let orderField = METRIC_MAP[metric] || 'goals';
 
   // MOTM: aggregate from Vote model, filter by league
   if (metric === 'motm' && leagueId) {
@@ -88,7 +86,7 @@ router.get('/', async (ctx) => {
   const stats = await models.MatchStatistics.findAll({
     attributes: [
       'user_id',
-      [fn('SUM', col(orderField)), 'value']
+      [fn('SUM', col(METRIC_MAP[metric] || 'goals')), 'value']
     ],
     group: ['user_id', 'user.id'],
     order: [[literal('value'), 'DESC']],
