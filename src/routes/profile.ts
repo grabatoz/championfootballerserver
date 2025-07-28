@@ -325,6 +325,18 @@ router.post('/picture', required, upload.single('profilePicture'), async (ctx: C
   user.profilePicture = imageUrl;
   await user.save();
 
+  // Update cache with new user data
+  const updatedUserData = {
+    id: user.id,
+    firstName: user.firstName,
+    lastName: user.lastName,
+    profilePicture: user.profilePicture,
+    position: user.position,
+    positionType: user.positionType,
+    xp: user.xp || 0
+  };
+  cache.updateArray('players_all', updatedUserData);
+
   ctx.body = { success: true, user };
 });
 

@@ -9,38 +9,43 @@ import path from 'path';
 import mount from 'koa-mount';
 import { triggerImmediateXPCalculation } from './utils/xpAchievementsEngine';
 
-// Dependencies: extra
+// CORS configuration for both development and production
+const allowedOrigins = [
+  'http://localhost:3000',
+  'https://championfootballer-client.vercel.app',
+  'https://championfootballer-client-git-main-championfootballer.vercel.app',
+  'https://championfootballer-client-championfootballer.vercel.app'
+];
+
+app.use(cors({
+  origin: (ctx) => {
+    const origin = ctx.request.header.origin;
+    if (origin && allowedOrigins.includes(origin)) {
+      return origin;
+    }
+    return allowedOrigins[0]; // fallback to first origin
+  },
+  allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
+  allowHeaders: ['Content-Type', 'Authorization', 'Accept', 'Origin'],
+  credentials: true,
+  maxAge: 86400 // 24 hours
+}));
+
+// Root route for health check and CORS
 app.use(async (ctx, next) => {
   if (ctx.path === '/' && ctx.method === 'GET') {
-    ctx.set('Access-Control-Allow-Origin', '*'); // ensure CORS header is sent
+    ctx.set('Access-Control-Allow-Origin', '*');
     ctx.set('Access-Control-Allow-Credentials', 'true');
-    ctx.body = { status: 'ok', message: 'ChampionFootballer API root' };
+    ctx.body = { 
+      status: 'ok', 
+      message: 'ChampionFootballer API root',
+      timestamp: new Date().toISOString(),
+      environment: process.env.NODE_ENV || 'development'
+    };
     return;
   }
   await next();
 });
-
-// origin: 'http://localhost:3000',
-app.use(cors({
-  // origin: 'http://localhost:3000',
-  origin: 'https://championfootballer-client.vercel.app',
-  allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
-  allowHeaders: ['Content-Type', 'Authorization', 'Accept', 'Origin'],
-  credentials: true
-}));
-
-
-// CORS configuration
-// app.use(cors({
-//   origin: '*',
-//   allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
-//   allowHeaders: ['Content-Type', 'Authorization', 'Accept', 'Origin'],
-//   exposeHeaders: ['WWW-Authenticate', 'Server-Authorization'],
-//   maxAge: 5,
-//   credentials: true,
-//   keepHeadersOnError: true
-// }));
-
 
 // Manual XP calculation endpoint
 app.use(async (ctx: Koa.Context, next: Koa.Next) => {
@@ -51,7 +56,6 @@ app.use(async (ctx: Koa.Context, next: Koa.Next) => {
   }
   await next();
 });
-// Root route for health check and CORS
 
 // Body parser - using koaBody for better multipart support
 app.use(async (ctx, next) => {
@@ -79,7 +83,12 @@ app.use(mount('/uploads', serve(path.resolve(process.cwd(), 'uploads'))));
 app.use(async (ctx, next) => {
   await next();
   if (ctx.status === 404) {
-    ctx.set('Access-Control-Allow-Origin', '*'); // or your allowed origin
+    const origin = ctx.request.header.origin;
+    if (origin && allowedOrigins.includes(origin)) {
+      ctx.set('Access-Control-Allow-Origin', origin);
+    } else {
+      ctx.set('Access-Control-Allow-Origin', allowedOrigins[0]);
+    }
     ctx.set('Access-Control-Allow-Credentials', 'true');
   }
 });
@@ -91,6 +100,16 @@ app.use(async (ctx, next) => {
     await next()
   } catch (error: any) {
     console.error('Request error:', error);
+    
+    // Set CORS headers even on error
+    const origin = ctx.request.header.origin;
+    if (origin && allowedOrigins.includes(origin)) {
+      ctx.set('Access-Control-Allow-Origin', origin);
+    } else {
+      ctx.set('Access-Control-Allow-Origin', allowedOrigins[0]);
+    }
+    ctx.set('Access-Control-Allow-Credentials', 'true');
+    
     // If there isn't a status, set it to 500 with default message
     if (error.status) {
       ctx.response.status = error.status
@@ -98,6 +117,7 @@ app.use(async (ctx, next) => {
       ctx.response.status = 500
       ctx.response.body = {
         message: "Something went wrong. Please contact support.",
+        error: process.env.NODE_ENV === 'development' ? error.message : undefined
       }
     }
 
@@ -130,4 +150,6 @@ app.on("error", async (error) => {
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
   console.log(`🚀 Server is running on http://localhost:${PORT}`);
+  console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
+  console.log(`🔗 Allowed origins: ${allowedOrigins.join(', ')}`);
 });
