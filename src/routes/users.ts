@@ -2,6 +2,7 @@ import Router from '@koa/router';
 import { required } from "../modules/auth"
 import models from "../models"
 import { hash } from "bcrypt"
+import cache from '../utils/cache';
 const { User, League } = models
 
 const router = new Router({ prefix: '/users' });
@@ -87,6 +88,23 @@ router.patch("/:id", required, async (ctx) => {
     where: { id: ctx.params.id }
   });
 
+  // Update cache with new user data
+  const updatedUserData = {
+    id: ctx.params.id,
+    firstName,
+    lastName,
+    profilePicture: pictureKey,
+    position,
+    positionType: position,
+    xp: 0 // Will be updated from database
+  };
+
+  // Update players cache
+  cache.updateArray('players_all', updatedUserData);
+  
+  // Clear any user-specific caches
+  cache.clearPattern(`user_leagues_${ctx.params.id}`);
+
   ctx.response.status = 200;
 })
 
@@ -99,6 +117,12 @@ router.delete("/:id", required, async (ctx) => {
   await User.destroy({
     where: { id: ctx.params.id }
   });
+
+  // Remove user from cache
+  cache.removeFromArray('players_all', ctx.params.id);
+  
+  // Clear any user-specific caches
+  cache.clearPattern(`user_leagues_${ctx.params.id}`);
 
   ctx.response.status = 200;
 })

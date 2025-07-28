@@ -38,6 +38,17 @@ router.post('/:id/votes', required, async (ctx) => {
         votedForId,
     });
 
+    // Update leaderboard cache for MOTM
+    const match = await Match.findByPk(matchId);
+    if (match && match.leagueId) {
+      const cacheKey = `leaderboard_motm_${match.leagueId}_all`;
+      const newStats = {
+        playerId: votedForId,
+        value: 1 // Increment vote count
+      };
+      cache.updateLeaderboard(cacheKey, newStats);
+    }
+
     ctx.status = 200;
     ctx.body = { success: true, message: "Vote cast successfully." };
 });
@@ -74,6 +85,19 @@ router.post('/:matchId/availability', required, async (ctx) => {
     const updatedMatch = await Match.findByPk(ctx.params.matchId, {
         include: [{ model: User, as: 'availableUsers' }]
     });
+
+    // Update matches cache
+    const updatedMatchData = {
+      id: ctx.params.matchId,
+      homeTeamGoals: updatedMatch?.homeTeamGoals,
+      awayTeamGoals: updatedMatch?.awayTeamGoals,
+      status: updatedMatch?.status,
+      date: updatedMatch?.date,
+      leagueId: updatedMatch?.leagueId,
+      availableUsers: updatedMatch?.availableUsers || []
+    };
+    cache.updateArray('matches_all', updatedMatchData);
+
     ctx.status = 200;
     ctx.body = { success: true, match: updatedMatch };
 });
@@ -90,6 +114,18 @@ router.patch('/:matchId/goals', required, async (ctx) => {
     match.homeTeamGoals = homeGoals;
     match.awayTeamGoals = awayGoals;
     await match.save();
+
+    // Update matches cache
+    const updatedMatchData = {
+      id: matchId,
+      homeTeamGoals: homeGoals,
+      awayTeamGoals: awayGoals,
+      status: match.status,
+      date: match.date,
+      leagueId: match.leagueId
+    };
+    cache.updateArray('matches_all', updatedMatchData);
+
     ctx.body = { success: true };
 });
 
@@ -104,6 +140,19 @@ router.patch('/:matchId/note', required, async (ctx) => {
     }
     match.notes = note;
     await match.save();
+
+    // Update matches cache
+    const updatedMatchData = {
+      id: matchId,
+      homeTeamGoals: match.homeTeamGoals,
+      awayTeamGoals: match.awayTeamGoals,
+      status: match.status,
+      date: match.date,
+      leagueId: match.leagueId,
+      notes: note
+    };
+    cache.updateArray('matches_all', updatedMatchData);
+
     ctx.body = { success: true };
 });
 
@@ -164,10 +213,42 @@ router.post('/:matchId/stats', required, async (ctx) => {
         stats.freeKicks = freeKicks;
         stats.defence = defence;
         stats.impact = impact;
-        await stats.save();
-    }
+            await stats.save();
+  }
 
-    // XP calculation for this user
+  // Update cache with new stats
+  const updatedMatchData = {
+    id: matchId,
+    homeTeamGoals: match.homeTeamGoals,
+    awayTeamGoals: match.awayTeamGoals,
+    status: match.status,
+    date: match.date,
+    leagueId: match.leagueId
+  };
+
+  // Update matches cache
+  cache.updateArray('matches_all', updatedMatchData);
+  
+  // Update leaderboard cache for all metrics
+  const leaderboardKeys = ['goals', 'assists', 'defence', 'motm', 'impact', 'cleanSheet'];
+  leaderboardKeys.forEach(metric => {
+    const cacheKey = `leaderboard_${metric}_all_all`;
+    let value = 0;
+    if (metric === 'defence') value = stats.defence || 0;
+    else if (metric === 'cleanSheet') value = stats.cleanSheets || 0;
+    else if (metric === 'goals') value = stats.goals || 0;
+    else if (metric === 'assists') value = stats.assists || 0;
+    else if (metric === 'impact') value = stats.impact || 0;
+    else if (metric === 'motm') value = 0; // MOTM is calculated separately
+    
+    const newStats = {
+      playerId: userId,
+      value
+    };
+    cache.updateLeaderboard(cacheKey, newStats);
+  });
+
+  // XP calculation for this user
     // Get teams and votes for XP logic
     const matchWithTeams = await Match.findByPk(matchId, {
         include: [

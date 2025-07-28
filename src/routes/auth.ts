@@ -7,6 +7,7 @@ import { hash, compare } from "bcrypt"
 import { getLoginCode } from "../modules/utils"
 import { Context } from "koa";
 import jwt from 'jsonwebtoken';
+import cache from '../utils/cache';
 
 const router = new Router();
 const { League, Match, Session } = models;
@@ -142,6 +143,23 @@ router.post("/auth/register", none, async (ctx: Context) => {
     } catch (emailError) {
       console.error('Error sending welcome email:', emailError);
     }
+
+    // Update cache with new user data
+    const newUserData = {
+      id: newUser.id,
+      firstName: newUser.firstName,
+      lastName: newUser.lastName,
+      profilePicture: newUser.profilePicture,
+      position: newUser.position,
+      positionType: newUser.positionType,
+      xp: newUser.xp || 0
+    };
+
+    // Update players cache with new user
+    cache.updateArray('players_all', newUserData);
+    
+    // Clear any user-specific caches
+    cache.clearPattern(`user_leagues_${newUser.id}`);
 
     // Return success response with token and user data
     ctx.status = 200;

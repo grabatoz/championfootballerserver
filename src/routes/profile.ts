@@ -5,6 +5,7 @@ import models from '../models';
 import { upload, uploadToCloudinary } from '../middleware/upload';
 import { hash } from 'bcrypt';
 import jwt from 'jsonwebtoken';
+import cache from '../utils/cache';
 const { User, Session } = models;
 
 const router = new Router({ prefix: '/profile' });
@@ -131,6 +132,23 @@ router.patch('/', required, async (ctx: CustomContext) => {
   if (updateData.password) {
     console.log('🔐 Password was updated in database');
   }
+
+  // Update cache with new user data
+  const updatedUserData = {
+    id: user.id,
+    firstName: user.firstName,
+    lastName: user.lastName,
+    profilePicture: user.profilePicture,
+    position: user.position,
+    positionType: user.positionType,
+    xp: user.xp || 0
+  };
+
+  // Update players cache
+  cache.updateArray('players_all', updatedUserData);
+  
+  // Clear any user-specific caches
+  cache.clearPattern(`user_leagues_${user.id}`);
 
   // Delete sensitive data
   const propertiesToDelete = [

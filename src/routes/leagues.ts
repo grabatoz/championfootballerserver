@@ -56,6 +56,8 @@ router.get('/user', required, async (ctx) => {
     }
 
     const result = { success: true, leagues: (user as any).leagues || [] };
+    console.log('result',result);
+    
     cache.set(cacheKey, result, 600); // cache for 30 seconds
     ctx.body = result;
   } catch (error) {
@@ -269,6 +271,26 @@ router.post("/", required, async (ctx) => {
     console.log(`Creation email sent to ${user.email}`);
     }
 
+    // Update cache with new league
+    const newLeagueData = {
+      id: newLeague.id,
+      name: newLeague.name,
+      inviteCode: newLeague.inviteCode,
+      createdAt: newLeague.createdAt,
+      maxGames,
+      showPoints,
+      active: true,
+      members: [],
+      administrators: [user],
+      matches: []
+    };
+
+    // Update all user-specific league caches
+    cache.updateArray(`user_leagues_${ctx.state.user.userId}`, newLeagueData);
+    
+    // Clear any general leagues cache to ensure fresh data
+    cache.clearPattern('leagues_all');
+
     ctx.status = 201; 
     ctx.body = {
       success: true,
@@ -324,6 +346,25 @@ router.patch("/:id/status", required, async (ctx) => {
     }
   }
 
+  // Update cache with league status change
+  const updatedLeagueData = {
+    id: leagueId,
+    name: league.name,
+    inviteCode: league.inviteCode,
+    maxGames: league.maxGames,
+    showPoints: league.showPoints,
+    active,
+    members: (league as any).members || [],
+    administrators: [],
+    matches: []
+  };
+
+  // Update all user league caches
+  const memberIds = (league as any).members.map((m: any) => m.id);
+  memberIds.forEach((memberId: string) => {
+    cache.updateArray(`user_leagues_${memberId}`, updatedLeagueData);
+  });
+
   ctx.body = { success: true, league };
 });
 
@@ -361,6 +402,28 @@ router.patch("/:id", required, async (ctx) => {
     }
   }
 
+  // Update cache with league changes
+  const updatedLeagueData = {
+    id: ctx.params.id,
+    name: league.name,
+    inviteCode: league.inviteCode,
+    maxGames: league.maxGames,
+    showPoints: league.showPoints,
+    active: league.active,
+    members: [],
+    administrators: [],
+    matches: []
+  };
+
+  // Update all user league caches
+  const leagueWithMembers = await League.findByPk(ctx.params.id, {
+    include: [{ model: User, as: 'members' }]
+  });
+  const memberIds = (leagueWithMembers as any)?.members?.map((m: any) => m.id) || [];
+  memberIds.forEach((memberId: string) => {
+    cache.updateArray(`user_leagues_${memberId}`, updatedLeagueData);
+  });
+
   ctx.status = 200;
   ctx.body = { success: true, message: "League updated successfully." };
 });
@@ -375,7 +438,18 @@ router.del("/:id", required, async (ctx) => {
     return;
   }
 
+  // Get league members before deletion
+  const leagueWithMembers = await League.findByPk(ctx.params.id, {
+    include: [{ model: User, as: 'members' }]
+  });
+  const memberIds = (leagueWithMembers as any)?.members?.map((m: any) => m.id) || [];
+
   await league.destroy();
+
+  // Remove league from all user caches
+  memberIds.forEach((memberId: string) => {
+    cache.removeFromArray(`user_leagues_${memberId}`, ctx.params.id);
+  });
 
   ctx.status = 204; // No Content
 });
@@ -453,6 +527,48 @@ router.post("/:id/matches", required, async (ctx) => {
       { model: User, as: 'awayTeamUsers' },
       { model: User, as: 'homeTeamUsers' }
     ]
+  });
+
+  // Update cache with new match
+  const newMatchData = {
+    id: match.id,
+    homeTeamName,
+    awayTeamName,
+    location,
+    leagueId: ctx.params.id,
+    date: matchDate,
+    start: matchDate,
+    end: endDate,
+    status: 'scheduled',
+    homeCaptainId: homeCaptain || null,
+    awayCaptainId: awayCaptain || null,
+    homeTeamUsers: (matchWithUsers as any)?.homeTeamUsers || [],
+    awayTeamUsers: (matchWithUsers as any)?.awayTeamUsers || []
+  };
+
+  // Update matches cache
+  cache.updateArray('matches_all', newMatchData);
+
+  // Update league cache with new match
+  const updatedLeagueData = {
+    id: ctx.params.id,
+    name: league.name,
+    inviteCode: league.inviteCode,
+    maxGames: league.maxGames,
+    showPoints: league.showPoints,
+    active: league.active,
+    members: [],
+    administrators: [],
+    matches: [newMatchData]
+  };
+
+  // Update all user league caches
+  const leagueWithMembers = await League.findByPk(ctx.params.id, {
+    include: [{ model: User, as: 'members' }]
+  });
+  const memberIds = (leagueWithMembers as any)?.members?.map((m: any) => m.id) || [];
+  memberIds.forEach((memberId: string) => {
+    cache.updateArray(`user_leagues_${memberId}`, updatedLeagueData);
   });
 
   ctx.status = 201;
@@ -551,6 +667,26 @@ router.patch("/:leagueId/matches/:matchId", required, async (ctx) => {
     ],
   });
 
+  // Update cache with updated match
+  const updatedMatchData = {
+    id: matchId,
+    homeTeamName,
+    awayTeamName,
+    location,
+    leagueId: match.leagueId,
+    date: matchDate,
+    start: matchDate,
+    end: matchDate,
+    status: match.status,
+    homeCaptainId: ctx.request.body.homeCaptainId,
+    awayCaptainId: ctx.request.body.awayCaptainId,
+    homeTeamUsers: (updatedMatch as any)?.homeTeamUsers || [],
+    awayTeamUsers: (updatedMatch as any)?.awayTeamUsers || []
+  };
+
+  // Update matches cache
+  cache.updateArray('matches_all', updatedMatchData);
+
   ctx.body = {
     success: true,
     message: "Match updated successfully.",
@@ -610,6 +746,25 @@ router.post("/join", required, async (ctx) => {
   });
   console.log(`Join email sent to ${user.email}`);
 
+  // Update cache with joined league
+  const joinedLeagueData = {
+    id: league.id,
+    name: league.name,
+    inviteCode: league.inviteCode,
+    maxGames: league.maxGames,
+    showPoints: league.showPoints,
+    active: league.active,
+    members: [],
+    administrators: [],
+    matches: []
+  };
+
+  // Update user's league cache
+  cache.updateArray(`user_leagues_${ctx.state.user.userId}`, joinedLeagueData);
+  
+  // Clear any general leagues cache to ensure fresh data
+  cache.clearPattern('leagues_all');
+
   ctx.body = { 
     success: true,
     message: "Successfully joined league",
@@ -634,6 +789,12 @@ router.post("/:id/leave", required, async (ctx) => {
   }
 
   await (league as any).removeMember(ctx.state.user.userId);
+
+  // Remove league from user's cache
+  cache.removeFromArray(`user_leagues_${ctx.state.user.userId}`, league.id);
+  
+  // Clear any general leagues cache to ensure fresh data
+  cache.clearPattern('leagues_all');
 
   ctx.response.status = 200;
 });
@@ -861,6 +1022,31 @@ router.post('/:id/reset-xp', required, async (ctx) => {
       await user.save();
     }
   }
+  // Update cache for all users whose XP was reset
+  for (const member of (league as any).members || []) {
+    const user = await User.findByPk(member.id);
+    if (user) {
+      const updatedUserData = {
+        id: user.id,
+        firstName: user.firstName,
+        lastName: user.lastName,
+        profilePicture: user.profilePicture,
+        position: user.position,
+        positionType: user.positionType,
+        xp: user.xp || 0
+      };
+
+      // Update players cache
+      cache.updateArray('players_all', updatedUserData);
+      
+      // Clear any user-specific caches
+      cache.clearPattern(`user_leagues_${user.id}`);
+    }
+  }
+
+  // Clear leaderboard cache for this league
+  cache.clearPattern(`leaderboard_`);
+
   ctx.body = { success: true, message: 'XP reset for all users in this league.' };
 });
 
