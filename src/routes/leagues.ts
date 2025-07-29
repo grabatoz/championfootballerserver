@@ -11,6 +11,8 @@ import Vote from '../models/Vote';
 import MatchStatistics from '../models/MatchStatistics';
 import { xpPointsTable } from '../utils/xpPointsTable';
 import cache from '../utils/cache';
+import { upload, uploadToCloudinary } from '../middleware/upload';
+
 
 const router = new Router({ prefix: '/leagues' });
 
@@ -232,7 +234,7 @@ router.get("/:id", required, async (ctx) => {
 });
 
 // Create a new league
-router.post("/", required, async (ctx) => {
+router.post("/", required, upload.single('image'), async (ctx) => {
   if (!ctx.state.user || !ctx.state.user.userId) {
     ctx.throw(401, "Unauthorized");
     return;
@@ -244,11 +246,26 @@ router.post("/", required, async (ctx) => {
   }
 
   try {
+    let imageUrl = null;
+    
+    // Handle image upload if file is present
+    if (ctx.file) {
+      try {
+        imageUrl = await uploadToCloudinary(ctx.file.buffer, 'league-images');
+        console.log('League image uploaded successfully:', imageUrl);
+      } catch (uploadError) {
+        console.error('League image upload error:', uploadError);
+        // Continue without image
+        imageUrl = null;
+      }
+    }
+
     const newLeague = await League.create({
       name,
       inviteCode: getInviteCode(),
       maxGames,
       showPoints,
+      image: imageUrl,
     } as any);
 
     const user = await User.findByPk(ctx.state.user.userId);
@@ -280,6 +297,7 @@ router.post("/", required, async (ctx) => {
       maxGames,
       showPoints,
       active: true,
+      image: imageUrl,
       members: [],
       administrators: [user],
       matches: []
@@ -300,11 +318,12 @@ router.post("/", required, async (ctx) => {
         name: newLeague.name,
         inviteCode: newLeague.inviteCode,
         createdAt: newLeague.createdAt,
+        image: imageUrl,
       },
     };
   } catch (error) {
-    console.error("Error creating league:", error);
-    ctx.throw(500, "Something went wrong. Please contact support.");
+    console.error('League creation error:', error);
+    ctx.throw(500, "Failed to create league");
   }
 });
 
@@ -455,28 +474,35 @@ router.del("/:id", required, async (ctx) => {
 });
 
 // Create a new match in a league
-router.post("/:id/matches", required, async (ctx) => {
-  const {
-    awayTeamName,
-    homeTeamName,
-    location,
-    awayTeamUsers,
-    homeTeamUsers,
-    date,
-    end: rawEnd,
-    homeCaptain, // <-- add this
-    awayCaptain  // <-- add this
-  } = ctx.request.body as {
-    homeTeamUsers?: string[],
-    awayTeamUsers?: string[],
-    date: string,
-    end: string, // Expecting end time as ISO string
-    awayTeamName: string,
-    homeTeamName: string,
-    location: string,
-    homeCaptain?: string, // <-- add this
-    awayCaptain?: string  // <-- add this
-  };
+router.post("/:id/matches", required, upload.fields([
+  { name: 'homeTeamImage', maxCount: 1 },
+  { name: 'awayTeamImage', maxCount: 1 }
+]), async (ctx) => {
+  // Parse FormData fields
+  const homeTeamName = ctx.request.body.homeTeamName;
+  const awayTeamName = ctx.request.body.awayTeamName;
+  const date = ctx.request.body.date;
+  const start = ctx.request.body.start;
+  const end = ctx.request.body.end;
+  const location = ctx.request.body.location;
+  
+  // Parse JSON arrays from FormData
+  let homeTeamUsers: string[] = [];
+  let awayTeamUsers: string[] = [];
+  
+  try {
+    if (ctx.request.body.homeTeamUsers) {
+      homeTeamUsers = JSON.parse(ctx.request.body.homeTeamUsers);
+    }
+    if (ctx.request.body.awayTeamUsers) {
+      awayTeamUsers = JSON.parse(ctx.request.body.awayTeamUsers);
+    }
+  } catch (error) {
+    console.error('Error parsing team users arrays:', error);
+  }
+  
+  const homeCaptain = ctx.request.body.homeCaptain;
+  const awayCaptain = ctx.request.body.awayCaptain;
 
   if (!homeTeamName || !awayTeamName || !date) {
     ctx.throw(400, "Missing required match details.");
@@ -497,8 +523,40 @@ router.post("/:id/matches", required, async (ctx) => {
     ctx.throw(403, "This league has reached the maximum number of games.")
   }
 
+  // Handle team image uploads
+  let homeTeamImageUrl = null;
+  let awayTeamImageUrl = null;
+
+  if (ctx.files) {
+    const files = ctx.files as { [fieldname: string]: Express.Multer.File[] };
+    
+    // Upload home team image
+    if (files.homeTeamImage && files.homeTeamImage[0]) {
+      try {
+        homeTeamImageUrl = await uploadToCloudinary(files.homeTeamImage[0].buffer, 'team-images');
+        console.log('Home team image uploaded successfully:', homeTeamImageUrl);
+      } catch (uploadError) {
+        console.error('Home team image upload error:', uploadError);
+        // Continue without image
+        homeTeamImageUrl = null;
+      }
+    }
+
+    // Upload away team image
+    if (files.awayTeamImage && files.awayTeamImage[0]) {
+      try {
+        awayTeamImageUrl = await uploadToCloudinary(files.awayTeamImage[0].buffer, 'team-images');
+        console.log('Away team image uploaded successfully:', awayTeamImageUrl);
+      } catch (uploadError) {
+        console.error('Away team image upload error:', uploadError);
+        // Continue without image
+        awayTeamImageUrl = null;
+      }
+    }
+  }
+
   const matchDate = new Date(date);
-  const endDate = rawEnd ? new Date(rawEnd) : new Date(matchDate.getTime() + 90 * 60000); // Default to 90 mins if not provided
+  const endDate = end ? new Date(end) : new Date(matchDate.getTime() + 90 * 60000); // Default to 90 mins if not provided
 
   const match = await Match.create({
     awayTeamName,
@@ -510,7 +568,9 @@ router.post("/:id/matches", required, async (ctx) => {
     end: endDate,
     status: 'scheduled',
     homeCaptainId: homeCaptain || null, // <-- save captain
-    awayCaptainId: awayCaptain || null  // <-- save captain
+    awayCaptainId: awayCaptain || null,  // <-- save captain
+    homeTeamImage: homeTeamImageUrl,
+    awayTeamImage: awayTeamImageUrl
   } as any);
   console.log('match create',match)
 
@@ -529,6 +589,45 @@ router.post("/:id/matches", required, async (ctx) => {
     ]
   });
 
+  // Serialize match data to avoid circular references
+  const serializedMatch = {
+    id: match.id,
+    homeTeamName: match.homeTeamName,
+    awayTeamName: match.awayTeamName,
+    location: match.location,
+    leagueId: match.leagueId,
+    date: match.date,
+    start: match.start,
+    end: match.end,
+    status: match.status,
+    homeCaptainId: match.homeCaptainId,
+    awayCaptainId: match.awayCaptainId,
+    homeTeamImage: homeTeamImageUrl,
+    awayTeamImage: awayTeamImageUrl,
+    homeTeamUsers: (matchWithUsers as any)?.homeTeamUsers?.map((user: any) => ({
+      id: user.id,
+      firstName: user.firstName,
+      lastName: user.lastName,
+      email: user.email,
+      profilePicture: user.profilePicture,
+      shirtNumber: user.shirtNumber,
+      level: user.level,
+      positionType: user.positionType,
+      preferredFoot: user.preferredFoot
+    })) || [],
+    awayTeamUsers: (matchWithUsers as any)?.awayTeamUsers?.map((user: any) => ({
+      id: user.id,
+      firstName: user.firstName,
+      lastName: user.lastName,
+      email: user.email,
+      profilePicture: user.profilePicture,
+      shirtNumber: user.shirtNumber,
+      level: user.level,
+      positionType: user.positionType,
+      preferredFoot: user.preferredFoot
+    })) || []
+  };
+
   // Update cache with new match
   const newMatchData = {
     id: match.id,
@@ -542,8 +641,10 @@ router.post("/:id/matches", required, async (ctx) => {
     status: 'scheduled',
     homeCaptainId: homeCaptain || null,
     awayCaptainId: awayCaptain || null,
-    homeTeamUsers: (matchWithUsers as any)?.homeTeamUsers || [],
-    awayTeamUsers: (matchWithUsers as any)?.awayTeamUsers || []
+    homeTeamImage: homeTeamImageUrl,
+    awayTeamImage: awayTeamImageUrl,
+    homeTeamUsers: serializedMatch.homeTeamUsers,
+    awayTeamUsers: serializedMatch.awayTeamUsers
   };
 
   // Update matches cache
@@ -575,7 +676,7 @@ router.post("/:id/matches", required, async (ctx) => {
   ctx.body = {
     success: true,
     message: "Match scheduled successfully.",
-    match: matchWithUsers,
+    match: serializedMatch,
   };
 });
 

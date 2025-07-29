@@ -24,6 +24,8 @@ interface MatchAttributes {
   availableUsers?: User[];
   homeCaptainId?: string;
   awayCaptainId?: string;
+  homeTeamImage?: string;
+  awayTeamImage?: string;
 }
 
 interface MatchCreationAttributes extends Optional<MatchAttributes, 'id'> {}
@@ -48,6 +50,8 @@ class Match extends Model<MatchAttributes, MatchCreationAttributes> implements M
   public availableUsers?: User[];
   public homeCaptainId?: string;
   public awayCaptainId?: string;
+  public homeTeamImage?: string;
+  public awayTeamImage?: string;
 
   // Static associate function
   public static associate(models: any) {
@@ -217,6 +221,14 @@ Match.init(
         model: 'users',
         key: 'id',
       },
+    },
+    homeTeamImage: {
+      type: DataTypes.STRING,
+      allowNull: true,
+    },
+    awayTeamImage: {
+      type: DataTypes.STRING,
+      allowNull: true,
     },
   },
   {

@@ -59,10 +59,21 @@ app.use(async (ctx: Koa.Context, next: Koa.Next) => {
 
 // Body parser - using koaBody for better multipart support
 app.use(async (ctx, next) => {
-  // Skip koaBody for file upload route
+  // Skip koaBody for file upload routes
   if (ctx.path === '/profile/picture' && ctx.method === 'POST') {
     return next();
   }
+  
+  // Skip koaBody for league creation (using multer instead)
+  if (ctx.path === '/leagues' && ctx.method === 'POST') {
+    return next();
+  }
+  
+  // Skip koaBody for match creation (using multer instead)
+  if (ctx.path.includes('/leagues/') && ctx.path.includes('/matches') && ctx.method === 'POST') {
+    return next();
+  }
+  
   await koaBody({
     multipart: true,
     json: true,
