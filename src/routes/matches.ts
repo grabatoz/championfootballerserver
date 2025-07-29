@@ -6,7 +6,7 @@ import sequelize from '../config/database';
 import { calculateAndAwardXPAchievements } from '../utils/xpAchievementsEngine';
 import { xpPointsTable } from '../utils/xpPointsTable';
 import cache from '../utils/cache';
-const { Match, Vote, User } = models;
+const { Match, Vote, User, MatchStatistics } = models;
 
 const router = new Router({ prefix: '/matches' });
 
@@ -475,6 +475,203 @@ router.get('/', async (ctx) => {
     console.error('Error fetching matches:', error);
     ctx.throw(500, 'Failed to fetch matches.');
   }
+});
+
+// GET /matches/:matchId/stats - Get stats for a specific player in a match
+router.get('/:matchId/stats', required, async (ctx) => {
+    if (!ctx.state.user?.userId) {
+        ctx.throw(401, 'Unauthorized');
+        return;
+    }
+    
+    const { matchId } = ctx.params;
+    const { playerId } = ctx.query;
+    
+    if (!playerId) {
+        ctx.throw(400, 'playerId is required');
+        return;
+    }
+    
+    try {
+        const stats = await MatchStatistics.findOne({
+            where: {
+                match_id: matchId,
+                user_id: playerId
+            }
+        });
+        
+        if (stats) {
+            ctx.body = {
+                success: true,
+                stats: {
+                    goals: stats.goals || 0,
+                    assists: stats.assists || 0,
+                    cleanSheets: stats.cleanSheets || 0,
+                    penalties: stats.penalties || 0,
+                    freeKicks: stats.freeKicks || 0,
+                    defence: stats.defence || 0,
+                    impact: stats.impact || 0,
+                }
+            };
+        } else {
+            ctx.body = {
+                success: true,
+                stats: {
+                    goals: 0,
+                    assists: 0,
+                    cleanSheets: 0,
+                    penalties: 0,
+                    freeKicks: 0,
+                    defence: 0,
+                    impact: 0,
+                }
+            };
+        }
+    } catch (error) {
+        console.error('Error fetching stats:', error);
+        ctx.throw(500, 'Failed to fetch stats');
+    }
+});
+
+// POST /matches/:matchId/stats - Save or update stats for a player in a match
+router.post('/:matchId/stats', required, async (ctx) => {
+    if (!ctx.state.user?.userId) {
+        ctx.throw(401, 'Unauthorized');
+        return;
+    }
+    
+    const { matchId } = ctx.params;
+    const { playerId, goals, assists, cleanSheets, penalties, freeKicks, defence, impact } = ctx.request.body;
+    
+    if (!playerId) {
+        ctx.throw(400, 'playerId is required');
+        return;
+    }
+    
+    try {
+        // Check if stats already exist for this player in this match
+        let stats = await MatchStatistics.findOne({
+            where: {
+                match_id: matchId,
+                user_id: playerId
+            }
+        });
+        
+        if (stats) {
+            // Update existing stats
+            await stats.update({
+                goals: goals || 0,
+                assists: assists || 0,
+                cleanSheets: cleanSheets || 0,
+                penalties: penalties || 0,
+                freeKicks: freeKicks || 0,
+                defence: defence || 0,
+                impact: impact || 0,
+            });
+        } else {
+            // Create new stats
+            stats = await MatchStatistics.create({
+                match_id: matchId,
+                user_id: playerId,
+                goals: goals || 0,
+                assists: assists || 0,
+                cleanSheets: cleanSheets || 0,
+                penalties: penalties || 0,
+                freeKicks: freeKicks || 0,
+                defence: defence || 0,
+                impact: impact || 0,
+                yellowCards: 0,
+                redCards: 0,
+                minutesPlayed: 0,
+                rating: 0,
+                xpAwarded: 0,
+            });
+        }
+        
+        // Update leaderboard cache
+        const match = await Match.findByPk(matchId);
+        if (match && match.leagueId) {
+            const updatedStats = {
+                goals: stats.goals,
+                assists: stats.assists,
+                cleanSheets: stats.cleanSheets,
+                penalties: stats.penalties,
+                freeKicks: stats.freeKicks,
+                defence: stats.defence,
+                impact: stats.impact,
+            };
+            
+            // Update cache for each stat
+            Object.entries(updatedStats).forEach(([metric, value]) => {
+                if (typeof value === 'number' && value > 0) {
+                    const cacheKey = `leaderboard_${metric}_${match.leagueId}_all`;
+                    cache.updateLeaderboard(cacheKey, {
+                        playerId: playerId,
+                        value: value
+                    });
+                }
+            });
+        }
+        
+        ctx.body = {
+            success: true,
+            message: 'Stats saved successfully',
+            playerId: playerId,
+            updatedStats: {
+                goals: stats.goals,
+                assists: stats.assists,
+                cleanSheets: stats.cleanSheets,
+                penalties: stats.penalties,
+                freeKicks: stats.freeKicks,
+                defence: stats.defence,
+                impact: stats.impact,
+            }
+        };
+    } catch (error) {
+        console.error('Error saving stats:', error);
+        ctx.throw(500, 'Failed to save stats');
+    }
+});
+
+// GET /matches/:matchId/votes - Get votes for a match
+router.get('/:matchId/votes', required, async (ctx) => {
+    if (!ctx.state.user?.userId) {
+        ctx.throw(401, 'Unauthorized');
+        return;
+    }
+    
+    const { matchId } = ctx.params;
+    const userId = ctx.state.user.userId;
+    
+    try {
+        // Get all votes for this match
+        const votes = await Vote.findAll({
+            where: { matchId },
+            attributes: ['votedForId', [sequelize.fn('COUNT', sequelize.col('votedForId')), 'voteCount']],
+            group: ['votedForId']
+        });
+        
+        // Get current user's vote
+        const userVote = await Vote.findOne({
+            where: { matchId, voterId: userId },
+            attributes: ['votedForId']
+        });
+        
+        // Convert to object format
+        const votesObject: Record<string, number> = {};
+        votes.forEach((vote: any) => {
+            votesObject[vote.votedForId] = parseInt(vote.get('voteCount'));
+        });
+        
+        ctx.body = {
+            success: true,
+            votes: votesObject,
+            userVote: userVote?.votedForId || null
+        };
+    } catch (error) {
+        console.error('Error fetching votes:', error);
+        ctx.throw(500, 'Failed to fetch votes');
+    }
 });
 
 export default router;
