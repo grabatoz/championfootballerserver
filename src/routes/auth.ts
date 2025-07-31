@@ -166,7 +166,7 @@ router.post("/auth/register", none, async (ctx: Context) => {
     ctx.body = { 
       success: true,
       token: token,
-      redirectTo: '/dashboard',
+      redirectTo: '/home',
       user: {
         id: newUser.id,
         firstName: newUser.firstName,
@@ -273,7 +273,7 @@ router.post("/auth/login", none, async (ctx: CustomContext) => {
   ctx.body = {
     success: true,
     token: token,
-    redirectTo: '/dashboard',
+    redirectTo: '/home',
     user: {
       id: user.id,
       firstName: user.firstName,
