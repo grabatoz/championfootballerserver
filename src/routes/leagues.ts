@@ -229,6 +229,7 @@ router.get("/:id", required, async (ctx) => {
       active: league.active,
       maxGames: league.maxGames,
       showPoints: league.showPoints,
+      image:league.image
     }
   };
 });
@@ -710,39 +711,162 @@ router.get("/:leagueId/matches/:matchId", required, async (ctx) => {
 });
 
 // Update a match's details
-router.patch("/:leagueId/matches/:matchId", required, async (ctx) => {
+// router.patch("/:leagueId/matches/:matchId", required, async (ctx) => {
+//   await verifyLeagueAdmin(ctx, ctx.params.leagueId);
+
+//   const { matchId } = ctx.params;
+//   const match = await Match.findByPk(matchId);
+
+//   const {
+//     homeTeamName,
+//     awayTeamName,
+//     date,
+//     location,
+//     homeTeamUsers,
+//     awayTeamUsers,
+//     homeCaptainId,
+//     awayCaptainId,
+//   } = ctx.request.body as {
+//     homeTeamName: string;
+//     awayTeamName: string;
+//     date: string;
+//     location: string;
+//     homeTeamUsers: string[];
+//     awayTeamUsers: string[];
+//     homeCaptainId:string;
+//     awayCaptainId:string;
+//   };
+
+//   const matchDate = new Date(date);
+
+//   if (!match) {
+//     ctx.throw(404, "Match not found");
+//     return;
+//   }
+
+//   await match.update({
+//     homeTeamName,
+//     awayTeamName,
+//     date: matchDate,
+//     start: matchDate,
+//     end: matchDate,
+//     location,
+//     homeCaptainId: ctx.request.body.homeCaptainId, // <-- add this
+//     awayCaptainId: ctx.request.body.awayCaptainId, // <-- add this
+//   });
+
+//   if (homeTeamUsers) {
+//     await (match as any).setHomeTeamUsers(homeTeamUsers);
+//   }
+//   if (awayTeamUsers) {
+//     await (match as any).setAwayTeamUsers(awayTeamUsers);
+//   }
+
+//   const updatedMatch = await Match.findByPk(matchId, {
+//     include: [
+//       { model: User, as: 'homeTeamUsers' },
+//       { model: User, as: 'awayTeamUsers' },
+//     ],
+//   });
+
+//   // Update cache with updated match
+//   const updatedMatchData = {
+//     id: matchId,
+//     homeTeamName,
+//     awayTeamName,
+//     location,
+//     leagueId: match.leagueId,
+//     date: matchDate,
+//     start: matchDate,
+//     end: matchDate,
+//     status: match.status,
+//     homeCaptainId: ctx.request.body.homeCaptainId,
+//     awayCaptainId: ctx.request.body.awayCaptainId,
+//     homeTeamUsers: (updatedMatch as any)?.homeTeamUsers || [],
+//     awayTeamUsers: (updatedMatch as any)?.awayTeamUsers || []
+//   };
+
+//   // Update matches cache
+//   cache.updateArray('matches_all', updatedMatchData);
+
+//   ctx.body = {
+//     success: true,
+//     message: "Match updated successfully.",
+//     match: updatedMatch,
+//   };
+// });
+
+router.patch("/:leagueId/matches/:matchId", required, upload.fields([
+  { name: 'homeTeamImage', maxCount: 1 },
+  { name: 'awayTeamImage', maxCount: 1 }
+]), async (ctx) => {
   await verifyLeagueAdmin(ctx, ctx.params.leagueId);
 
   const { matchId } = ctx.params;
   const match = await Match.findByPk(matchId);
-
-  const {
-    homeTeamName,
-    awayTeamName,
-    date,
-    location,
-    homeTeamUsers,
-    awayTeamUsers,
-    homeCaptainId,
-    awayCaptainId,
-  } = ctx.request.body as {
-    homeTeamName: string;
-    awayTeamName: string;
-    date: string;
-    location: string;
-    homeTeamUsers: string[];
-    awayTeamUsers: string[];
-    homeCaptainId:string;
-    awayCaptainId:string;
-  };
-
-  const matchDate = new Date(date);
 
   if (!match) {
     ctx.throw(404, "Match not found");
     return;
   }
 
+  // Parse FormData fields
+  const homeTeamName = ctx.request.body.homeTeamName;
+  const awayTeamName = ctx.request.body.awayTeamName;
+  const date = ctx.request.body.date;
+  const location = ctx.request.body.location;
+  
+  // Parse JSON arrays from FormData
+  let homeTeamUsers: string[] = [];
+  let awayTeamUsers: string[] = [];
+  
+  try {
+    if (ctx.request.body.homeTeamUsers) {
+      homeTeamUsers = JSON.parse(ctx.request.body.homeTeamUsers);
+    }
+    if (ctx.request.body.awayTeamUsers) {
+      awayTeamUsers = JSON.parse(ctx.request.body.awayTeamUsers);
+    }
+  } catch (error) {
+    console.error('Error parsing team users arrays:', error);
+  }
+  
+  const homeCaptainId = ctx.request.body.homeCaptainId;
+  const awayCaptainId = ctx.request.body.awayCaptainId;
+
+  // Handle team image uploads
+  let homeTeamImageUrl = match.homeTeamImage; // Keep existing if not updated
+  let awayTeamImageUrl = match.awayTeamImage; // Keep existing if not updated
+
+  if (ctx.files) {
+    const files = ctx.files as { [fieldname: string]: Express.Multer.File[] };
+    
+    // Upload home team image if provided
+    if (files.homeTeamImage && files.homeTeamImage[0]) {
+      try {
+        homeTeamImageUrl = await uploadToCloudinary(files.homeTeamImage[0].buffer, 'team-images');
+        console.log('Home team image uploaded successfully:', homeTeamImageUrl);
+      } catch (uploadError) {
+        console.error('Home team image upload error:', uploadError);
+        // Continue with existing image
+      }
+    }
+
+    // Upload away team image if provided
+    if (files.awayTeamImage && files.awayTeamImage[0]) {
+      try {
+        awayTeamImageUrl = await uploadToCloudinary(files.awayTeamImage[0].buffer, 'team-images');
+        console.log('Away team image uploaded successfully:', awayTeamImageUrl);
+      } catch (uploadError) {
+        console.error('Away team image upload error:', uploadError);
+        // Continue with existing image
+      }
+    }
+  }
+
+  const matchDate = new Date(date);
+
+  // Update match with all fields including images
   await match.update({
     homeTeamName,
     awayTeamName,
@@ -750,10 +874,13 @@ router.patch("/:leagueId/matches/:matchId", required, async (ctx) => {
     start: matchDate,
     end: matchDate,
     location,
-    homeCaptainId: ctx.request.body.homeCaptainId, // <-- add this
-    awayCaptainId: ctx.request.body.awayCaptainId, // <-- add this
+    homeCaptainId,
+    awayCaptainId,
+    homeTeamImage: homeTeamImageUrl,
+    awayTeamImage: awayTeamImageUrl
   });
 
+  // Update team users if provided
   if (homeTeamUsers) {
     await (match as any).setHomeTeamUsers(homeTeamUsers);
   }
@@ -768,7 +895,7 @@ router.patch("/:leagueId/matches/:matchId", required, async (ctx) => {
     ],
   });
 
-  // Update cache with updated match
+  // Serialize match data for cache
   const updatedMatchData = {
     id: matchId,
     homeTeamName,
@@ -779,22 +906,55 @@ router.patch("/:leagueId/matches/:matchId", required, async (ctx) => {
     start: matchDate,
     end: matchDate,
     status: match.status,
-    homeCaptainId: ctx.request.body.homeCaptainId,
-    awayCaptainId: ctx.request.body.awayCaptainId,
-    homeTeamUsers: (updatedMatch as any)?.homeTeamUsers || [],
-    awayTeamUsers: (updatedMatch as any)?.awayTeamUsers || []
+    homeCaptainId,
+    awayCaptainId,
+    homeTeamImage: homeTeamImageUrl,
+    awayTeamImage: awayTeamImageUrl,
+    homeTeamUsers: (updatedMatch as any)?.homeTeamUsers?.map((user: any) => ({
+      id: user.id,
+      firstName: user.firstName,
+      lastName: user.lastName,
+      email: user.email,
+      profilePicture: user.profilePicture,
+      shirtNumber: user.shirtNumber,
+      level: user.level,
+      positionType: user.positionType,
+      preferredFoot: user.preferredFoot
+    })) || [],
+    awayTeamUsers: (updatedMatch as any)?.awayTeamUsers?.map((user: any) => ({
+      id: user.id,
+      firstName: user.firstName,
+      lastName: user.lastName,
+      email: user.email,
+      profilePicture: user.profilePicture,
+      shirtNumber: user.shirtNumber,
+      level: user.level,
+      positionType: user.positionType,
+      preferredFoot: user.preferredFoot
+    })) || []
   };
 
   // Update matches cache
   cache.updateArray('matches_all', updatedMatchData);
 
+  // Update league cache with updated match
+  const league = await League.findByPk(match.leagueId, {
+    include: [{ model: User, as: 'members' }]
+  });
+  
+  if (league) {
+    const memberIds = (league as any)?.members?.map((m: any) => m.id) || [];
+    memberIds.forEach((memberId: string) => {
+      cache.updateArray(`user_leagues_${memberId}`, updatedMatchData);
+    });
+  }
+
   ctx.body = {
     success: true,
     message: "Match updated successfully.",
-    match: updatedMatch,
+    match: updatedMatchData,
   };
 });
-
 // Join a league with an invite code
 router.post("/join", required, async (ctx) => {
   if (!ctx.state.user || !ctx.state.user.userId) {
