@@ -435,7 +435,7 @@ router.post("/auth/logout", required, async (ctx: CustomContext) => {
   // but for pure JWT it's often not needed.
   ctx.status = 200;
   ctx.body = { success: true, message: "Logged out successfully." };
-});
+}); 
 
 router.get("/auth/status", required, async (ctx: CustomContext) => {
   if (!ctx.state.user || !ctx.state.user.userId) {
