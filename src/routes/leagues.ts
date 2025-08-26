@@ -264,7 +264,7 @@ router.post("/", required, upload.single('image'), async (ctx) => {
     const newLeague = await League.create({
       name,
       inviteCode: getInviteCode(),
-      maxGames,
+      maxGames : 20,
       showPoints,
       image: imageUrl,
     } as any);
