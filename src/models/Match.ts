@@ -180,11 +180,11 @@ Match.init(
     },
     homeTeamName: {
       type: DataTypes.STRING,
-      allowNull: false,
+      allowNull: true,
     },
     awayTeamName: {
       type: DataTypes.STRING,
-      allowNull: false,
+      allowNull: true,
     },
     homeTeamGoals: {
       type: DataTypes.INTEGER,

@@ -560,9 +560,9 @@ router.post("/:id/matches", required, upload.fields([
   const endDate = end ? new Date(end) : new Date(matchDate.getTime() + 90 * 60000); // Default to 90 mins if not provided
 
   const match = await Match.create({
-    awayTeamName: awayTeamName || null,
-    homeTeamName: homeTeamName || null,
-    location ,
+    awayTeamName,
+    homeTeamName,
+    location,
     leagueId: ctx.params.id,
     date: matchDate,
     start: matchDate,
