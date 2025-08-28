@@ -5,7 +5,7 @@ const { League, Match, User } = models;
 import { getInviteCode, verifyLeagueAdmin } from '../modules/utils';
 import type { LeagueAttributes } from '../models/League';
 import { transporter } from '../modules/sendEmail';
-import { Op } from 'sequelize';
+import { Op, fn, col, where } from 'sequelize';
 import { calculateAndAwardXPAchievements } from '../utils/xpAchievementsEngine';
 import Vote from '../models/Vote';
 import MatchStatistics from '../models/MatchStatistics';
@@ -252,8 +252,19 @@ router.post("/", required, upload.single('image'), async (ctx) => {
   }
 
   const { name, maxGames, showPoints } = ctx.request.body as LeagueAttributes;
-  if (!name) {
+  const trimmedName = (name || '').trim();
+  if (!trimmedName) {
     ctx.throw(400, "League name is required");
+  }
+
+  // Case-insensitive duplicate name check
+  const existingByName = await League.findOne({
+    where: where(fn('LOWER', col('name')), trimmedName.toLowerCase())
+  });
+  if (existingByName) {
+    ctx.status = 409;
+    ctx.body = { success: false, message: "A league with this name already exists." };
+    return;
   }
 
   try {
@@ -272,7 +283,7 @@ router.post("/", required, upload.single('image'), async (ctx) => {
     }
 
     const newLeague = await League.create({
-      name,
+      name: trimmedName,
       inviteCode: getInviteCode(),
       maxGames: 20,
       showPoints,

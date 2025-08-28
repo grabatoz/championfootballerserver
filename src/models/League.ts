@@ -63,6 +63,7 @@ League.init(
     name: {
       type: DataTypes.STRING,
       allowNull: false,
+      unique: true, // prevent duplicate names at DB level (case-sensitive in Postgres)
     },
     inviteCode: {
       type: DataTypes.STRING,
@@ -102,4 +103,4 @@ League.init(
 );
 
 export default League;
-export type { LeagueAttributes }; 
+export type { LeagueAttributes };
