@@ -14,6 +14,12 @@ import cache from '../utils/cache';
 import { upload, uploadToCloudinary } from '../middleware/upload';
 
 
+// Koa app: remove express types
+
+// UUID validator (for Koa routes)
+const isUuid = (v: string) =>
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(v);
+
 const router = new Router({ prefix: '/leagues' });
 
 // Get all leagues for the current user (for /leagues/user)
@@ -58,8 +64,8 @@ router.get('/user', required, async (ctx) => {
     }
 
     const result = { success: true, leagues: (user as any).leagues || [] };
-    console.log('result',result);
-    
+    console.log('result', result);
+
     cache.set(cacheKey, result, 600); // cache for 30 seconds
     ctx.body = result;
   } catch (error) {
@@ -114,7 +120,11 @@ router.get("/:id", required, async (ctx) => {
     ctx.throw(401, "Unauthorized");
     return;
   }
-  
+  if (!isUuid(ctx.params.id)) {
+    ctx.throw(400, "Invalid league id");
+    return;
+  }
+
   const leagueId = ctx.params.id;
 
   try {
@@ -216,7 +226,7 @@ router.get("/:id", required, async (ctx) => {
     }
   }
 
-  ctx.body = { 
+  ctx.body = {
     success: true,
     league: {
       id: league.id,
@@ -229,7 +239,7 @@ router.get("/:id", required, async (ctx) => {
       active: league.active,
       maxGames: league.maxGames,
       showPoints: league.showPoints,
-      image:league.image
+      image: league.image
     }
   };
 });
@@ -248,7 +258,7 @@ router.post("/", required, upload.single('image'), async (ctx) => {
 
   try {
     let imageUrl = null;
-    
+
     // Handle image upload if file is present
     if (ctx.file) {
       try {
@@ -264,7 +274,7 @@ router.post("/", required, upload.single('image'), async (ctx) => {
     const newLeague = await League.create({
       name,
       inviteCode: getInviteCode(),
-      maxGames : 20,
+      maxGames: 20,
       showPoints,
       image: imageUrl,
     } as any);
@@ -274,19 +284,19 @@ router.post("/", required, upload.single('image'), async (ctx) => {
       await (newLeague as any).addMember(user);
       await (newLeague as any).addAdministeredLeague(user);
 
-    const emailHtml = `
+      const emailHtml = `
       <h1>Congratulations!</h1>
         <p>You have successfully created the league: <strong>${newLeague.name}</strong>.</p>
         <p>Your invite code is: <strong>${newLeague.inviteCode}</strong>. Share it with others to join!</p>
       <p>Happy competing!</p>
     `;
 
-    await transporter.sendMail({
-      to: user.email,
+      await transporter.sendMail({
+        to: user.email,
         subject: `You've created a new league: ${newLeague.name}`,
-      html: emailHtml,
-    });
-    console.log(`Creation email sent to ${user.email}`);
+        html: emailHtml,
+      });
+      console.log(`Creation email sent to ${user.email}`);
     }
 
     // Update cache with new league
@@ -306,11 +316,11 @@ router.post("/", required, upload.single('image'), async (ctx) => {
 
     // Update all user-specific league caches
     cache.updateArray(`user_leagues_${ctx.state.user.userId}`, newLeagueData);
-    
+
     // Clear any general leagues cache to ensure fresh data
     cache.clearPattern('leagues_all');
 
-    ctx.status = 201; 
+    ctx.status = 201;
     ctx.body = {
       success: true,
       message: "League created successfully",
@@ -479,6 +489,15 @@ router.post("/:id/matches", required, upload.fields([
   { name: 'homeTeamImage', maxCount: 1 },
   { name: 'awayTeamImage', maxCount: 1 }
 ]), async (ctx) => {
+  // Validate league id before any DB call
+  const leagueId = String(ctx.params.id || '').trim();
+  if (!isUuid(leagueId)) {
+    ctx.throw(400, "Invalid league id");
+    return;
+  }
+
+  console.log("Body:", ctx.request.body);
+  console.log("Files:", ctx.files);
   // Parse FormData fields
   const homeTeamName = ctx.request.body.homeTeamName;
   const awayTeamName = ctx.request.body.awayTeamName;
@@ -486,11 +505,16 @@ router.post("/:id/matches", required, upload.fields([
   const start = ctx.request.body.start;
   const end = ctx.request.body.end;
   const location = ctx.request.body.location;
-  
+
+  // ✅ Validation (only required fields)
+  if (!date || !start || !location) {
+    ctx.throw(400, "Missing required match details: date, start, or location.");
+  }
+
   // Parse JSON arrays from FormData
   let homeTeamUsers: string[] = [];
   let awayTeamUsers: string[] = [];
-  
+
   try {
     if (ctx.request.body.homeTeamUsers) {
       homeTeamUsers = JSON.parse(ctx.request.body.homeTeamUsers);
@@ -501,17 +525,13 @@ router.post("/:id/matches", required, upload.fields([
   } catch (error) {
     console.error('Error parsing team users arrays:', error);
   }
-  
+
   const homeCaptain = ctx.request.body.homeCaptain;
   const awayCaptain = ctx.request.body.awayCaptain;
 
-  if (!homeTeamName || !awayTeamName || !date) {
-    ctx.throw(400, "Missing required match details.");
-  }
+  await verifyLeagueAdmin(ctx, leagueId)
 
-  await verifyLeagueAdmin(ctx, ctx.params.id)
-
-  const league = await League.findByPk(ctx.params.id, {
+  const league = await League.findByPk(leagueId, {
     include: [{ model: Match, as: 'matches' }]
   });
 
@@ -530,7 +550,7 @@ router.post("/:id/matches", required, upload.fields([
 
   if (ctx.files) {
     const files = ctx.files as { [fieldname: string]: Express.Multer.File[] };
-    
+
     // Upload home team image
     if (files.homeTeamImage && files.homeTeamImage[0]) {
       try {
@@ -556,24 +576,25 @@ router.post("/:id/matches", required, upload.fields([
     }
   }
 
-  const matchDate = new Date(date);
-  const endDate = end ? new Date(end) : new Date(matchDate.getTime() + 90 * 60000); // Default to 90 mins if not provided
 
+  const matchDate = new Date(date);
+  const startDate = new Date(start);
+  const finalEndDate = end ? new Date(end) : new Date(startDate.getTime() + 90 * 60000);
   const match = await Match.create({
     awayTeamName,
-    homeTeamName,
+   homeTeamName,
     location,
-    leagueId: ctx.params.id,
+    leagueId,
     date: matchDate,
-    start: matchDate,
-    end: endDate,
+    start: startDate,
+    end: finalEndDate,
     status: 'scheduled',
     homeCaptainId: homeCaptain || null, // <-- save captain
     awayCaptainId: awayCaptain || null,  // <-- save captain
     homeTeamImage: homeTeamImageUrl,
     awayTeamImage: awayTeamImageUrl
   } as any);
-  console.log('match create',match)
+  console.log('match create', match)
 
   if (homeTeamUsers) {
     await (match as any).addHomeTeamUsers(homeTeamUsers)
@@ -635,10 +656,10 @@ router.post("/:id/matches", required, upload.fields([
     homeTeamName,
     awayTeamName,
     location,
-    leagueId: ctx.params.id,
+    leagueId,
     date: matchDate,
-    start: matchDate,
-    end: endDate,
+    start: startDate,
+    end: finalEndDate,
     status: 'scheduled',
     homeCaptainId: homeCaptain || null,
     awayCaptainId: awayCaptain || null,
@@ -684,7 +705,7 @@ router.post("/:id/matches", required, upload.fields([
 // Get a single match's details
 router.get("/:leagueId/matches/:matchId", required, async (ctx) => {
   const { matchId } = ctx.params;
-  
+
   const match = await Match.findByPk(matchId, {
     include: [
       {
@@ -815,11 +836,11 @@ router.patch("/:leagueId/matches/:matchId", required, upload.fields([
   const awayTeamName = ctx.request.body.awayTeamName;
   const date = ctx.request.body.date;
   const location = ctx.request.body.location;
-  
+
   // Parse JSON arrays from FormData
   let homeTeamUsers: string[] = [];
   let awayTeamUsers: string[] = [];
-  
+
   try {
     if (ctx.request.body.homeTeamUsers) {
       homeTeamUsers = JSON.parse(ctx.request.body.homeTeamUsers);
@@ -830,7 +851,7 @@ router.patch("/:leagueId/matches/:matchId", required, upload.fields([
   } catch (error) {
     console.error('Error parsing team users arrays:', error);
   }
-  
+
   const homeCaptainId = ctx.request.body.homeCaptainId;
   const awayCaptainId = ctx.request.body.awayCaptainId;
 
@@ -840,7 +861,7 @@ router.patch("/:leagueId/matches/:matchId", required, upload.fields([
 
   if (ctx.files) {
     const files = ctx.files as { [fieldname: string]: Express.Multer.File[] };
-    
+
     // Upload home team image if provided
     if (files.homeTeamImage && files.homeTeamImage[0]) {
       try {
@@ -865,7 +886,6 @@ router.patch("/:leagueId/matches/:matchId", required, upload.fields([
   }
 
   const matchDate = new Date(date);
-
   // Update match with all fields including images
   await match.update({
     homeTeamName,
@@ -941,7 +961,7 @@ router.patch("/:leagueId/matches/:matchId", required, upload.fields([
   const league = await League.findByPk(match.leagueId, {
     include: [{ model: User, as: 'members' }]
   });
-  
+
   if (league) {
     const memberIds = (league as any)?.members?.map((m: any) => m.id) || [];
     memberIds.forEach((memberId: string) => {
@@ -961,7 +981,7 @@ router.post("/join", required, async (ctx) => {
     ctx.throw(401, "Unauthorized");
     return;
   }
-  
+
   const { inviteCode } = ctx.request.body as { inviteCode: string };
   if (!inviteCode) {
     ctx.throw(400, "Invite code is required");
@@ -999,7 +1019,7 @@ router.post("/join", required, async (ctx) => {
     <p>You have successfully joined <strong>${league.name}</strong>.</p>
     <p>Get ready for some exciting competition!</p>
   `;
-  
+
   await transporter.sendMail({
     to: user.email,
     subject: `Welcome to ${league.name}`,
@@ -1022,11 +1042,11 @@ router.post("/join", required, async (ctx) => {
 
   // Update user's league cache
   cache.updateArray(`user_leagues_${ctx.state.user.userId}`, joinedLeagueData);
-  
+
   // Clear any general leagues cache to ensure fresh data
   cache.clearPattern('leagues_all');
 
-  ctx.body = { 
+  ctx.body = {
     success: true,
     message: "Successfully joined league",
     league: {
@@ -1053,7 +1073,7 @@ router.post("/:id/leave", required, async (ctx) => {
 
   // Remove league from user's cache
   cache.removeFromArray(`user_leagues_${ctx.state.user.userId}`, league.id);
-  
+
   // Clear any general leagues cache to ensure fresh data
   cache.clearPattern('leagues_all');
 
@@ -1299,7 +1319,7 @@ router.post('/:id/reset-xp', required, async (ctx) => {
 
       // Update players cache
       cache.updateArray('players_all', updatedUserData);
-      
+
       // Clear any user-specific caches
       cache.clearPattern(`user_leagues_${user.id}`);
     }
