@@ -164,7 +164,7 @@ Match.init(
     status: {
       type: DataTypes.ENUM('scheduled', 'in_progress', 'completed', 'cancelled'),
       defaultValue: 'scheduled',
-      allowNull: false,
+      allowNull: true,
     },
     score: {
       type: DataTypes.JSONB,
