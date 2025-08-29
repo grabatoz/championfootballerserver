@@ -39,7 +39,7 @@ router.get('/', async (ctx) => {
       {
         model: models.User,
         as: 'votedFor',
-        attributes: ['id', 'firstName', 'lastName', 'positionType', 'profilePicture'],
+        attributes: ['id', 'firstName', 'lastName', 'positionType', 'profilePicture','shirtNumber'],
         ...(positionType ? { where: { positionType } } : {})
       }
     ];
@@ -58,6 +58,7 @@ router.get('/', async (ctx) => {
       name: `${vote.votedFor.firstName} ${vote.votedFor.lastName}`,
       positionType: vote.votedFor.positionType,
       profilePicture: vote.votedFor.profilePicture,
+      shirtNumber: vote.votedFor.shirtNumber,
       value: vote.get('voteCount')
     }));
     ctx.body = { players: players || [] };
@@ -69,7 +70,7 @@ router.get('/', async (ctx) => {
     {
       model: models.User,
       as: 'user',
-      attributes: ['id', 'firstName', 'lastName', 'positionType', 'profilePicture'],
+      attributes: ['id', 'firstName', 'lastName', 'positionType', 'profilePicture','shirtNumber'],
       ...(positionType ? { where: { positionType } } : {})
     }
   ];
@@ -97,8 +98,9 @@ router.get('/', async (ctx) => {
   const players = stats.map((stat: any) => ({
     id: stat.user.id,
     name: `${stat.user.firstName} ${stat.user.lastName}`,
-    positionType: stat.user.positionType,
+    positionType: stat.user.positionType,    
     profilePicture: stat.user.profilePicture,
+    shirtNumber: stat.user.shirtNumber,
     value: stat.get('value')
   }));
 

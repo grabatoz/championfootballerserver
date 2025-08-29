@@ -85,7 +85,7 @@ router.get('/played-with', required, async (ctx) => {
           [Op.in]: Array.from(playerIds)
         }
       },
-      attributes: ['id', 'firstName', 'lastName', 'profilePicture', 'xp']
+      attributes: ['id', 'firstName', 'lastName', 'profilePicture', 'xp','shirtNumber']
     });
 
     ctx.body = {
@@ -95,6 +95,7 @@ router.get('/played-with', required, async (ctx) => {
         name: `${p.firstName} ${p.lastName}`,
         profilePicture: p.profilePicture,
         rating: p.xp || 0 // Assuming XP is the rating
+        ,shirtNumber: p.shirtNumber
       }))
     };
 
