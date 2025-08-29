@@ -13,6 +13,20 @@ import { xpPointsTable } from '../utils/xpPointsTable';
 import cache from '../utils/cache';
 import { upload, uploadToCloudinary } from '../middleware/upload';
 
+// Add these helpers below imports
+const isMultipart = (ctx: any) =>
+  /multipart\/form-data/i.test(String(ctx.request.headers['content-type'] || ''));
+
+const conditionalUpload = (fields: Array<{ name: string; maxCount?: number }>) => {
+  const handler = upload.fields(fields);
+  return async (ctx: any, next: any) => {
+    if (isMultipart(ctx)) {
+      // Run multer only for multipart requests
+      return (handler as any)(ctx, next);
+    }
+    return next();
+  };
+};
 
 // Koa app: remove express types
 
@@ -828,164 +842,146 @@ router.get("/:leagueId/matches/:matchId", required, async (ctx) => {
 //   };
 // });
 
-router.patch("/:leagueId/matches/:matchId", required, upload.fields([
-  { name: 'homeTeamImage', maxCount: 1 },
-  { name: 'awayTeamImage', maxCount: 1 }
-]), async (ctx) => {
-  await verifyLeagueAdmin(ctx, ctx.params.leagueId);
+router.patch(
+  "/:leagueId/matches/:matchId",
+  required,
+  conditionalUpload([
+    { name: 'homeTeamImage', maxCount: 1 },
+    { name: 'awayTeamImage', maxCount: 1 }
+  ]),
+  async (ctx) => {
+    await verifyLeagueAdmin(ctx, ctx.params.leagueId);
 
-  const { matchId } = ctx.params;
-  const match = await Match.findByPk(matchId);
-
-  if (!match) {
-    ctx.throw(404, "Match not found");
-    return;
-  }
-
-  // Parse FormData fields
-  const homeTeamName = ctx.request.body.homeTeamName;
-  const awayTeamName = ctx.request.body.awayTeamName;
-  const date = ctx.request.body.date;
-  const location = ctx.request.body.location;
-
-  // Parse JSON arrays from FormData
-  let homeTeamUsers: string[] = [];
-  let awayTeamUsers: string[] = [];
-
-  try {
-    if (ctx.request.body.homeTeamUsers) {
-      homeTeamUsers = JSON.parse(ctx.request.body.homeTeamUsers);
+    const { matchId } = ctx.params;
+    const match = await Match.findByPk(matchId);
+    if (!match) {
+      ctx.throw(404, "Match not found");
+      return;
     }
-    if (ctx.request.body.awayTeamUsers) {
-      awayTeamUsers = JSON.parse(ctx.request.body.awayTeamUsers);
-    }
-  } catch (error) {
-    console.error('Error parsing team users arrays:', error);
-  }
 
-  const homeCaptainId = ctx.request.body.homeCaptainId;
-  const awayCaptainId = ctx.request.body.awayCaptainId;
+    // Use Koa-multer populated fields/files
+    const body = (ctx.request as any).body || {};
+    const files = (ctx.files as any) || {};
 
-  // Handle team image uploads
-  let homeTeamImageUrl = match.homeTeamImage; // Keep existing if not updated
-  let awayTeamImageUrl = match.awayTeamImage; // Keep existing if not updated
+    const parseIds = (v: any): string[] => {
+      if (!v) return [];
+      if (Array.isArray(v)) return v.map(String);
+      if (typeof v === 'string') {
+        try {
+          const parsed = JSON.parse(v);
+          return Array.isArray(parsed) ? parsed.map(String) : [v];
+        } catch {
+          return [v];
+        }
+      }
+      return [];
+    };
 
-  if (ctx.files) {
-    const files = ctx.files as { [fieldname: string]: Express.Multer.File[] };
+    const homeTeamName = body.homeTeamName;
+    const awayTeamName = body.awayTeamName;
+    const date = body.date;
+    const location = body.location;
 
-    // Upload home team image if provided
-    if (files.homeTeamImage && files.homeTeamImage[0]) {
+    const homeTeamUsers = parseIds(body.homeTeamUsers);
+    const awayTeamUsers = parseIds(body.awayTeamUsers);
+
+    const homeCaptainId = body.homeCaptainId || null;
+    const awayCaptainId = body.awayCaptainId || null;
+
+    let homeTeamImageUrl = match.homeTeamImage;
+    let awayTeamImageUrl = match.awayTeamImage;
+
+    if (files.homeTeamImage?.[0]?.buffer) {
       try {
         homeTeamImageUrl = await uploadToCloudinary(files.homeTeamImage[0].buffer, 'team-images');
-        console.log('Home team image uploaded successfully:', homeTeamImageUrl);
-      } catch (uploadError) {
-        console.error('Home team image upload error:', uploadError);
-        // Continue with existing image
+      } catch (e) {
+        console.error('Home team image upload error:', e);
       }
     }
-
-    // Upload away team image if provided
-    if (files.awayTeamImage && files.awayTeamImage[0]) {
+    if (files.awayTeamImage?.[0]?.buffer) {
       try {
         awayTeamImageUrl = await uploadToCloudinary(files.awayTeamImage[0].buffer, 'team-images');
-        console.log('Away team image uploaded successfully:', awayTeamImageUrl);
-      } catch (uploadError) {
-        console.error('Away team image upload error:', uploadError);
-        // Continue with existing image
+      } catch (e) {
+        console.error('Away team image upload error:', e);
       }
     }
-  }
 
-  const matchDate = new Date(date);
-  // Update match with all fields including images
-  await match.update({
-    homeTeamName,
-    awayTeamName,
-    date: matchDate,
-    start: matchDate,
-    end: matchDate,
-    location,
-    homeCaptainId,
-    awayCaptainId,
-    homeTeamImage: homeTeamImageUrl,
-    awayTeamImage: awayTeamImageUrl
-  });
-
-  // Update team users if provided
-  if (homeTeamUsers) {
-    await (match as any).setHomeTeamUsers(homeTeamUsers);
-  }
-  if (awayTeamUsers) {
-    await (match as any).setAwayTeamUsers(awayTeamUsers);
-  }
-
-  const updatedMatch = await Match.findByPk(matchId, {
-    include: [
-      { model: User, as: 'homeTeamUsers' },
-      { model: User, as: 'awayTeamUsers' },
-    ],
-  });
-
-  // Serialize match data for cache
-  const updatedMatchData = {
-    id: matchId,
-    homeTeamName,
-    awayTeamName,
-    location,
-    leagueId: match.leagueId,
-    date: matchDate,
-    start: matchDate,
-    end: matchDate,
-    status: match.status,
-    homeCaptainId,
-    awayCaptainId,
-    homeTeamImage: homeTeamImageUrl,
-    awayTeamImage: awayTeamImageUrl,
-    homeTeamUsers: (updatedMatch as any)?.homeTeamUsers?.map((user: any) => ({
-      id: user.id,
-      firstName: user.firstName,
-      lastName: user.lastName,
-      email: user.email,
-      profilePicture: user.profilePicture,
-      shirtNumber: user.shirtNumber,
-      level: user.level,
-      positionType: user.positionType,
-      preferredFoot: user.preferredFoot
-    })) || [],
-    awayTeamUsers: (updatedMatch as any)?.awayTeamUsers?.map((user: any) => ({
-      id: user.id,
-      firstName: user.firstName,
-      lastName: user.lastName,
-      email: user.email,
-      profilePicture: user.profilePicture,
-      shirtNumber: user.shirtNumber,
-      level: user.level,
-      positionType: user.positionType,
-      preferredFoot: user.preferredFoot
-    })) || []
-  };
-
-  // Update matches cache
-  cache.updateArray('matches_all', updatedMatchData);
-
-  // Update league cache with updated match
-  const league = await League.findByPk(match.leagueId, {
-    include: [{ model: User, as: 'members' }]
-  });
-
-  if (league) {
-    const memberIds = (league as any)?.members?.map((m: any) => m.id) || [];
-    memberIds.forEach((memberId: string) => {
-      cache.updateArray(`user_leagues_${memberId}`, updatedMatchData);
+    const matchDate = new Date(date);
+    await match.update({
+      homeTeamName,
+      awayTeamName,
+      date: matchDate,
+      start: matchDate,
+      end: matchDate,
+      location,
+      homeCaptainId,
+      awayCaptainId,
+      homeTeamImage: homeTeamImageUrl,
+      awayTeamImage: awayTeamImageUrl
     });
-  }
 
-  ctx.body = {
-    success: true,
-    message: "Match updated successfully.",
-    match: updatedMatchData,
-  };
-});
+    if (homeTeamUsers.length) await (match as any).setHomeTeamUsers(homeTeamUsers);
+    if (awayTeamUsers.length) await (match as any).setAwayTeamUsers(awayTeamUsers);
+
+    const updatedMatch = await Match.findByPk(matchId, {
+      include: [
+        { model: User, as: 'homeTeamUsers' },
+        { model: User, as: 'awayTeamUsers' },
+      ],
+    });
+
+    const updatedMatchData = {
+      id: matchId,
+      homeTeamName,
+      awayTeamName,
+      location,
+      leagueId: match.leagueId,
+      date: matchDate,
+      start: matchDate,
+      end: matchDate,
+      status: match.status,
+      homeCaptainId,
+      awayCaptainId,
+      homeTeamImage: homeTeamImageUrl,
+      awayTeamImage: awayTeamImageUrl,
+      homeTeamUsers: (updatedMatch as any)?.homeTeamUsers?.map((user: any) => ({
+        id: user.id,
+        firstName: user.firstName,
+        lastName: user.lastName,
+        email: user.email,
+        profilePicture: user.profilePicture,
+        shirtNumber: user.shirtNumber,
+        level: user.level,
+        positionType: user.positionType,
+        preferredFoot: user.preferredFoot
+      })) || [],
+      awayTeamUsers: (updatedMatch as any)?.awayTeamUsers?.map((user: any) => ({
+        id: user.id,
+        firstName: user.firstName,
+        lastName: user.lastName,
+        email: user.email,
+        profilePicture: user.profilePicture,
+        shirtNumber: user.shirtNumber,
+        level: user.level,
+        positionType: user.positionType,
+        preferredFoot: user.preferredFoot
+      })) || []
+    };
+
+    cache.updateArray('matches_all', updatedMatchData);
+    const league = await League.findByPk(match.leagueId, {
+      include: [{ model: User, as: 'members' }]
+    });
+    if (league) {
+      const memberIds = (league as any)?.members?.map((m: any) => m.id) || [];
+      memberIds.forEach((memberId: string) => {
+        cache.updateArray(`user_leagues_${memberId}`, updatedMatchData);
+      });
+    }
+
+    ctx.body = { success: true, message: "Match updated successfully.", match: updatedMatchData };
+  }
+);
 // Join a league with an invite code
 router.post("/join", required, async (ctx) => {
   if (!ctx.state.user || !ctx.state.user.userId) {

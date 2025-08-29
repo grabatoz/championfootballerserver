@@ -57,34 +57,19 @@ app.use(async (ctx: Koa.Context, next: Koa.Next) => {
   await next();
 });
 
-// Body parser - using koaBody for better multipart support
+// Body parser: skip multipart so multer (upload.fields) can read the stream
 app.use(async (ctx, next) => {
-  // Skip koaBody for file upload routes
-  if (ctx.path === '/profile/picture' && ctx.method === 'POST') {
-    return next();
+  const ct = String(ctx.get('content-type') || '');
+  if (/multipart\/form-data/i.test(ct)) {
+    return next(); // let route's multer handle multipart (POST/PATCH/PUT)
   }
-  
-  // Skip koaBody for league creation (using multer instead)
-  if (ctx.path === '/leagues' && ctx.method === 'POST') {
-    return next();
-  }
-  
-  // Skip koaBody for match creation (using multer instead)
-  if (ctx.path.includes('/leagues/') && ctx.path.includes('/matches') && ctx.method === 'POST') {
-    return next();
-  }
-  
-  await koaBody({
-    multipart: true,
+  return koaBody({
+    multipart: false,
     json: true,
     urlencoded: true,
-    text: true,
+    text: false,
     jsonLimit: '1mb',
-    formLimit: '1mb',
-    textLimit: '1mb',
-    formidable: {
-      maxFileSize: 200 * 1024 * 1024 // 200MB
-    }
+    formLimit: '1mb'
   })(ctx, next);
 });
 
