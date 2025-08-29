@@ -68,8 +68,8 @@ app.use(async (ctx, next) => {
     json: true,
     urlencoded: true,
     text: false,
-    jsonLimit: '1mb',
-    formLimit: '1mb'
+    jsonLimit: '10mb',
+    formLimit: '10mb'
   })(ctx, next);
 });
 
