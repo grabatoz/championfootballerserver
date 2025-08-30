@@ -1,7 +1,6 @@
 import Router from '@koa/router';
 import { required } from '../modules/auth';
 import models from '../models';
-const { League, Match, User } = models;
 import { getInviteCode, verifyLeagueAdmin } from '../modules/utils';
 import type { LeagueAttributes } from '../models/League';
 import { transporter } from '../modules/sendEmail';
@@ -12,6 +11,7 @@ import MatchStatistics from '../models/MatchStatistics';
 import { xpPointsTable } from '../utils/xpPointsTable';
 import cache from '../utils/cache';
 import { upload, uploadToCloudinary } from '../middleware/upload';
+const { League, Match, User, MatchGuest } = models;
 
 // Add these helpers below imports
 const isMultipart = (ctx: any) =>
@@ -35,6 +35,7 @@ const isUuid = (v: string) =>
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(v);
 
 const router = new Router({ prefix: '/leagues' });
+
 
 // Get all leagues for the current user (for /leagues/user)
 router.get('/user', required, async (ctx) => {
@@ -163,42 +164,21 @@ router.get("/:id", required, async (ctx) => {
       {
         model: User,
         as: 'members',
-        // attributes: ['id', 'firstName', 'lastName', 'email', 'profilePicture']
       },
       {
         model: User,
         as: 'administeredLeagues',
-        // attributes: ['id', 'firstName', 'lastName', 'email', 'profilePicture']
       },
       {
         model: Match,
         as: 'matches',
         include: [
-          {
-            model: User,
-            as: 'homeTeamUsers',
-            // attributes: ['id', 'firstName', 'lastName']
-          },
-          {
-            model: User,
-            as: 'awayTeamUsers',
-            // attributes: ['id', 'firstName', 'lastName']
-          },
-          {
-            model: User,
-            as: 'availableUsers',
-            // attributes: ['id', 'firstName', 'lastName', 'email', 'profilePicture']
-          },
-          {
-            model: User,
-            as: 'homeCaptain',
-            // attributes: ['id', 'firstName', 'lastName'],
-          },
-          {
-            model: User,
-            as: 'awayCaptain',
-            // attributes: ['id', 'firstName', 'lastName'],
-          }
+          { model: User, as: 'homeTeamUsers' },
+          { model: User, as: 'awayTeamUsers' },
+          { model: User, as: 'availableUsers' },
+          { model: User, as: 'homeCaptain' },
+          { model: User, as: 'awayCaptain' },
+          { model: MatchGuest, as: 'guestPlayers' } // <-- include guests
         ]
       }
     ]
@@ -672,7 +652,8 @@ router.post("/:id/matches", required, upload.fields([
       level: user.level,
       positionType: user.positionType,
       preferredFoot: user.preferredFoot
-    })) || []
+    })) || [],
+    guests: [] // <-- include empty guests on create
   };
 
   // Update cache with new match
@@ -691,7 +672,8 @@ router.post("/:id/matches", required, upload.fields([
     homeTeamImage: homeTeamImageUrl,
     awayTeamImage: awayTeamImageUrl,
     homeTeamUsers: serializedMatch.homeTeamUsers,
-    awayTeamUsers: serializedMatch.awayTeamUsers
+    awayTeamUsers: serializedMatch.awayTeamUsers,
+    guests: [] // <-- cache guests too
   };
 
   // Update matches cache
@@ -733,27 +715,25 @@ router.get("/:leagueId/matches/:matchId", required, async (ctx) => {
 
   const match = await Match.findByPk(matchId, {
     include: [
-      {
-        model: User,
-        as: 'homeTeamUsers',
-        // attributes: ['id', 'firstName', 'lastName'],
-      },
-      {
-        model: User,
-        as: 'awayTeamUsers',
-        // attributes: ['id', 'firstName', 'lastName'],
-      },
+      { model: User, as: 'homeTeamUsers' },
+      { model: User, as: 'awayTeamUsers' },
+      { model: MatchGuest, as: 'guestPlayers' }, // <-- include guests
     ],
   });
 
-  if (!match) {
-    ctx.throw(404, "Match not found");
-  }
+  if (!match) { ctx.throw(404, "Match not found"); return; } // <-- return
 
-  ctx.body = {
-    success: true,
-    match,
-  };
+  // Map guestPlayers -> guests for the client
+  const plain = (match as any).toJSON ? (match as any).toJSON() : match;
+  const guests = (plain.guestPlayers || []).map((g: any) => ({
+    id: g.id,
+    team: g.team,
+    firstName: g.firstName,
+    lastName: g.lastName,
+    shirtNumber: g.shirtNumber,
+  }));
+
+  ctx.body = { success: true, match: { ...plain, guests } };
 });
 
 // Update a match's details
@@ -927,8 +907,17 @@ router.patch(
       include: [
         { model: User, as: 'homeTeamUsers' },
         { model: User, as: 'awayTeamUsers' },
+        { model: MatchGuest, as: 'guestPlayers' }, // <-- include guests
       ],
     });
+
+    const guests = (updatedMatch as any)?.guestPlayers?.map((g: any) => ({
+      id: g.id,
+      team: g.team,
+      firstName: g.firstName,
+      lastName: g.lastName,
+      shirtNumber: g.shirtNumber,
+    })) || [];
 
     const updatedMatchData = {
       id: matchId,
@@ -965,7 +954,8 @@ router.patch(
         level: user.level,
         positionType: user.positionType,
         preferredFoot: user.preferredFoot
-      })) || []
+      })) || [],
+      guests // <-- include guests
     };
 
     cache.updateArray('matches_all', updatedMatchData);
@@ -982,6 +972,7 @@ router.patch(
     ctx.body = { success: true, message: "Match updated successfully.", match: updatedMatchData };
   }
 );
+
 // Join a league with an invite code
 router.post("/join", required, async (ctx) => {
   if (!ctx.state.user || !ctx.state.user.userId) {
@@ -1388,6 +1379,76 @@ router.get('/', async (ctx) => {
   // Suppose the result is in variable 'leagues'
   // cache.set(cacheKey, leagues, 30); // cache for 30 seconds
   // ctx.body = leagues;
+});
+
+// List guests for a match
+router.get('/:leagueId/matches/:matchId/guests', required, async (ctx) => {
+  const { leagueId, matchId } = ctx.params;
+  const match = await Match.findOne({ where: { id: matchId, leagueId } });
+  if (!match) { ctx.throw(404, 'Match not found'); return; } // <-- return
+
+  const guests = await MatchGuest.findAll({ where: { matchId } });
+  ctx.body = { success: true, guests };
+});
+
+// Add a guest player to a match (ADMIN ONLY)
+router.post('/:leagueId/matches/:matchId/guests', required, async (ctx) => {
+  const { leagueId, matchId } = ctx.params;
+  const { team, firstName, lastName, shirtNumber } = (ctx.request as any).body || {};
+
+  await verifyLeagueAdmin(ctx, leagueId); // <-- admin check
+
+  if (!team || !['home', 'away'].includes(team)) { ctx.throw(400, 'Invalid team'); return; }
+  if (!firstName || !lastName) { ctx.throw(400, 'First and last name required'); return; }
+
+  const match = await Match.findOne({ where: { id: matchId, leagueId } });
+  if (!match) { ctx.throw(404, 'Match not found'); return; }
+
+  const guest = await MatchGuest.create({
+    matchId,
+    team,
+    firstName: String(firstName).trim(),
+    lastName: String(lastName).trim(),
+    shirtNumber: shirtNumber ? String(shirtNumber) : undefined, // <-- undefined, not null
+  });
+
+  // Fetch all guests and update caches so lists stay fresh
+  const allGuests = await MatchGuest.findAll({ where: { matchId } });
+  const guests = allGuests.map((g: any) => ({
+    id: g.id,
+    team: g.team,
+    firstName: g.firstName,
+    lastName: g.lastName,
+    shirtNumber: g.shirtNumber,
+  }));
+
+  // Update matches cache
+  cache.updateArray('matches_all', { id: matchId, guests });
+
+  // Update league caches for all members
+  const leagueWithMembers = await League.findByPk(leagueId, { include: [{ model: User, as: 'members' }] });
+  const memberIds = (leagueWithMembers as any)?.members?.map((m: any) => m.id) || [];
+  memberIds.forEach((memberId: string) => {
+    cache.updateArray(`user_leagues_${memberId}`, { id: matchId, guests });
+  });
+
+  ctx.body = { success: true, guest, guests };
+});
+
+// Remove a guest player from a match (ADMIN ONLY)
+router.delete('/:leagueId/matches/:matchId/guests/:guestId', required, async (ctx) => {
+  const { leagueId, matchId, guestId } = ctx.params;
+
+  await verifyLeagueAdmin(ctx, leagueId); // <-- admin check
+
+  const match = await Match.findOne({ where: { id: matchId, leagueId } });
+  if (!match) { ctx.throw(404, 'Match not found'); return; }
+
+  const guest = await MatchGuest.findOne({ where: { id: guestId, matchId } });
+  if (!guest) { ctx.throw(404, 'Guest not found'); return; }
+
+  await guest.destroy();
+  ctx.body = { success: true, message: 'Guest removed' };
 });
 
 export default router;

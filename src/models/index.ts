@@ -1,12 +1,17 @@
 import League from './League';
 import Match from './Match';
+import MatchGuest from './MatchGuest';
 import MatchStatistics from './MatchStatistics';
 import Session from './Session';
 import User from './User';
 import Vote from './Vote';
 
+// Guests per match
+Match.hasMany(MatchGuest, { as: 'guestPlayers', foreignKey: 'matchId', onDelete: 'CASCADE' });
+MatchGuest.belongsTo(Match, { as: 'match', foreignKey: 'matchId' });
+
 // Initialize models
-const models = { User, League, Match, MatchStatistics, Session, Vote };
+const models = { User, League, Match, MatchGuest, MatchStatistics, Session, Vote };
 
 // Handle associations if defined
 Object.values(models).forEach((model: any) => {
@@ -71,4 +76,4 @@ export default models;
 //   MatchStatistics,
 //   Session,
 //   Vote,
-// }; 
+// };
