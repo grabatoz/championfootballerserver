@@ -839,9 +839,10 @@ router.patch(
       return;
     }
 
-    // Use Koa-multer populated fields/files
     const body = (ctx.request as any).body || {};
     const files = (ctx.files as any) || {};
+
+    const hasProp = (obj: any, key: string) => Object.prototype.hasOwnProperty.call(obj, key);
 
     const parseIds = (v: any): string[] => {
       if (!v) return [];
@@ -855,6 +856,22 @@ router.patch(
         }
       }
       return [];
+    };
+
+    const parseGuests = (v: any): Array<{ id?: string; team: 'home'|'away'; firstName: string; lastName: string; shirtNumber?: string }> => {
+      if (!v) return [];
+      try {
+        const arr = typeof v === 'string' ? JSON.parse(v) : v;
+        return Array.isArray(arr) ? arr.map(g => ({
+          id: g.id ? String(g.id) : undefined,
+          team: g.team === 'away' ? 'away' : 'home',
+          firstName: String(g.firstName || '').trim(),
+          lastName: String(g.lastName || '').trim(),
+          shirtNumber: g.shirtNumber != null ? String(g.shirtNumber) : undefined,
+        })) : [];
+      } catch {
+        return [];
+      }
     };
 
     const homeTeamName = body.homeTeamName;
@@ -886,7 +903,8 @@ router.patch(
       }
     }
 
-    const matchDate = new Date(date);
+    const matchDate = date ? new Date(date) : match.date;
+
     await match.update({
       homeTeamName,
       awayTeamName,
@@ -900,14 +918,60 @@ router.patch(
       awayTeamImage: awayTeamImageUrl
     });
 
-    if (homeTeamUsers.length) await (match as any).setHomeTeamUsers(homeTeamUsers);
-    if (awayTeamUsers.length) await (match as any).setAwayTeamUsers(awayTeamUsers);
+    // Always set associations if field was sent (even if empty) so clearing works
+    if (hasProp(body, 'homeTeamUsers')) {
+      await (match as any).setHomeTeamUsers(homeTeamUsers);
+    }
+    if (hasProp(body, 'awayTeamUsers')) {
+      await (match as any).setAwayTeamUsers(awayTeamUsers);
+    }
+
+    // Guests sync (client sends in PATCH, see edit page)
+    // Prefer combined 'guests', else merge 'homeGuests' + 'awayGuests'
+    let desiredGuests = parseGuests(body.guests);
+    if (!desiredGuests.length) {
+      const homeGuests = parseGuests(body.homeGuests).map(g => ({ ...g, team: 'home' as const }));
+      const awayGuests = parseGuests(body.awayGuests).map(g => ({ ...g, team: 'away' as const }));
+      desiredGuests = [...homeGuests, ...awayGuests];
+    }
+
+    if (desiredGuests.length || hasProp(body, 'guests') || hasProp(body, 'homeGuests') || hasProp(body, 'awayGuests')) {
+      const existing = await MatchGuest.findAll({ where: { matchId } });
+      const existingMap = new Map(existing.map((g: any) => [String(g.id), g]));
+
+      // Delete removed
+      const keepIds = new Set(desiredGuests.filter(g => g.id).map(g => String(g.id)));
+      const toDeleteIds = existing
+        .map((g: any) => String(g.id))
+        .filter(id => !keepIds.has(id));
+      if (toDeleteIds.length) {
+        await MatchGuest.destroy({ where: { matchId, id: toDeleteIds } as any });
+      }
+
+      // Upsert
+      for (const g of desiredGuests) {
+        if (g.id && existingMap.has(g.id)) {
+          await MatchGuest.update(
+            { team: g.team, firstName: g.firstName, lastName: g.lastName},
+            { where: { id: g.id, matchId } as any }
+          );
+        } else {
+          await MatchGuest.create({
+            matchId,
+            team: g.team,
+            firstName: g.firstName,
+            lastName: g.lastName,
+            shirtNumber: g.shirtNumber ?? null
+          } as any);
+        }
+      }
+    }
 
     const updatedMatch = await Match.findByPk(matchId, {
       include: [
         { model: User, as: 'homeTeamUsers' },
         { model: User, as: 'awayTeamUsers' },
-        { model: MatchGuest, as: 'guestPlayers' }, // <-- include guests
+        { model: MatchGuest, as: 'guestPlayers' },
       ],
     });
 
@@ -955,7 +1019,7 @@ router.patch(
         positionType: user.positionType,
         preferredFoot: user.preferredFoot
       })) || [],
-      guests // <-- include guests
+      guests
     };
 
     cache.updateArray('matches_all', updatedMatchData);
