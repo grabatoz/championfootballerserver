@@ -438,4 +438,162 @@ router.get('/:playerId/leagues-matches', async (ctx) => {
   }
 });
 
-export default router; 
+// League-wise teammates (players a given player has played with inside a league)
+router.get('/:playerId/leagues/:leagueId/teammates', required, async (ctx) => {
+  try {
+    const { playerId, leagueId } = ctx.params;
+
+    if (!ctx.state.user) {
+      ctx.throw(401, 'User not authenticated');
+      return;
+    }
+
+    // Basic validation
+    if (!playerId || !leagueId) {
+      ctx.throw(400, 'playerId and leagueId are required');
+      return;
+    }
+
+    // Optional: check player exists
+    const player = await UserModel.findByPk(playerId, { attributes: ['id'] });
+    if (!player) {
+      ctx.throw(404, 'Player not found');
+      return;
+    }
+
+    // Optional: confirm league exists
+    const league = await LeagueModel.findByPk(leagueId, { attributes: ['id'] });
+    if (!league) {
+      ctx.throw(404, 'League not found');
+      return;
+    }
+
+    // Cache key
+    const cacheKey = `league_teammates_${playerId}_${leagueId}`;
+    const cached = cache.get(cacheKey);
+    if (cached) {
+      ctx.body = cached;
+      return;
+    }
+
+    // 1. Get all matches in this league
+    const leagueMatches = await MatchModel.findAll({
+      where: { leagueId },
+      attributes: ['id']
+    });
+    const leagueMatchIds = leagueMatches.map(m => m.id);
+
+    if (leagueMatchIds.length === 0) {
+      const emptyResult = { success: true, data: [], players: [] };
+      cache.set(cacheKey, emptyResult, 300);
+      ctx.body = emptyResult;
+      return;
+    }
+
+    // 2. Get matches (in this league) that the player participated in (via stats)
+    const playerLeagueStats = await MatchStatistics.findAll({
+      where: {
+        user_id: playerId,
+        match_id: { [Op.in]: leagueMatchIds }
+      },
+      attributes: ['match_id']
+    });
+    const participatedMatchIds = playerLeagueStats.map(s => s.match_id);
+
+    if (participatedMatchIds.length === 0) {
+      const emptyResult = { success: true, data: [], players: [] };
+      cache.set(cacheKey, emptyResult, 300);
+      ctx.body = emptyResult;
+      return;
+    }
+
+    // 3. Get ALL stats rows for those matches to gather co-player ids
+    const allStatsSameMatches = await MatchStatistics.findAll({
+      where: {
+        match_id: { [Op.in]: participatedMatchIds }
+      },
+      attributes: ['user_id']
+    });
+
+    const teammateIdsSet = new Set<string>(allStatsSameMatches.map(s => s.user_id));
+    teammateIdsSet.delete(String(playerId));
+
+    if (teammateIdsSet.size === 0) {
+      const emptyResult = { success: true, data: [], players: [] };
+      cache.set(cacheKey, emptyResult, 300);
+      ctx.body = emptyResult;
+      return;
+    }
+
+    const teammateIds = Array.from(teammateIdsSet);
+
+    // 4. Fetch teammate user records
+    const teammates = await UserModel.findAll({
+      where: {
+        id: { [Op.in]: teammateIds }
+      },
+      attributes: [
+        'id',
+        'firstName',
+        'lastName',
+        'profilePicture',
+        'xp',
+        'position',
+        'positionType',
+        'shirtNumber'
+      ]
+    });
+
+    // (Optional) Aggregate simple per-player stats inside this league (goals, assists, matches)
+    const leagueStatsAgg = await MatchStatistics.findAll({
+      where: {
+        user_id: { [Op.in]: teammateIds },
+        match_id: { [Op.in]: participatedMatchIds }
+      },
+      attributes: [
+        'user_id',
+        [sequelize.fn('SUM', sequelize.col('goals')), 'goals'],
+        [sequelize.fn('SUM', sequelize.col('assists')), 'assists'],
+        [sequelize.fn('COUNT', sequelize.col('match_id')), 'appearances']
+      ],
+      group: ['user_id']
+    });
+
+    const statMap: Record<string, { goals: number; assists: number; appearances: number }> = {};
+    leagueStatsAgg.forEach((row: any) => {
+      statMap[row.get('user_id')] = {
+        goals: Number(row.get('goals') || 0),
+        assists: Number(row.get('assists') || 0),
+        appearances: Number(row.get('appearances') || 0)
+      };
+    });
+
+    const resultPlayers = teammates.map(t => {
+      const stats = statMap[t.id] || { goals: 0, assists: 0, appearances: 0 };
+      return {
+        id: t.id,
+        firstName: t.firstName,
+        lastName: t.lastName,
+        name: `${t.firstName} ${t.lastName}`.trim(),
+        avatar: t.profilePicture,
+        profilePicture: t.profilePicture,
+        rating: t.xp || 0,
+        position: t.position,
+        positionType: t.positionType,
+        shirtNumber: t.shirtNumber,
+        goals: stats.goals,
+        assists: stats.assists,
+        appearances: stats.appearances
+      };
+    });
+
+    const payload = { success: true, data: resultPlayers, players: resultPlayers, leagueId, playerId };
+    cache.set(cacheKey, payload, 300); // 5 min
+    ctx.body = payload;
+  } catch (err) {
+    console.error('Error fetching league teammates:', err);
+    ctx.throw(500, 'Failed to fetch league teammates.');
+  }
+});
+
+export default router;
