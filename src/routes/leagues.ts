@@ -531,6 +531,22 @@ router.post("/:id/matches", required, upload.fields([
     console.error('Error parsing team users arrays:', error);
   }
 
+  // Filter out guest placeholder IDs that are not valid UUIDs. These placeholders
+  // (e.g. "guest-home-<timestamp>-<rand>") should not be inserted into the
+  // UserHomeMatches/UserAwayMatches join tables which expect UUID userIds.
+  const uuidRegex = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$/;
+  const rawHomeTeamUsers = homeTeamUsers;
+  const rawAwayTeamUsers = awayTeamUsers;
+  homeTeamUsers = (homeTeamUsers || []).filter((id: string) => uuidRegex.test(id));
+  awayTeamUsers = (awayTeamUsers || []).filter((id: string) => uuidRegex.test(id));
+
+  const guestHomeIds = (rawHomeTeamUsers || []).filter((id: string) => !uuidRegex.test(id));
+  const guestAwayIds = (rawAwayTeamUsers || []).filter((id: string) => !uuidRegex.test(id));
+
+  if (guestHomeIds.length || guestAwayIds.length) {
+    console.log('Guest placeholders ignored on initial match create (will require separate guest creation route):', { guestHomeIds, guestAwayIds });
+  }
+
   const homeCaptain = ctx.request.body.homeCaptain;
   const awayCaptain = ctx.request.body.awayCaptain;
 

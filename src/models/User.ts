@@ -72,21 +72,24 @@ export class User extends Model<UserAttributes> implements UserAttributes {
     });
 
     User.belongsToMany(models.Match, {
-      through: 'MatchHomeTeam',
+  // Must match Match model association through 'UserHomeMatches'
+  through: 'UserHomeMatches',
       as: 'homeTeamMatches',
       foreignKey: 'userId',
       otherKey: 'matchId'
     });
 
     User.belongsToMany(models.Match, {
-      through: 'MatchAwayTeam',
+  // Must match Match model association through 'UserAwayMatches'
+  through: 'UserAwayMatches',
       as: 'awayTeamMatches',
       foreignKey: 'userId',
       otherKey: 'matchId'
     });
 
     User.belongsToMany(models.Match, {
-      through: 'MatchAvailability',
+  // Must match Match model association through 'UserMatchAvailability'
+  through: 'UserMatchAvailability',
       as: 'availableMatches',
       foreignKey: 'userId',
       otherKey: 'matchId'

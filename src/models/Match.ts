@@ -61,21 +61,24 @@ class Match extends Model<MatchAttributes, MatchCreationAttributes> implements M
     });
 
     Match.belongsToMany(models.User, {
-      through: 'UserHomeMatches',
+  // Join table for home team players
+  through: 'UserHomeMatches',
       as: 'homeTeamUsers',
       foreignKey: 'matchId',
       otherKey: 'userId',
     });
 
     Match.belongsToMany(models.User, {
-      through: 'UserAwayMatches',
+  // Join table for away team players
+  through: 'UserAwayMatches',
       as: 'awayTeamUsers',
       foreignKey: 'matchId',
       otherKey: 'userId',
     });
 
     Match.belongsToMany(models.User, {
-      through: 'UserMatchAvailability',
+  // Availability join table
+  through: 'UserMatchAvailability',
       as: 'availableUsers',
       foreignKey: 'matchId',
       otherKey: 'userId',
