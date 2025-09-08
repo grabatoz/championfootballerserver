@@ -890,16 +890,19 @@ router.patch(
       }
     };
 
-    const homeTeamName = body.homeTeamName;
-    const awayTeamName = body.awayTeamName;
-    const date = body.date;
-    const location = body.location;
+  const homeTeamName = body.homeTeamName;
+  const awayTeamName = body.awayTeamName;
+  const date = body.date; // optional legacy single date
+  const startIso = body.start; // preferred explicit start
+  const endIso = body.end;     // preferred explicit end
+  const location = body.location;
 
     const homeTeamUsers = parseIds(body.homeTeamUsers);
     const awayTeamUsers = parseIds(body.awayTeamUsers);
 
-    const homeCaptainId = body.homeCaptainId || null;
-    const awayCaptainId = body.awayCaptainId || null;
+  // Accept either ...Id or plain keys from FormData
+  const homeCaptainId = (body.homeCaptain ?? body.homeCaptainId) || null;
+  const awayCaptainId = (body.awayCaptain ?? body.awayCaptainId) || null;
 
     let homeTeamImageUrl = match.homeTeamImage;
     let awayTeamImageUrl = match.awayTeamImage;
@@ -919,14 +922,24 @@ router.patch(
       }
     }
 
-    const matchDate = date ? new Date(date) : match.date;
+    // Derive start/end preserving duration when needed
+    const previousStart = match.start;
+    const previousEnd = match.end;
+    const prevDurationMs = previousEnd && previousStart ? (new Date(previousEnd).getTime() - new Date(previousStart).getTime()) : 90 * 60 * 1000;
+
+    const computedStart = startIso ? new Date(startIso) : (date ? new Date(date) : new Date(previousStart));
+    const computedEnd = endIso
+      ? new Date(endIso)
+      : (date ? new Date(new Date(date).getTime() + prevDurationMs) : new Date(new Date(computedStart).getTime() + prevDurationMs));
+
+    const matchDate = computedStart; // keep date aligned with start
 
     await match.update({
       homeTeamName,
       awayTeamName,
       date: matchDate,
-      start: matchDate,
-      end: matchDate,
+      start: computedStart,
+      end: computedEnd,
       location,
       homeCaptainId,
       awayCaptainId,
@@ -1005,9 +1018,9 @@ router.patch(
       awayTeamName,
       location,
       leagueId: match.leagueId,
-      date: matchDate,
-      start: matchDate,
-      end: matchDate,
+  date: matchDate,
+  start: computedStart,
+  end: computedEnd,
       status: match.status,
       homeCaptainId,
       awayCaptainId,
