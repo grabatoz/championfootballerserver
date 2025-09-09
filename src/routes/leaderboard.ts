@@ -61,7 +61,12 @@ router.get('/', async (ctx) => {
       shirtNumber: vote.votedFor.shirtNumber,
       value: vote.get('voteCount')
     }));
-    ctx.body = { players: players || [] };
+    const allZero = players.length === 0 || players.every(p => !p.value || Number(p.value) === 0);
+    if (allZero) {
+      ctx.body = { players: [], message: 'No players found for this metric.' };
+      return;
+    }
+    ctx.body = { players };
     return;
   }
 
@@ -105,13 +110,15 @@ router.get('/', async (ctx) => {
   }));
 
   // Only show message if all players' value for the selected metric is zero (and there is at least one player)
-  const allZero = players.length > 0 && players.every(p => !p.value || Number(p.value) === 0);
-
-  const result = {
-    players,
-    message: allZero ? 'Abhi kisi user ko assign nahi hua.' : undefined
-  };
-  cache.set(cacheKey, result, 600); // cache for 30 seconds
+  const allZero = players.length === 0 || players.every(p => !p.value || Number(p.value) === 0);
+  if (allZero) {
+    const resultEmpty = { players: [], message: 'No players found for this metric.' };
+    cache.set(cacheKey, resultEmpty, 600);
+    ctx.body = resultEmpty;
+    return;
+  }
+  const result = { players };
+  cache.set(cacheKey, result, 600);
   ctx.body = result;
 });
 
