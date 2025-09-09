@@ -7,6 +7,7 @@ import profileRouter from './profile';
 import dreamTeamRouter from './dreamTeam';
 import playersRouter from './players';
 import leaderboardRouter from './leaderboard';
+import worldRankingRouter from './worldRanking';
 import { Context } from 'koa';
 import { transporter, createMailOptions } from '../modules/sendEmail';
 
@@ -21,6 +22,7 @@ router.use(profileRouter.routes(), profileRouter.allowedMethods());
 router.use(dreamTeamRouter.routes(), dreamTeamRouter.allowedMethods());
 router.use(playersRouter.routes(), playersRouter.allowedMethods());
 router.use(leaderboardRouter.routes(), leaderboardRouter.allowedMethods());
+router.use(worldRankingRouter.routes(), worldRankingRouter.allowedMethods());
 
 // Contact form endpoint
 router.post('/api/contact', async (ctx) => {
