@@ -128,4 +128,4 @@ router.get('/', async (ctx) => {
 
 // router.get('/', handleWorldRanking);
 
-// export default router;
+export default router;
