@@ -15,6 +15,11 @@ import { Op, literal } from 'sequelize';
 
 const router = new Router({ prefix: '/world-ranking' });
 
+// Health check for this module (helps diagnose 404s in production)
+router.get('/health', async (ctx) => {
+  ctx.body = { ok: true, route: '/world-ranking/health' };
+});
+
 router.get('/', async (ctx) => {
   const mode = (ctx.query.mode as string) === 'avg' ? 'avg' : 'total';
   const playerId = ctx.query.playerId as string | undefined;
