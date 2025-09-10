@@ -17,6 +17,7 @@ const allowedOrigins = [
   'https://championfootballer-client-championfootballer.vercel.app'
 ];
 
+
 app.use(cors({
   origin: (ctx) => {
     const origin = ctx.request.header.origin;
