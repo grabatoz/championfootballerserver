@@ -145,6 +145,8 @@ app.use(worldRankingRouter.allowedMethods());
 // This makes both /world-ranking and /api/world-ranking work.
 app.use(mount('/api', router.routes()));
 app.use(mount('/api', worldRankingRouter.routes()));
+app.use(mount('/api', router.allowedMethods()));
+app.use(mount('/api', worldRankingRouter.allowedMethods()));
 
 // Absolute fallbacks (handles environments where mounted routers are not respected)
 app.use(async (ctx, next) => {
@@ -154,6 +156,34 @@ app.use(async (ctx, next) => {
   }
   if (ctx.method === 'GET' && (ctx.path === '/api/world-ranking' || ctx.path === '/api/world-ranking/')) {
     await handleWorldRanking(ctx);
+    return;
+  }
+  await next();
+});
+
+// Introspection helper: list registered routes to debug 404s in prod
+function listRoutes() {
+  const extract = (r: any, label: string) => {
+    try {
+      return (r.stack || []).map((l: any) => ({
+        router: label,
+        methods: (l.methods || []).join(','),
+        path: l.path
+      }));
+    } catch {
+      return [] as Array<{ router: string; methods: string; path: string }>;
+    }
+  };
+  return [
+    ...extract((router as any), 'root'),
+    ...extract((worldRankingRouter as any), 'worldRanking')
+  ];
+}
+
+// GET /__routes (and /api/__routes) to see what's mounted
+app.use(async (ctx, next) => {
+  if (ctx.method === 'GET' && (ctx.path === '/__routes' || ctx.path === '/api/__routes')) {
+    ctx.body = { routes: listRoutes() };
     return;
   }
   await next();
