@@ -20,7 +20,7 @@ router.get('/health', async (ctx) => {
   ctx.body = { ok: true, route: '/world-ranking/health' };
 });
 
-export async function handleWorldRanking(ctx: any) {
+router.get('/', async (ctx) => {
   const mode = (ctx.query.mode as string) === 'avg' ? 'avg' : 'total';
   const playerId = ctx.query.playerId as string | undefined;
   const positionType = ctx.query.positionType as string | undefined;
@@ -124,8 +124,8 @@ export async function handleWorldRanking(ctx: any) {
   if (!playerId) cache.set(cacheKey, result, 300); // 5 min cache
 
   ctx.body = result;
-}
+});
 
-router.get('/', handleWorldRanking);
+// router.get('/', handleWorldRanking);
 
-export default router;
+// export default router;
