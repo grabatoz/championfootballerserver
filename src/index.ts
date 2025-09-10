@@ -3,6 +3,7 @@ import Koa from "koa"
 const app = new Koa()
 import koaBody from "koa-body"
 import router from "./routes"
+import worldRankingRouter from './routes/worldRanking'
 import cors from "@koa/cors"
 import serve from 'koa-static';
 import path from 'path';
@@ -135,6 +136,10 @@ app.use(async (ctx, next) => {
 // Mount routes
 app.use(router.routes());
 app.use(router.allowedMethods());
+
+// Explicitly mount world-ranking to avoid 404s if server runs an older routes index
+app.use(worldRankingRouter.routes());
+app.use(worldRankingRouter.allowedMethods());
 
 // App error handling
 app.on("error", async (error) => {
