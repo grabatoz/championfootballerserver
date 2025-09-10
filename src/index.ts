@@ -3,7 +3,7 @@ import Koa from "koa"
 const app = new Koa()
 import koaBody from "koa-body"
 import router from "./routes"
-import worldRankingRouter from "./routes/worldRanking"
+import worldRankingRouter, { handleWorldRanking } from "./routes/worldRanking"
 import cors from "@koa/cors"
 import serve from 'koa-static';
 import path from 'path';
@@ -140,6 +140,24 @@ app.use(router.allowedMethods());
 // Explicitly mount world-ranking as a safeguard (avoids 404s if aggregation router fails)
 app.use(worldRankingRouter.routes());
 app.use(worldRankingRouter.allowedMethods());
+
+// Provide an alias under /api for reverse proxies that forward with a path prefix (e.g., /api/*)
+// This makes both /world-ranking and /api/world-ranking work.
+app.use(mount('/api', router.routes()));
+app.use(mount('/api', worldRankingRouter.routes()));
+
+// Absolute fallbacks (handles environments where mounted routers are not respected)
+app.use(async (ctx, next) => {
+  if (ctx.method === 'GET' && (ctx.path === '/world-ranking' || ctx.path === '/world-ranking/')) {
+    await handleWorldRanking(ctx);
+    return;
+  }
+  if (ctx.method === 'GET' && (ctx.path === '/api/world-ranking' || ctx.path === '/api/world-ranking/')) {
+    await handleWorldRanking(ctx);
+    return;
+  }
+  await next();
+});
 
 // App error handling
 app.on("error", async (error) => {
