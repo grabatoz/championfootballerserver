@@ -16,8 +16,20 @@ const METRIC_MAP: Record<string, string> = {
 
 router.get('/', async (ctx) => {
   const metric = (ctx.query.metric as string) || 'goals';
-  const leagueId = ctx.query.leagueId as string | undefined;
+  let leagueId = ctx.query.leagueId as string | undefined;
   const positionType = ctx.query.positionType as string | undefined;
+
+  // Sanitize leagueId (trim spaces) and validate UUID format to avoid Postgres string_to_uuid errors
+  const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+  if (typeof leagueId === 'string') {
+    leagueId = leagueId.trim();
+    if (leagueId.length === 0) leagueId = undefined;
+  }
+  if (leagueId && !uuidRegex.test(leagueId)) {
+    ctx.status = 400;
+    ctx.body = { players: [], message: 'Invalid leagueId format.' };
+    return;
+  }
   const cacheKey = `leaderboard_${metric}_${leagueId || 'all'}_${positionType || 'all'}`;
   const cached = cache.get(cacheKey);
   if (cached) {
