@@ -3,7 +3,6 @@ import Koa from "koa"
 const app = new Koa()
 import koaBody from "koa-body"
 import router from "./routes"
-import worldRankingRouter from "./routes/worldRanking"
 import cors from "@koa/cors"
 import serve from 'koa-static';
 import path from 'path';
@@ -136,47 +135,6 @@ app.use(async (ctx, next) => {
 // Mount routes
 app.use(router.routes());
 app.use(router.allowedMethods());
-
-// Explicitly mount world-ranking as a safeguard (avoids 404s if aggregation router fails)
-app.use(worldRankingRouter.routes());
-app.use(worldRankingRouter.allowedMethods());
-
-// Provide an alias under /api for reverse proxies that forward with a path prefix (e.g., /api/*)
-// This makes both /world-ranking and /api/world-ranking work.
-app.use(mount('/api', router.routes()));
-app.use(mount('/api', worldRankingRouter.routes()));
-app.use(mount('/api', router.allowedMethods()));
-app.use(mount('/api', worldRankingRouter.allowedMethods()));
-
-// Absolute fallbacks removed: routes are mounted directly and under /api
-
-// Introspection helper: list registered routes to debug 404s in prod
-function listRoutes() {
-  const extract = (r: any, label: string) => {
-    try {
-      return (r.stack || []).map((l: any) => ({
-        router: label,
-        methods: (l.methods || []).join(','),
-        path: l.path
-      }));
-    } catch {
-      return [] as Array<{ router: string; methods: string; path: string }>;
-    }
-  };
-  return [
-    ...extract((router as any), 'root'),
-    ...extract((worldRankingRouter as any), 'worldRanking')
-  ];
-}
-
-// GET /__routes (and /api/__routes) to see what's mounted
-app.use(async (ctx, next) => {
-  if (ctx.method === 'GET' && (ctx.path === '/__routes' || ctx.path === '/api/__routes')) {
-    ctx.body = { routes: listRoutes() };
-    return;
-  }
-  await next();
-});
 
 // App error handling
 app.on("error", async (error) => {
