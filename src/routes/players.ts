@@ -10,18 +10,26 @@ const { User: UserModel, Match: MatchModel, MatchStatistics, League: LeagueModel
 
 const router = new Router({ prefix: '/players' });
 
-// Add a GET /players endpoint with caching
+// Add a GET /players endpoint with ULTRA FAST caching
 router.get('/', async (ctx) => {
-  const cacheKey = 'players_all';
+  const cacheKey = 'players_all_ultra_fast';
   const cached = cache.get(cacheKey);
   if (cached) {
+    ctx.set('X-Cache', 'HIT');
     ctx.body = cached;
     return;
   }
+  
   try {
     const players = await UserModel.findAll({
       attributes: ['id', 'firstName', 'lastName', 'profilePicture', 'xp', 'position', 'positionType'],
+      where: {
+        xp: { [Op.gt]: 0 } // Only players with XP for speed
+      },
+      order: [['xp', 'DESC']],
+      limit: 50 // Reduced limit for ultra speed
     });
+    
     const result = {
       success: true,
       players: players.map(p => ({
@@ -33,7 +41,8 @@ router.get('/', async (ctx) => {
         positionType: p.positionType,
       })),
     };
-    cache.set(cacheKey, result, 600); // cache for 30 seconds
+    cache.set(cacheKey, result, 1800); // 30 min cache for ULTRA speed
+    ctx.set('X-Cache', 'MISS');
     ctx.body = result;
   } catch (error) {
     console.error('Error fetching all players:', error);

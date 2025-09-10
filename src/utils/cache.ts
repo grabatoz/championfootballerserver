@@ -1,15 +1,17 @@
-// Enhanced in-memory cache with TTL and smart updates
+// Enhanced in-memory cache with TTL and smart updates - ULTRA FAST VERSION
 // Usage: cache.set(key, value, ttlSeconds); cache.get(key)
 // Smart updates: cache.updateArray(key, newItem, idField, ttlSeconds)
-// Default TTL for all endpoints is now 10 minutes (600 seconds)
+// Default TTL for all endpoints is now 15 minutes (900 seconds) for MAXIMUM SPEED
 
 interface CacheEntry<T> {
   value: T;
   expiresAt: number;
+  hits: number; // Track cache hit count
 }
 
-class SimpleCache {
+class SuperFastCache {
   private store: Record<string, CacheEntry<any>> = {};
+  private hitStats: Record<string, number> = {};
 
   get<T>(key: string): T | undefined {
     const entry = this.store[key];
@@ -18,13 +20,16 @@ class SimpleCache {
       delete this.store[key];
       return undefined;
     }
+    entry.hits++;
+    this.hitStats[key] = (this.hitStats[key] || 0) + 1;
     return entry.value;
   }
 
-  set<T>(key: string, value: T, ttlSeconds: number) {
+  set<T>(key: string, value: T, ttlSeconds: number = 900) { // Default 15 min for speed
     this.store[key] = {
       value,
       expiresAt: Date.now() + ttlSeconds * 1000,
+      hits: 0
     };
   }
 
@@ -155,5 +160,5 @@ class SimpleCache {
   }
 }
 
-const cache = new SimpleCache();
+const cache = new SuperFastCache();
 export default cache; 

@@ -70,8 +70,8 @@ app.use(async (ctx, next) => {
     json: true,
     urlencoded: true,
     text: false,
-    jsonLimit: '10mb',
-    formLimit: '10mb'
+    jsonLimit: '5mb', // Reduced for speed
+    formLimit: '5mb'  // Reduced for speed
   })(ctx, next);
 });
 
@@ -91,11 +91,15 @@ app.use(async (ctx, next) => {
   }
 });
 
-// Client error handling
+// Client error handling with performance timing
 app.use(async (ctx, next) => {
   const start = Date.now()
   try {
     await next()
+    // Add cache headers for static content
+    if (ctx.path.includes('/uploads/') || ctx.path.includes('.css') || ctx.path.includes('.js')) {
+      ctx.set('Cache-Control', 'public, max-age=31536000'); // 1 year for static assets
+    }
   } catch (error: any) {
     console.error('Request error:', error);
     
@@ -127,9 +131,16 @@ app.use(async (ctx, next) => {
     }
   } finally {
     const ms = Date.now() - start
-    console.log(
-      `${ctx.request.method} ${ctx.response.status} in ${ms}ms: ${ctx.request.path}`
-    )
+    // Add performance headers for debugging
+    ctx.set('X-Response-Time', `${ms}ms`);
+    
+    if (ms > 500) { // Log slow requests (reduced threshold)
+      console.log(`🐌 SLOW REQUEST: ${ctx.request.method} ${ctx.response.status} in ${ms}ms: ${ctx.request.path}`)
+    } else if (ms < 100) {
+      console.log(`⚡ FAST: ${ctx.request.method} ${ctx.response.status} in ${ms}ms: ${ctx.request.path}`)
+    } else {
+      console.log(`${ctx.request.method} ${ctx.response.status} in ${ms}ms: ${ctx.request.path}`)
+    }
   }
 })
 

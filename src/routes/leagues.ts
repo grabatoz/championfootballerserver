@@ -37,7 +37,7 @@ const isUuid = (v: string) =>
 const router = new Router({ prefix: '/leagues' });
 
 
-// Get all leagues for the current user (for /leagues/user)
+// Get all leagues for the current user (for /leagues/user) - ULTRA FAST
 router.get('/user', required, async (ctx) => {
   if (!ctx.state.user || !ctx.state.user.userId) {
     ctx.throw(401, "Unauthorized");
@@ -45,9 +45,10 @@ router.get('/user', required, async (ctx) => {
   }
 
   const userId = ctx.state.user.userId;
-  const cacheKey = `user_leagues_${userId}`;
+  const cacheKey = `user_leagues_${userId}_ultra_fast`;
   const cached = cache.get(cacheKey);
   if (cached) {
+    ctx.set('X-Cache', 'HIT');
     ctx.body = cached;
     return;
   }
@@ -57,19 +58,21 @@ router.get('/user', required, async (ctx) => {
       include: [{
         model: League,
         as: 'leagues',
+        attributes: ['id', 'name', 'description', 'type', 'maxGames', 'leagueImage', 'createdAt'],
         include: [
-          { model: User, as: 'members' },
-          { model: User, as: 'administeredLeagues' },
-          {
-            model: Match,
-            as: 'matches',
-            include: [
-              { model: User, as: 'homeTeamUsers' },
-              { model: User, as: 'awayTeamUsers' },
-              { model: User, as: 'statistics' }
-            ]
+          { 
+            model: User, 
+            as: 'members',
+            attributes: ['id', 'firstName', 'lastName'],
+            limit: 10 // Limit members for speed
+          },
+          { 
+            model: User, 
+            as: 'administeredLeagues',
+            attributes: ['id', 'firstName', 'lastName']
           }
-        ]
+        ],
+        limit: 15 // Limit leagues for ultra speed
       }]
     });
 
@@ -81,7 +84,8 @@ router.get('/user', required, async (ctx) => {
     const result = { success: true, leagues: (user as any).leagues || [] };
     console.log('result', result);
 
-    cache.set(cacheKey, result, 600); // cache for 30 seconds
+    cache.set(cacheKey, result, 1800); // 30 min cache
+    ctx.set('X-Cache', 'MISS');
     ctx.body = result;
   } catch (error) {
     console.error("Error fetching leagues for user:", error);
@@ -89,10 +93,19 @@ router.get('/user', required, async (ctx) => {
   }
 });
 
-// Get all leagues for the current user
+// Get all leagues for the current user - ULTRA FAST
 router.get("/", required, async (ctx) => {
   if (!ctx.state.user || !ctx.state.user.userId) {
     ctx.throw(401, "Unauthorized");
+    return;
+  }
+
+  const userId = ctx.state.user.userId;
+  const cacheKey = `leagues_main_${userId}_ultra_fast`;
+  const cached = cache.get(cacheKey);
+  if (cached) {
+    ctx.set('X-Cache', 'HIT');
+    ctx.body = cached;
     return;
   }
 
@@ -101,19 +114,21 @@ router.get("/", required, async (ctx) => {
       include: [{
         model: League,
         as: 'leagues',
+        attributes: ['id', 'name', 'description', 'type', 'maxGames', 'leagueImage', 'createdAt'],
         include: [
-          { model: User, as: 'members' },
-          { model: User, as: 'administeredLeagues' },
-          {
-            model: Match,
-            as: 'matches',
-            include: [
-              { model: User, as: 'homeTeamUsers' },
-              { model: User, as: 'awayTeamUsers' },
-              { model: User, as: 'statistics' }
-            ]
+          { 
+            model: User, 
+            as: 'members',
+            attributes: ['id', 'firstName', 'lastName'],
+            limit: 5 // Ultra fast - minimal members
+          },
+          { 
+            model: User, 
+            as: 'administeredLeagues',
+            attributes: ['id', 'firstName', 'lastName']
           }
-        ]
+        ],
+        limit: 10 // Ultra fast - top 10 leagues only
       }]
     });
 
@@ -122,7 +137,10 @@ router.get("/", required, async (ctx) => {
       return;
     }
 
-    ctx.body = { success: true, leagues: (user as any).leagues || [] };
+    const result = { success: true, leagues: (user as any).leagues || [] };
+    cache.set(cacheKey, result, 1800); // 30 min cache
+    ctx.set('X-Cache', 'MISS');
+    ctx.body = result;
   } catch (error) {
     console.error("Error fetching leagues for user:", error);
     ctx.throw(500, "Failed to retrieve leagues.");

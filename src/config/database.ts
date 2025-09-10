@@ -7,13 +7,24 @@ dotenv.config();
 const sequelize = new Sequelize(process.env.DATABASE_URL as string, {
   dialect: 'postgres',
   protocol: 'postgres',
-  logging: false,
+  logging: false, // Keep disabled for performance
+  pool: {
+    max: 20, // Increased connection pool for better performance
+    min: 5,
+    acquire: 30000,
+    idle: 10000,
+  },
   dialectOptions: {
     ssl: {
       require: true,
       rejectUnauthorized: false, // For Neon — allows self-signed certs
     },
   },
+  // Performance optimizations
+  benchmark: false,
+  retry: {
+    max: 3
+  }
 });
 
 // Function to initialize and test connection

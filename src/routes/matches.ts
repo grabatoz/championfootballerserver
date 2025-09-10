@@ -477,7 +477,7 @@ router.get('/', async (ctx) => {
   }
 });
 
-// GET /matches/:matchId/stats - Get stats for a specific player in a match
+// GET /matches/:matchId/stats - Get stats for a specific player in a match - ULTRA FAST
 router.get('/:matchId/stats', required, async (ctx) => {
     if (!ctx.state.user?.userId) {
         ctx.throw(401, 'Unauthorized');
@@ -491,42 +491,48 @@ router.get('/:matchId/stats', required, async (ctx) => {
         ctx.throw(400, 'playerId is required');
         return;
     }
+
+    const cacheKey = `match_stats_${matchId}_${playerId}_ultra_fast`;
+    const cached = cache.get(cacheKey);
+    if (cached) {
+        ctx.set('X-Cache', 'HIT');
+        ctx.body = cached;
+        return;
+    }
     
     try {
         const stats = await MatchStatistics.findOne({
             where: {
                 match_id: matchId,
                 user_id: playerId
-            }
+            },
+            attributes: ['goals', 'assists', 'cleanSheets', 'penalties', 'freeKicks', 'defence', 'impact']
         });
         
-        if (stats) {
-            ctx.body = {
-                success: true,
-                stats: {
-                    goals: stats.goals || 0,
-                    assists: stats.assists || 0,
-                    cleanSheets: stats.cleanSheets || 0,
-                    penalties: stats.penalties || 0,
-                    freeKicks: stats.freeKicks || 0,
-                    defence: stats.defence || 0,
-                    impact: stats.impact || 0,
-                }
-            };
-        } else {
-            ctx.body = {
-                success: true,
-                stats: {
-                    goals: 0,
-                    assists: 0,
-                    cleanSheets: 0,
-                    penalties: 0,
-                    freeKicks: 0,
-                    defence: 0,
-                    impact: 0,
-                }
-            };
-        }
+        const result = {
+            success: true,
+            stats: stats ? {
+                goals: stats.goals || 0,
+                assists: stats.assists || 0,
+                cleanSheets: stats.cleanSheets || 0,
+                penalties: stats.penalties || 0,
+                freeKicks: stats.freeKicks || 0,
+                defence: stats.defence || 0,
+                impact: stats.impact || 0,
+            } : {
+                goals: 0,
+                assists: 0,
+                cleanSheets: 0,
+                penalties: 0,
+                freeKicks: 0,
+                defence: 0,
+                impact: 0,
+            }
+        };
+
+        cache.set(cacheKey, result, 600); // 10 min cache for stats
+        ctx.set('X-Cache', 'MISS');
+        ctx.body = result;
     } catch (error) {
         console.error('Error fetching stats:', error);
         ctx.throw(500, 'Failed to fetch stats');
@@ -633,7 +639,7 @@ router.post('/:matchId/stats', required, async (ctx) => {
     }
 });
 
-// GET /matches/:matchId/votes - Get votes for a match
+// GET /matches/:matchId/votes - Get votes for a match - ULTRA FAST
 router.get('/:matchId/votes', required, async (ctx) => {
     if (!ctx.state.user?.userId) {
         ctx.throw(401, 'Unauthorized');
@@ -643,15 +649,24 @@ router.get('/:matchId/votes', required, async (ctx) => {
     const { matchId } = ctx.params;
     const userId = ctx.state.user.userId;
     
+    const cacheKey = `match_votes_${matchId}_${userId}_ultra_fast`;
+    const cached = cache.get(cacheKey);
+    if (cached) {
+        ctx.set('X-Cache', 'HIT');
+        ctx.body = cached;
+        return;
+    }
+    
     try {
-        // Get all votes for this match
+        // Get all votes for this match - optimized query
         const votes = await Vote.findAll({
             where: { matchId },
             attributes: ['votedForId', [sequelize.fn('COUNT', sequelize.col('votedForId')), 'voteCount']],
-            group: ['votedForId']
+            group: ['votedForId'],
+            limit: 20 // Limit for ultra speed
         });
         
-        // Get current user's vote
+        // Get current user's vote - fast lookup
         const userVote = await Vote.findOne({
             where: { matchId, voterId: userId },
             attributes: ['votedForId']
@@ -663,11 +678,15 @@ router.get('/:matchId/votes', required, async (ctx) => {
             votesObject[vote.votedForId] = parseInt(vote.get('voteCount'));
         });
         
-        ctx.body = {
+        const result = {
             success: true,
             votes: votesObject,
             userVote: userVote?.votedForId || null
         };
+
+        cache.set(cacheKey, result, 300); // 5 min cache for votes
+        ctx.set('X-Cache', 'MISS');
+        ctx.body = result;
     } catch (error) {
         console.error('Error fetching votes:', error);
         ctx.throw(500, 'Failed to fetch votes');

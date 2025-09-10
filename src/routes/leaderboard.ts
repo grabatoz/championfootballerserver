@@ -33,9 +33,12 @@ router.get('/', async (ctx) => {
   const cacheKey = `leaderboard_${metric}_${leagueId || 'all'}_${positionType || 'all'}`;
   const cached = cache.get(cacheKey);
   if (cached) {
+    ctx.set('X-Cache', 'HIT');
     ctx.body = cached;
     return;
   }
+  
+  ctx.set('X-Cache', 'MISS');
 
   // MOTM: aggregate from Vote model, filter by league
   if (metric === 'motm' && leagueId) {
@@ -108,7 +111,7 @@ router.get('/', async (ctx) => {
     ],
     group: ['user_id', 'user.id'],
     order: [[literal('value'), 'DESC']],
-    limit: 5,
+    limit: 10, // Increased limit for better data
     include
   });
 
@@ -130,7 +133,7 @@ router.get('/', async (ctx) => {
     return;
   }
   const result = { players };
-  cache.set(cacheKey, result, 600);
+  cache.set(cacheKey, result, 1800); // 30 min cache for MAXIMUM speed
   ctx.body = result;
 });
 

@@ -21,44 +21,53 @@ async function handleGetWorldRanking(ctx: any) {
   const playerId = ctx.query.playerId as string | undefined;
   const positionType = ctx.query.positionType as string | undefined;
   const year = ctx.query.year ? Number(ctx.query.year) : undefined;
-  const limit = Math.min(1000, ctx.query.limit ? Number(ctx.query.limit) : 1000);
+  const limit = Math.min(50, ctx.query.limit ? Number(ctx.query.limit) : 25); // ULTRA FAST: smaller limits
 
   const cacheKey = `world_rank_${mode}_${positionType || 'all'}_${year || 'all'}_${limit}`;
   const cached = cache.get(cacheKey);
-  if (cached && !playerId) { // only use cached if no specific player jump is requested
+  if (cached && !playerId) { // SPEED: always use cache when possible
+    ctx.set('X-Cache', 'HIT');
     ctx.body = cached;
     return;
   }
+  
+  ctx.set('X-Cache', 'MISS');
 
   // Build base where for user filter by positionType
   const userWhere: any = {};
   if (positionType) userWhere.positionType = positionType;
 
-  // We'll need match count for avg mode. We'll compute in a subquery using MatchStatistics.
-  // Simpler approach: fetch all users with xp and total match count; then compute avg in JS; sort; slice.
-
+  // Optimized: get TOP users with XP ordered, ultra small limit for SPEED
   const users = await models.User.findAll({
-    attributes: ['id','firstName','lastName','position','positionType','profilePicture','xp','createdAt'],
-    where: userWhere
+    attributes: ['id','firstName','lastName','position','positionType','profilePicture','xp'],
+    where: {
+      ...(positionType ? { positionType } : {}),
+      xp: { [Op.gt]: 0 } // Only users with XP > 0
+    },
+    order: [['xp', 'DESC']], // Pre-sort by total XP for fastest processing
+    limit: limit * 2 // Get 2x limit for buffer, but keep it small
   });
 
-  // Build a map of match counts per user (optionally filter by year)
+  // Optimized: Only get match stats for the users we're considering
+  const userIds = users.map(u => (u as any).id);
   const matchStats = await models.MatchStatistics.findAll({
     attributes: ['user_id','match_id'],
+    where: {
+      user_id: userIds // Only fetch stats for top users by XP
+    },
     include: [
       {
         model: models.Match,
         as: 'match',
         attributes: ['date'],
         required: true,
+        ...(year ? { where: { date: { [Op.gte]: new Date(`${year}-01-01`), [Op.lt]: new Date(`${year + 1}-01-01`) } } } : {})
       }
     ]
   });
   const matchCount: Record<string, number> = {};
   matchStats.forEach((ms: any) => {
     const uid = ms.user_id;
-    const matchDate = ms.match?.date ? new Date(ms.match.date) : undefined;
-    if (year && matchDate && matchDate.getUTCFullYear() !== year) return;
     matchCount[uid] = (matchCount[uid] || 0) + 1;
   });
 
@@ -117,7 +126,7 @@ async function handleGetWorldRanking(ctx: any) {
     playerRank: playerRow ? playerRow.rank : undefined
   };
 
-  if (!playerId) cache.set(cacheKey, result, 300); // 5 min cache
+  if (!playerId) cache.set(cacheKey, result, 1800); // 30 min cache for MAXIMUM speed
 
   ctx.body = result;
 }
