@@ -302,48 +302,72 @@ router.get("/auth/data", required, async (ctx: CustomContext) => {
     ctx.throw(401, "User not authenticated");
   }
 
-  const user = await User.findByPk(ctx.state.user.userId, {
+  const userId = ctx.state.user.userId;
+  const cacheKey = `auth_data_${userId}_ultra_fast`;
+  const cached = cache.get(cacheKey);
+  if (cached) {
+    ctx.set('X-Cache', 'HIT');
+    ctx.body = cached;
+    return;
+  }
+
+  const user = await User.findByPk(userId, {
+    attributes: [
+      'id', 'firstName', 'lastName', 'email', 'position', 'positionType', 'style', 'preferredFoot', 'shirtNumber', 'profilePicture', 'skills', 'xp'
+    ],
     include: [{
       model: League,
       as: 'leagues',
+      attributes: ['id','name','inviteCode','createdAt'],
+      through: { attributes: [] },
       include: [{
         model: User,
-        as: 'members'
+        as: 'members',
+        attributes: ['id','firstName','lastName','positionType','shirtNumber','profilePicture']
       }, {
         model: Match,
         as: 'matches',
+        attributes: ['id','date','status','homeTeamGoals','awayTeamGoals','notes','leagueId','start','homeCaptainId','awayCaptainId','createdAt'],
         include: [
-          { model: User, as: 'availableUsers' },
-          { model: User, as: 'homeTeamUsers' },
-          { model: User, as: 'awayTeamUsers' },
-          { model: User, as: 'statistics' }
+          { model: User, as: 'availableUsers', attributes: ['id','firstName','lastName','positionType','shirtNumber','profilePicture'], through: { attributes: [] } },
+          { model: User, as: 'homeTeamUsers', attributes: ['id','firstName','lastName','positionType','shirtNumber','profilePicture'], through: { attributes: [] } },
+          { model: User, as: 'awayTeamUsers', attributes: ['id','firstName','lastName','positionType','shirtNumber','profilePicture'], through: { attributes: [] } },
+          // Keep a very light statistics include (association name kept for compatibility)
+          { model: User, as: 'statistics', attributes: ['id'] }
         ]
       }]
     }, {
       model: League,
       as: 'administeredLeagues',
+      attributes: ['id','name','inviteCode','createdAt'],
+      through: { attributes: [] },
       include: [{
         model: User,
-        as: 'members'
+        as: 'members',
+        attributes: ['id','firstName','lastName','positionType','shirtNumber','profilePicture']
       }, {
         model: Match,
         as: 'matches',
+        attributes: ['id','date','status','homeTeamGoals','awayTeamGoals','notes','leagueId','start','homeCaptainId','awayCaptainId','createdAt'],
         include: [
-          { model: User, as: 'availableUsers' },
-          { model: User, as: 'homeTeamUsers' },
-          { model: User, as: 'awayTeamUsers' },
-          { model: User, as: 'statistics' }
+          { model: User, as: 'availableUsers', attributes: ['id','firstName','lastName','positionType','shirtNumber','profilePicture'], through: { attributes: [] } },
+          { model: User, as: 'homeTeamUsers', attributes: ['id','firstName','lastName','positionType','shirtNumber','profilePicture'], through: { attributes: [] } },
+          { model: User, as: 'awayTeamUsers', attributes: ['id','firstName','lastName','positionType','shirtNumber','profilePicture'], through: { attributes: [] } },
+          { model: User, as: 'statistics', attributes: ['id'] }
         ]
       }]
     }, {
       model: Match,
-      as: 'homeTeamMatches'
+      as: 'homeTeamMatches',
+      attributes: ['id','date','status']
     }, {
       model: Match,
-      as: 'awayTeamMatches'
+      as: 'awayTeamMatches',
+      attributes: ['id','date','status']
     }, {
       model: Match,
-      as: 'availableMatches'
+      as: 'availableMatches',
+      attributes: ['id','date','status']
     }]
   }) as any;
 
@@ -385,48 +409,13 @@ router.get("/auth/data", required, async (ctx: CustomContext) => {
     }
   }
 
-  // Delete sensitive data
-  const propertiesToDelete = [
-    "loginCode",
-    "email",
-    "age",
-    "ipAddress",
-    "gender",
-  ]
-  const deleteProperties = (input: User[] | User) => {
-    if (Array.isArray(input)) {
-      for (const user of input) {
-        for (const property of propertiesToDelete) {
-          delete (user as any)[property]
-        }
-      }
-    } else if (typeof input === "object") {
-      for (const property of propertiesToDelete) {
-        delete (input as any)[property]
-      }
-    }
-  }
+  // Minimal sanitization (password is never selected in attributes but ensure not present)
   delete (user as any)["password"]
-  
-  // Handle both leagues and administeredLeagues
-  if ((user as any).leagues) {
-    for (const league of (user as any).leagues) {
-      deleteProperties(league.members)
-      deleteProperties(league.matches)
-    }
-  }
-  
-  if ((user as any).administeredLeagues) {
-    for (const league of (user as any).administeredLeagues) {
-      deleteProperties(league.members)
-      deleteProperties(league.matches)
-    }
-  }
 
-  ctx.body = {
-    success: true,
-    user: user,
-  };
+  const payload = { success: true, user };
+  cache.set(cacheKey, payload, 300); // 5 minutes ultra-fast cache
+  ctx.set('X-Cache', 'MISS');
+  ctx.body = payload;
 });
 
 router.post("/auth/logout", required, async (ctx: CustomContext) => {
