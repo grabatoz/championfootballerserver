@@ -13,6 +13,7 @@ import { triggerImmediateXPCalculation } from './utils/xpAchievementsEngine';
 // CORS configuration for both development and production
 const allowedOrigins = [
   'http://localhost:3000',
+  'http://localhost:3001',
   'https://championfootballer-client.vercel.app',
   'https://championfootballer-client-git-main-championfootballer.vercel.app',
   'https://championfootballer-client-championfootballer.vercel.app'
@@ -28,7 +29,7 @@ app.use(cors({
     return allowedOrigins[0]; // fallback to first origin
   },
   allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
-  allowHeaders: ['Content-Type', 'Authorization', 'Accept', 'Origin'],
+  allowHeaders: ['Content-Type', 'Authorization', 'Accept', 'Origin', 'Cache-Control', 'Pragma'],
   credentials: true,
   maxAge: 86400 // 24 hours
 }));
