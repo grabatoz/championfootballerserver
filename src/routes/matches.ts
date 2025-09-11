@@ -156,7 +156,12 @@ router.patch('/:matchId/note', required, async (ctx) => {
     ctx.body = { success: true };
 });
 
-router.post('/:matchId/stats', required, async (ctx) => {
+router.post('/:matchId/stats', required, async (ctx, next) => {
+    // If a playerId is provided in body, defer to the admin-capable handler below
+    if ((ctx.request.body as any)?.playerId) {
+        await next();
+        return;
+    }
     if (!ctx.state.user?.userId) {
         ctx.throw(401, 'Unauthorized');
         return;
@@ -229,7 +234,10 @@ router.post('/:matchId/stats', required, async (ctx) => {
   // Update matches cache
   cache.updateArray('matches_all', updatedMatchData);
   
-  // Update leaderboard cache for all metrics
+    // Bust per-player match stats cache so subsequent reads reflect latest values
+    try { cache.del(`match_stats_${matchId}_${userId}_ultra_fast`); } catch {}
+
+    // Update leaderboard cache for all metrics
   const leaderboardKeys = ['goals', 'assists', 'defence', 'motm', 'impact', 'cleanSheet'];
   leaderboardKeys.forEach(metric => {
     const cacheKey = `leaderboard_${metric}_all_all`;
@@ -594,7 +602,10 @@ router.post('/:matchId/stats', required, async (ctx) => {
             });
         }
         
-        // Update leaderboard cache
+    // Invalidate cached stats for this player+match so reads get fresh impact
+    try { cache.del(`match_stats_${matchId}_${playerId}_ultra_fast`); } catch {}
+
+    // Update leaderboard cache
         const match = await Match.findByPk(matchId);
         if (match && match.leagueId) {
             const updatedStats = {
@@ -619,7 +630,7 @@ router.post('/:matchId/stats', required, async (ctx) => {
             });
         }
         
-        ctx.body = {
+    ctx.body = {
             success: true,
             message: 'Stats saved successfully',
             playerId: playerId,
