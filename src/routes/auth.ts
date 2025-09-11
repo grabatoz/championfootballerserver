@@ -7,7 +7,7 @@ import { hash, compare } from "bcrypt"
 import { getLoginCode } from "../modules/utils"
 import { Context } from "koa";
 import jwt from 'jsonwebtoken';
-import cache from '../utils/cache';
+import cache from '../utils/cache'; // ensure this exists and has get/set
 
 const router = new Router();
 const { League, Match, Session } = models;
@@ -304,6 +304,7 @@ router.get("/auth/data", required, async (ctx: CustomContext) => {
 
   const userId = ctx.state.user.userId;
   const cacheKey = `auth_data_${userId}_ultra_fast`;
+
   const cached = cache.get(cacheKey);
   if (cached) {
     ctx.set('X-Cache', 'HIT');
@@ -313,107 +314,181 @@ router.get("/auth/data", required, async (ctx: CustomContext) => {
 
   const user = await User.findByPk(userId, {
     attributes: [
-      'id', 'firstName', 'lastName', 'email', 'position', 'positionType', 'style', 'preferredFoot', 'shirtNumber', 'profilePicture', 'skills', 'xp'
+      'id',
+      'firstName',
+      'lastName',
+      'email',
+      'position',
+      'positionType',
+      'style',
+      'preferredFoot',
+      'shirtNumber',
+      'profilePicture',
+      'skills',
+      'xp',
     ],
-    include: [{
-      model: League,
-      as: 'leagues',
-      attributes: ['id','name','inviteCode','createdAt'],
-      through: { attributes: [] },
-      include: [{
-        model: User,
-        as: 'members',
-        attributes: ['id','firstName','lastName','positionType','shirtNumber','profilePicture']
-      }, {
-        model: Match,
-        as: 'matches',
-        attributes: ['id','date','status','homeTeamGoals','awayTeamGoals','notes','leagueId','start','homeCaptainId','awayCaptainId','createdAt'],
+    include: [
+      {
+        model: League,
+        as: 'leagues',
+        attributes: ['id', 'name', 'inviteCode', 'createdAt'],
+        through: { attributes: [] },
         include: [
-          { model: User, as: 'availableUsers', attributes: ['id','firstName','lastName','positionType','shirtNumber','profilePicture'], through: { attributes: [] } },
-          { model: User, as: 'homeTeamUsers', attributes: ['id','firstName','lastName','positionType','shirtNumber','profilePicture'], through: { attributes: [] } },
-          { model: User, as: 'awayTeamUsers', attributes: ['id','firstName','lastName','positionType','shirtNumber','profilePicture'], through: { attributes: [] } },
-          // Keep a very light statistics include (association name kept for compatibility)
-          { model: User, as: 'statistics', attributes: ['id'] }
-        ]
-      }]
-    }, {
-      model: League,
-      as: 'administeredLeagues',
-      attributes: ['id','name','inviteCode','createdAt'],
-      through: { attributes: [] },
-      include: [{
-        model: User,
-        as: 'members',
-        attributes: ['id','firstName','lastName','positionType','shirtNumber','profilePicture']
-      }, {
-        model: Match,
-        as: 'matches',
-        attributes: ['id','date','status','homeTeamGoals','awayTeamGoals','notes','leagueId','start','homeCaptainId','awayCaptainId','createdAt'],
+          {
+            model: User,
+            as: 'members',
+            attributes: ['id', 'firstName', 'lastName', 'positionType', 'shirtNumber', 'profilePicture'],
+            through: { attributes: [] },
+          },
+          {
+            model: Match,
+            as: 'matches',
+            attributes: [
+              'id',
+              'date',
+              'status',
+              'homeTeamGoals',
+              'awayTeamGoals',
+              'notes',
+              'leagueId',
+              'start',
+              'homeCaptainId',
+              'awayCaptainId',
+              'createdAt',
+            ],
+            include: [
+              {
+                model: User,
+                as: 'availableUsers',
+                attributes: ['id', 'firstName', 'lastName', 'positionType', 'shirtNumber', 'profilePicture'],
+                through: { attributes: [] },
+              },
+              {
+                model: User,
+                as: 'homeTeamUsers',
+                attributes: ['id', 'firstName', 'lastName', 'positionType', 'shirtNumber', 'profilePicture'],
+                through: { attributes: [] },
+              },
+              {
+                model: User,
+                as: 'awayTeamUsers',
+                attributes: ['id', 'firstName', 'lastName', 'positionType', 'shirtNumber', 'profilePicture'],
+                through: { attributes: [] },
+              },
+              // keep association for compatibility, but very light
+              { model: User, as: 'statistics', attributes: ['id'], through: { attributes: [] } },
+            ],
+          },
+        ],
+      },
+      {
+        model: League,
+        as: 'administeredLeagues',
+        attributes: ['id', 'name', 'inviteCode', 'createdAt'],
+        through: { attributes: [] },
         include: [
-          { model: User, as: 'availableUsers', attributes: ['id','firstName','lastName','positionType','shirtNumber','profilePicture'], through: { attributes: [] } },
-          { model: User, as: 'homeTeamUsers', attributes: ['id','firstName','lastName','positionType','shirtNumber','profilePicture'], through: { attributes: [] } },
-          { model: User, as: 'awayTeamUsers', attributes: ['id','firstName','lastName','positionType','shirtNumber','profilePicture'], through: { attributes: [] } },
-          { model: User, as: 'statistics', attributes: ['id'] }
-        ]
-      }]
-    }, {
-      model: Match,
-      as: 'homeTeamMatches',
-      attributes: ['id','date','status']
-    }, {
-      model: Match,
-      as: 'awayTeamMatches',
-      attributes: ['id','date','status']
-    }, {
-      model: Match,
-      as: 'availableMatches',
-      attributes: ['id','date','status']
-    }]
+          {
+            model: User,
+            as: 'members',
+            attributes: ['id', 'firstName', 'lastName', 'positionType', 'shirtNumber', 'profilePicture'],
+            through: { attributes: [] },
+          },
+          {
+            model: Match,
+            as: 'matches',
+            attributes: [
+              'id',
+              'date',
+              'status',
+              'homeTeamGoals',
+              'awayTeamGoals',
+              'notes',
+              'leagueId',
+              'start',
+              'homeCaptainId',
+              'awayCaptainId',
+              'createdAt',
+            ],
+            include: [
+              {
+                model: User,
+                as: 'availableUsers',
+                attributes: ['id', 'firstName', 'lastName', 'positionType', 'shirtNumber', 'profilePicture'],
+                through: { attributes: [] },
+              },
+              {
+                model: User,
+                as: 'homeTeamUsers',
+                attributes: ['id', 'firstName', 'lastName', 'positionType', 'shirtNumber', 'profilePicture'],
+                through: { attributes: [] },
+              },
+              {
+                model: User,
+                as: 'awayTeamUsers',
+                attributes: ['id', 'firstName', 'lastName', 'positionType', 'shirtNumber', 'profilePicture'],
+                through: { attributes: [] },
+              },
+              { model: User, as: 'statistics', attributes: ['id'], through: { attributes: [] } },
+            ],
+          },
+        ],
+      },
+      { model: Match, as: 'homeTeamMatches', attributes: ['id', 'date', 'status'] },
+      { model: Match, as: 'awayTeamMatches', attributes: ['id', 'date', 'status'] },
+      { model: Match, as: 'availableMatches', attributes: ['id', 'date', 'status'] },
+    ],
   }) as any;
 
   if (!user) {
     ctx.throw(404, "User not found");
   }
 
-  // Add leagues to personal account for testing
-  const myUserEmail = "huzaifahj29@gmail.com"
-  const extractFromUserEmail = "ru.uddin@hotmail.com"
+  // Optional: testing merge (kept, but executes a narrower query)
+  const myUserEmail = "huzaifahj29@gmail.com";
+  const extractFromUserEmail = "ru.uddin@hotmail.com";
   if (user.email === myUserEmail) {
     const extractFromUser = await User.findOne({
       where: { email: extractFromUserEmail },
-      include: [{
-        model: League,
-        as: 'leagues',
-        include: [{
-          model: User,
-          as: 'members'
-        }, {
-          model: Match,
-          as: 'matches',
+      include: [
+        {
+          model: League,
+          as: 'leagues',
+          attributes: ['id', 'name', 'inviteCode', 'createdAt'],
+          through: { attributes: [] },
           include: [
-            { model: User, as: 'availableUsers' },
-            { model: User, as: 'homeTeamUsers' },
-            { model: User, as: 'awayTeamUsers' },
-            { model: User, as: 'statistics' }
-          ]
-        }]
-      }]
-    }) as unknown as { 
-      id: string;
-      email: string;
-      leagues: typeof League[];
-    };
+            {
+              model: User,
+              as: 'members',
+              attributes: ['id', 'firstName', 'lastName', 'positionType', 'shirtNumber', 'profilePicture'],
+              through: { attributes: [] },
+            },
+            {
+              model: Match,
+              as: 'matches',
+              attributes: ['id', 'date', 'status', 'homeTeamGoals', 'awayTeamGoals', 'notes', 'leagueId', 'start', 'homeCaptainId', 'awayCaptainId', 'createdAt'],
+              include: [
+                { model: User, as: 'availableUsers', attributes: ['id'], through: { attributes: [] } },
+                { model: User, as: 'homeTeamUsers', attributes: ['id'], through: { attributes: [] } },
+                { model: User, as: 'awayTeamUsers', attributes: ['id'], through: { attributes: [] } },
+                { model: User, as: 'statistics', attributes: ['id'], through: { attributes: [] } },
+              ],
+            },
+          ],
+        },
+      ],
+    }) as unknown as { id: string; email: string; leagues: typeof League[] };
+
     if (extractFromUser) {
       const userWithLeagues = user as unknown as { leagues: typeof League[] };
       userWithLeagues.leagues = [...userWithLeagues.leagues, ...extractFromUser.leagues];
     }
   }
 
-  // Minimal sanitization (password is never selected in attributes but ensure not present)
-  delete (user as any)["password"]
+  // Ensure password is not present
+  delete (user as any)["password"];
 
   const payload = { success: true, user };
-  cache.set(cacheKey, payload, 300); // 5 minutes ultra-fast cache
+  cache.set(cacheKey, payload, 300); // 5 min
   ctx.set('X-Cache', 'MISS');
   ctx.body = payload;
 });
