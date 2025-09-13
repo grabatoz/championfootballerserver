@@ -9,6 +9,16 @@ import serve from 'koa-static';
 import path from 'path';
 import mount from 'koa-mount';
 import { triggerImmediateXPCalculation } from './utils/xpAchievementsEngine';
+import bodyParser from 'koa-bodyparser';
+import { initializeDatabase } from './config/database'; // Named import now works
+import './models'; // Initialize models and associations
+
+// Import additional routes
+import authRoutes from './routes/auth';
+import matchRoutes from './routes/matches';
+import leagueRoutes from './routes/leagues';
+import notificationRoutes from './routes/notifications';
+import userRoutes from './routes/users'; // <-- ADD THIS
 
 // CORS configuration for both development and production
 const allowedOrigins = [
@@ -18,7 +28,6 @@ const allowedOrigins = [
   'https://championfootballer-client-git-main-championfootballer.vercel.app',
   'https://championfootballer-client-championfootballer.vercel.app'
 ];
-
 
 app.use(cors({
   origin: (ctx) => {
@@ -149,6 +158,13 @@ app.use(async (ctx, next) => {
 app.use(router.routes());
 app.use(router.allowedMethods());
 
+// Mount new routes for notifications and leagues
+app.use(authRoutes.routes());
+app.use(matchRoutes.routes());
+app.use(leagueRoutes.routes());
+app.use(notificationRoutes.routes());
+app.use(userRoutes.routes()).use(userRoutes.allowedMethods()); // <-- ADD THIS
+
 // Explicitly mount world-ranking to avoid 404s if server runs an older routes index
 app.use(worldRankingRouter.routes());
 app.use(worldRankingRouter.allowedMethods());
@@ -162,8 +178,12 @@ app.on("error", async (error) => {
 
 // Start app
 const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => {
-  console.log(`🚀 Server is running on http://localhost:${PORT}`);
-  console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
-  console.log(`🔗 Allowed origins: ${allowedOrigins.join(', ')}`);
+
+// Initialize database and start server (ONLY ONCE)
+initializeDatabase().then(() => {
+  app.listen(PORT, () => {
+    console.log(`🚀 Server is running on http://localhost:${PORT}`);
+    console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
+    console.log(`🔗 Allowed origins: ${allowedOrigins.join(', ')}`);
+  });
 });

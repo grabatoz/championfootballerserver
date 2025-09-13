@@ -1,4 +1,4 @@
-import { Sequelize } from 'sequelize';
+import { Sequelize, QueryTypes } from 'sequelize';
 import dotenv from 'dotenv';
 
 dotenv.config();
@@ -27,8 +27,33 @@ const sequelize = new Sequelize(process.env.DATABASE_URL as string, {
   }
 });
 
+// Initialize database function
+export async function initializeDatabase() {
+  try {
+    await sequelize.authenticate();
+    console.log('✅ PostgreSQL connected successfully.');
+    
+    // Clean orphan data before sync
+    try {
+      await sequelize.query(`
+        DELETE FROM "MatchGuests" 
+        WHERE "matchId" NOT IN (SELECT id FROM matches) OR "matchId" IS NULL
+      `);
+    } catch (cleanupError) {
+      console.log('Database cleanup skipped (tables may not exist yet)');
+    }
+    
+    // Sync database (create tables if they don't exist)
+    await sequelize.sync({ alter: false }); // Use false to avoid schema conflicts
+    console.log('✅ Database synchronized.');
+  } catch (error) {
+    console.error('❌ Database initialization error:', error);
+    // Don't throw error to prevent server crash
+  }
+}
+
 // Function to initialize and test connection
-const initializeDatabase = async () => {
+const testConnection = async () => {
   try {
     await sequelize.authenticate();
     console.log('✅ PostgreSQL connected successfully.');
@@ -37,11 +62,11 @@ const initializeDatabase = async () => {
     console.log('✅ Database synchronized successfully.');
   } catch (error) {
     console.error('❌ Database initialization error:', error);
-    setTimeout(initializeDatabase, 5000);
+    setTimeout(testConnection, 5000);
   }
 };
 
-initializeDatabase();
+testConnection();
 
 process.on('SIGINT', async () => {
   try {

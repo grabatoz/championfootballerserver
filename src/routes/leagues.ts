@@ -1,6 +1,8 @@
 import Router from '@koa/router';
 import { required } from '../modules/auth';
 import models from '../models';
+import { MatchAvailability } from '../models/MatchAvailability';
+import { Notification } from '../models/Notification';
 import { getInviteCode, verifyLeagueAdmin } from '../modules/utils';
 import type { LeagueAttributes } from '../models/League';
 import { transporter } from '../modules/sendEmail';
@@ -563,7 +565,7 @@ router.del("/:id", required, async (ctx) => {
   ctx.status = 204; // No Content
 });
 
-// Create a new match in a league
+// Create a new match in a league WITH NOTIFICATIONS
 router.post("/:id/matches", required, upload.fields([
   { name: 'homeTeamImage', maxCount: 1 },
   { name: 'awayTeamImage', maxCount: 1 }
@@ -575,8 +577,8 @@ router.post("/:id/matches", required, upload.fields([
     return;
   }
 
-  console.log("Body:", ctx.request.body);
-  console.log("Files:", ctx.files);
+  console.log("🎯 Creating match with notifications...");
+  
   // Parse FormData fields
   const homeTeamName = ctx.request.body.homeTeamName;
   const awayTeamName = ctx.request.body.awayTeamName;
@@ -605,9 +607,7 @@ router.post("/:id/matches", required, upload.fields([
     console.error('Error parsing team users arrays:', error);
   }
 
-  // Filter out guest placeholder IDs that are not valid UUIDs. These placeholders
-  // (e.g. "guest-home-<timestamp>-<rand>") should not be inserted into the
-  // UserHomeMatches/UserAwayMatches join tables which expect UUID userIds.
+  // Filter out guest placeholder IDs that are not valid UUIDs
   const uuidRegex = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$/;
   const rawHomeTeamUsers = homeTeamUsers;
   const rawAwayTeamUsers = awayTeamUsers;
@@ -618,16 +618,20 @@ router.post("/:id/matches", required, upload.fields([
   const guestAwayIds = (rawAwayTeamUsers || []).filter((id: string) => !uuidRegex.test(id));
 
   if (guestHomeIds.length || guestAwayIds.length) {
-    console.log('Guest placeholders ignored on initial match create (will require separate guest creation route):', { guestHomeIds, guestAwayIds });
+    console.log('Guest placeholders ignored on initial match create:', { guestHomeIds, guestAwayIds });
   }
 
   const homeCaptain = ctx.request.body.homeCaptain;
   const awayCaptain = ctx.request.body.awayCaptain;
 
-  await verifyLeagueAdmin(ctx, leagueId)
+  await verifyLeagueAdmin(ctx, leagueId);
 
+  // 🔥 UPDATED: Include members in the league query
   const league = await League.findByPk(leagueId, {
-    include: [{ model: Match, as: 'matches' }]
+    include: [
+      { model: Match, as: 'matches' },
+      { model: User, as: 'members' } // <-- ADD THIS FOR NOTIFICATIONS
+    ]
   });
 
   if (!league) {
@@ -636,7 +640,7 @@ router.post("/:id/matches", required, upload.fields([
   }
 
   if (league.maxGames && (league as any).matches.length >= league.maxGames) {
-    ctx.throw(403, "This league has reached the maximum number of games.")
+    ctx.throw(403, "This league has reached the maximum number of games.");
   }
 
   // Handle team image uploads
@@ -653,7 +657,6 @@ router.post("/:id/matches", required, upload.fields([
         console.log('Home team image uploaded successfully:', homeTeamImageUrl);
       } catch (uploadError) {
         console.error('Home team image upload error:', uploadError);
-        // Continue without image
         homeTeamImageUrl = null;
       }
     }
@@ -665,40 +668,96 @@ router.post("/:id/matches", required, upload.fields([
         console.log('Away team image uploaded successfully:', awayTeamImageUrl);
       } catch (uploadError) {
         console.error('Away team image upload error:', uploadError);
-        // Continue without image
         awayTeamImageUrl = null;
       }
     }
   }
 
-
   const matchDate = new Date(date);
   const startDate = new Date(start);
   const finalEndDate = end ? new Date(end) : new Date(startDate.getTime() + 90 * 60000);
+  
+  // CREATE THE MATCH
   const match = await Match.create({
     awayTeamName,
-   homeTeamName,
+    homeTeamName,
     location,
     leagueId,
     date: matchDate,
     start: startDate,
     end: finalEndDate,
     status: 'scheduled',
-    homeCaptainId: homeCaptain || null, // <-- save captain
-    awayCaptainId: awayCaptain || null,  // <-- save captain
+    homeCaptainId: homeCaptain || null,
+    awayCaptainId: awayCaptain || null,
     homeTeamImage: homeTeamImageUrl,
     awayTeamImage: awayTeamImageUrl
   } as any);
-  console.log('match create', match)
 
-  if (homeTeamUsers) {
-    await (match as any).addHomeTeamUsers(homeTeamUsers)
+  console.log('✅ Match created:', match.id);
+
+  // Add team users
+  if (homeTeamUsers.length > 0) {
+    await (match as any).addHomeTeamUsers(homeTeamUsers);
   }
 
-  if (awayTeamUsers) {
-    await (match as any).addAwayTeamUsers(awayTeamUsers)
+  if (awayTeamUsers.length > 0) {
+    await (match as any).addAwayTeamUsers(awayTeamUsers);
   }
 
+  // 🔥 CREATE NOTIFICATIONS FOR ALL LEAGUE MEMBERS
+  const members = (league as any).members || [];
+  console.log(`📧 Creating notifications for ${members.length} league members`);
+
+  if (members.length > 0) {
+    try {
+      const memberIds = members.map((m: any) => m.id);
+
+      // Create availability entries
+      const availabilityEntries = memberIds.map((userId: string) => ({
+        match_id: match.id,
+        user_id: userId,
+        status: 'pending' as const
+      }));
+
+      await MatchAvailability.bulkCreate(availabilityEntries);
+      console.log(`✅ Created ${availabilityEntries.length} availability entries`);
+
+      // Create notifications
+      const matchDateFormatted = new Date(start).toLocaleDateString('en-US', {
+        weekday: 'short',
+        month: 'short', 
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit'
+      });
+
+      const notificationEntries = memberIds.map((userId: string) => ({
+        user_id: userId,
+        type: 'match_created',
+        title: '⚽ New Match Scheduled!',
+        body: `${homeTeamName} vs ${awayTeamName} on ${matchDateFormatted} at ${location}. Please update your availability.`,
+        meta: JSON.stringify({
+          matchId: match.id,
+          leagueId: leagueId,
+          homeTeam: homeTeamName,
+          awayTeam: awayTeamName,
+          matchStart: start,
+          location: location
+        }),
+        read: false,
+        created_at: new Date(),
+        updated_at: new Date()
+      }));
+
+      await Notification.bulkCreate(notificationEntries);
+      console.log(`🔔 Created ${notificationEntries.length} notifications`);
+
+    } catch (notificationError) {
+      console.error('❌ Error creating notifications:', notificationError);
+    }
+  }
+
+  // Get the complete match with users for response
   const matchWithUsers = await Match.findByPk(match.id, {
     include: [
       { model: User, as: 'awayTeamUsers' },
@@ -712,10 +771,10 @@ router.post("/:id/matches", required, upload.fields([
     homeTeamName: match.homeTeamName,
     awayTeamName: match.awayTeamName,
     location: match.location,
-    leagueId: match.leagueId,
-    date: match.date,
-    start: match.start,
-    end: match.end,
+    leagueId,
+    date: matchDate,
+    start: startDate,
+    end: finalEndDate,
     status: match.status,
     homeCaptainId: match.homeCaptainId,
     awayCaptainId: match.awayCaptainId,
@@ -743,7 +802,7 @@ router.post("/:id/matches", required, upload.fields([
       positionType: user.positionType,
       preferredFoot: user.preferredFoot
     })) || [],
-    guests: [] // <-- include empty guests on create
+    guests: []
   };
 
   // Update cache with new match
@@ -763,7 +822,7 @@ router.post("/:id/matches", required, upload.fields([
     awayTeamImage: awayTeamImageUrl,
     homeTeamUsers: serializedMatch.homeTeamUsers,
     awayTeamUsers: serializedMatch.awayTeamUsers,
-    guests: [] // <-- cache guests too
+    guests: []
   };
 
   // Update matches cache
@@ -771,7 +830,7 @@ router.post("/:id/matches", required, upload.fields([
 
   // Update league cache with new match
   const updatedLeagueData = {
-    id: ctx.params.id,
+    id: leagueId,
     name: league.name,
     inviteCode: league.inviteCode,
     maxGames: league.maxGames,
@@ -783,10 +842,7 @@ router.post("/:id/matches", required, upload.fields([
   };
 
   // Update all user league caches
-  const leagueWithMembers = await League.findByPk(ctx.params.id, {
-    include: [{ model: User, as: 'members' }]
-  });
-  const memberIds = (leagueWithMembers as any)?.members?.map((m: any) => m.id) || [];
+  const memberIds = members.map((m: any) => m.id);
   memberIds.forEach((memberId: string) => {
     cache.updateArray(`user_leagues_${memberId}`, updatedLeagueData);
   });
@@ -794,8 +850,9 @@ router.post("/:id/matches", required, upload.fields([
   ctx.status = 201;
   ctx.body = {
     success: true,
-    message: "Match scheduled successfully.",
+    message: `Match scheduled successfully! ${members.length} members notified.`,
     match: serializedMatch,
+    notificationsSent: members.length
   };
 });
 
@@ -1626,6 +1683,104 @@ router.delete('/:leagueId/matches/:matchId/guests/:guestId', required, async (ct
 
   await guest.destroy();
   ctx.body = { success: true, message: 'Guest removed' };
+});
+
+// CREATE MATCH WITH AUTO NOTIFICATIONS
+router.post('/:leagueId/matches', required, async (ctx) => {
+  const { leagueId } = ctx.params;
+  const { 
+    homeTeamName, 
+    awayTeamName, 
+    start, 
+    end, 
+    location, 
+    date 
+  } = ctx.request.body as any;
+
+  try {
+    // 1. Create the match - FIX THE END DATE ISSUE
+    const startDate = new Date(start);
+    const endDate = end ? new Date(end) : new Date(startDate.getTime() + 90 * 60000); // Default 90 minutes
+    
+    const match = await Match.create({
+      leagueId,
+      homeTeamName,
+      awayTeamName,
+      start: startDate,
+      end: endDate, // ✅ Now guaranteed to be a Date, not null
+      location,
+      date: date ? new Date(date) : startDate,
+      status: 'scheduled'
+    });
+
+    // 2. Get ALL league members using raw query to avoid association issues
+    const members = await User.findAll({
+      include: [{
+        model: League,
+        where: { id: leagueId },
+        through: { attributes: [] } // Don't include junction table data
+      }],
+      attributes: ['id', 'username', 'firstName', 'lastName']
+    });
+
+    console.log(`Found ${members.length} league members`);
+
+    if (members.length === 0) {
+      ctx.body = { success: true, match, message: 'Match created but no members found' };
+      return;
+    }
+
+    const memberIds = members.map((m: any) => m.id);
+
+    // 3. Create availability entries for all members
+    const availabilityEntries = memberIds.map((userId: string) => ({
+      match_id: match.id,
+      user_id: userId,
+      status: 'pending' as const
+    }));
+
+    await MatchAvailability.bulkCreate(availabilityEntries);
+
+    // 4. Send notifications to ALL members
+    const matchDate = new Date(start).toLocaleDateString('en-US', {
+      weekday: 'short',
+      month: 'short', 
+      day: 'numeric'
+    });
+
+    const notificationEntries = memberIds.map((userId: string) => ({
+      user_id: userId,
+      type: 'match_availability',
+      title: '⚽ New Match Created!',
+      body: `${homeTeamName} vs ${awayTeamName} on ${matchDate}. Please update your availability status.`,
+      meta: JSON.stringify({ // ✅ Stringify the meta object
+        matchId: match.id,
+        leagueId: leagueId,
+        homeTeam: homeTeamName,
+        awayTeam: awayTeamName,
+        matchStart: start
+      }),
+      read: false,
+      created_at: new Date(),
+      updated_at: new Date()
+    }));
+
+    await Notification.bulkCreate(notificationEntries);
+
+    console.log(`✅ Match created with ${memberIds.length} availability entries and notifications sent`);
+
+    ctx.body = {
+      success: true,
+      match,
+      availabilitiesCreated: memberIds.length,
+      notificationsSent: memberIds.length,
+      message: `Match created! ${memberIds.length} members notified.`
+    };
+
+  } catch (error) {
+    console.error('Error creating match with notifications:', error);
+    ctx.throw(500, 'Failed to create match');
+  }
 });
 
 export default router;
