@@ -38,6 +38,68 @@ const isUuid = (v: string) =>
 
 const router = new Router({ prefix: '/leagues' });
 
+// ✅ ADD AVAILABILITY ROUTE HERE
+router.get('/:leagueId/matches/:matchId/availability', required, async (ctx) => {
+  try {
+    const { leagueId, matchId } = ctx.params;
+    
+    console.log(`🔍 Fetching availability for match ${matchId} in league ${leagueId}`);
+
+    // Validate parameters
+    if (!isUuid(leagueId) || !isUuid(matchId)) {
+      ctx.throw(400, 'Invalid league or match ID');
+      return;
+    }
+
+    // Verify match exists in this league
+    const match = await Match.findOne({
+      where: { 
+        id: matchId, 
+        leagueId: leagueId 
+      }
+    });
+
+    if (!match) {
+      ctx.throw(404, 'Match not found');
+      return;
+    }
+
+    // Get all availability records for this match
+    const availability = await MatchAvailability.findAll({
+      where: { match_id: matchId },
+      attributes: ['user_id', 'status', 'created_at', 'updated_at'],
+      order: [['created_at', 'ASC']]
+    });
+
+    console.log(`📊 Found ${availability.length} availability records for match ${matchId}`);
+
+    // Format the response to match what the frontend expects
+    const formattedAvailability = availability.map((record: any) => ({
+      userId: record.user_id,
+      status: record.status,
+      createdAt: record.created_at,
+      updatedAt: record.updated_at
+    }));
+
+    ctx.body = {
+      success: true,
+      availability: formattedAvailability,
+      matchId,
+      count: formattedAvailability.length
+    };
+
+    console.log(`✅ Successfully returned availability data for match ${matchId}`);
+
+  } catch (error) {
+    console.error('❌ Error fetching match availability:', error);
+    ctx.status = 500;
+    ctx.body = {
+      success: false,
+      message: 'Failed to fetch availability data',
+      error: error instanceof Error ? error.message : 'Unknown error'
+    };
+  }
+});
 
 // Get all leagues for the current user (for /leagues/user) - ULTRA FAST FIXED
 router.get('/user', required, async (ctx) => {
