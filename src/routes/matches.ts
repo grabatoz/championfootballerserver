@@ -704,4 +704,40 @@ router.get('/:matchId/votes', required, async (ctx) => {
     }
 });
 
+// GET availability for a match (who marked themselves available)
+router.get('/:matchId/availability', required, async (ctx) => {
+  if (!ctx.state.user?.userId) {
+    ctx.throw(401, 'Unauthorized');
+    return;
+  }
+
+  const { matchId } = ctx.params;
+
+  try {
+    const match = await Match.findByPk(matchId, {
+      include: [{ model: User, as: 'availableUsers' }]
+    });
+
+    if (!match) {
+      ctx.throw(404, 'Match not found');
+      return;
+    }
+
+    // Minimal payload (IDs only) + full list if needed
+    const availableUsers = (match as any).availableUsers || [];
+    const userIds = availableUsers.map((u: any) => u.id);
+
+    ctx.status = 200;
+    ctx.body = {
+      success: true,
+      matchId,
+      availableUserIds: userIds,
+      availableUsers // full user objects (you can remove this if not needed)
+    };
+  } catch (e) {
+    console.error('GET /matches/:matchId/availability error', e);
+    ctx.throw(500, 'Failed to load availability');
+  }
+});
+
 export default router;
