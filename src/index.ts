@@ -158,41 +158,17 @@ app.use(async (ctx, next) => {
   }
 })
 
-// parse body and init passport
-app.use(bodyParser());
+// Setup Passport
 setupPassport();
+app.use(bodyParser());
 app.use(passport.initialize());
 
-// Mount social auth at /auth/*
-app.use(socialAuthRouter.routes()).use(socialAuthRouter.allowedMethods());
+// Mount routes
+router.use(socialAuthRouter.routes(), socialAuthRouter.allowedMethods());
 
-// Also expose under /api/auth/* in case your router is prefixed elsewhere
-const apiSocial = new Router({ prefix: '/api' });
-apiSocial.use(socialAuthRouter.routes(), socialAuthRouter.allowedMethods());
-app.use(apiSocial.routes()).use(apiSocial.allowedMethods());
-
-// Compatibility redirects (if a client hits the wrong base)
-const compat = new Router();
-compat.get('/auth/google', (ctx) => ctx.redirect('/api/auth/google'));
-compat.get('/auth/google/callback', (ctx) => ctx.redirect('/api/auth/google/callback'));
-app.use(compat.routes()).use(compat.allowedMethods());
-
-// Health check
-const health = new Router();
-health.get('/health', (ctx) => (ctx.body = { ok: true }));
-app.use(health.routes()).use(health.allowedMethods());
-
-// Ping routes for auth
-const ping = new Router();
-ping.get('/auth/ping', (ctx) => (ctx.body = { ok: true, where: '/auth/* root mount' }));
-app.use(ping.routes()).use(ping.allowedMethods());
-
-const pingApi = new Router({ prefix: '/api' });
-pingApi.get('/auth/ping', (ctx) => (ctx.body = { ok: true, where: '/api/auth/* prefixed mount' }));
-app.use(pingApi.routes()).use(pingApi.allowedMethods());
-
-// Keep your other routes
 app.use(router.routes()).use(router.allowedMethods());
+
+// Mount new routes for notifications and leagues
 app.use(authRoutes.routes());
 app.use(matchRoutes.routes());
 app.use(leagueRoutes.routes());
