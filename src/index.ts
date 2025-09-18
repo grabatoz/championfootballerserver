@@ -182,6 +182,15 @@ const health = new Router();
 health.get('/health', (ctx) => (ctx.body = { ok: true }));
 app.use(health.routes()).use(health.allowedMethods());
 
+// Ping routes for auth
+const ping = new Router();
+ping.get('/auth/ping', (ctx) => (ctx.body = { ok: true, where: '/auth/* root mount' }));
+app.use(ping.routes()).use(ping.allowedMethods());
+
+const pingApi = new Router({ prefix: '/api' });
+pingApi.get('/auth/ping', (ctx) => (ctx.body = { ok: true, where: '/api/auth/* prefixed mount' }));
+app.use(pingApi.routes()).use(pingApi.allowedMethods());
+
 // Keep your other routes
 app.use(router.routes()).use(router.allowedMethods());
 app.use(authRoutes.routes());

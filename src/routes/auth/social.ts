@@ -17,13 +17,15 @@ function redirectWithToken(ctx: any, user: any, nextPath: string = '/home') {
 }
 
 // GOOGLE
-router.get('/google', (ctx, next) =>
-  (passport.authenticate('google', {
-    session: false,
-    scope: ['profile', 'email'],
-    callbackURL: GOOGLE_CALLBACK_URL,
-    state: JSON.stringify({ next: String(ctx.query.next || '/home') }),
-  }) as any)(ctx, next)
+router.get(
+  '/google',
+  (ctx, next) =>
+    (passport.authenticate('google', {
+      session: false,
+      scope: ['profile', 'email'],
+      callbackURL: GOOGLE_CALLBACK_URL,
+      state: JSON.stringify({ next: String(ctx.query.next || '/home') }),
+    }) as any)(ctx, next)
 );
 
 router.get('/google/callback', (ctx, next) =>
