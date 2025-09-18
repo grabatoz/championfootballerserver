@@ -434,12 +434,16 @@ router.post("/", required, upload.single('image'), async (ctx) => {
       <p>Happy competing!</p>
     `;
 
-      await transporter.sendMail({
-        to: user.email,
-        subject: `You've created a new league: ${newLeague.name}`,
-        html: emailHtml,
-      });
-      console.log(`Creation email sent to ${user.email}`);
+      if (user.email) {
+        await transporter.sendMail({
+          to: user.email,
+          subject: `You've created a new league: ${newLeague.name}`,
+          html: emailHtml,
+        });
+        console.log(`Creation email sent to ${user.email}`);
+      } else {
+        console.warn('Email not sent: user has no email');
+      }
     }
 
     // Update cache with new league
@@ -1304,12 +1308,16 @@ router.post("/join", required, async (ctx) => {
     <p>Get ready for some exciting competition!</p>
   `;
 
-  await transporter.sendMail({
-    to: user.email,
-    subject: `Welcome to ${league.name}`,
-    html: emailHtml,
-  });
-  console.log(`Join email sent to ${user.email}`);
+  if (user.email) {
+    await transporter.sendMail({
+      to: user.email,
+      subject: `Welcome to ${league.name}`,
+      html: emailHtml,
+    });
+    console.log(`Join email sent to ${user.email}`);
+  } else {
+    console.warn('Email not sent: user has no email');
+  }
 
   // Update cache with joined league
   const joinedLeagueData = {

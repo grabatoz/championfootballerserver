@@ -130,16 +130,17 @@ router.post("/auth/register", none, async (ctx: Context) => {
 
     // Send welcome email
     try {
-      await transporter.sendMail({
-        to: newUser.email,
-        subject: `Welcome to Champion Footballer!`,
-        html: `
-        <a href="https://championfootballer-client.vercel.app" style="font-size:20px;font-weight:bold;margin-top:10px;">Login to Champion Footballer.</a>
-        `,
-      });
-      // <img src="https://i.imgur.com/cH3e8JN.jpg" style="height:400px;" />
-      // <img src="https://i.imgur.com/7wOPUk7.png" style="height:30px;" />
-      console.log('Welcome email sent successfully');
+      if (newUser.email) {
+        await transporter.sendMail({
+          to: newUser.email,
+          subject: `Welcome to Champion Footballer!`,
+          html: `
+          <a href="https://championfootballer-client.vercel.app" style="font-size:20px;font-weight:bold;margin-top:10px;">Login to Champion Footballer.</a>
+          `,
+        });
+      } else {
+        console.warn('Welcome email skipped: user has no email');
+      }
     } catch (emailError) {
       console.error('Error sending welcome email:', emailError);
     }

@@ -24,6 +24,8 @@ export interface UserAttributes {
     physical: number;
   };
   xp?: number;
+  provider: string | null;
+  providerId: string | null;
   achievements?: string[];
   createdAt?: Date;
   updatedAt?: Date;
@@ -52,6 +54,8 @@ export class User extends Model<UserAttributes> implements UserAttributes {
     physical: number;
   };
   public xp!: number;
+  public provider!: string | null;
+  public providerId!: string | null;
   public achievements!: string[];
   public readonly createdAt!: Date;
   public readonly updatedAt!: Date;
@@ -123,7 +127,7 @@ User.init(
     },
     password: {
       type: DataTypes.STRING,
-      allowNull: false,
+      allowNull: true, // allow null for social accounts
     },
     age: {
       type: DataTypes.INTEGER,
@@ -178,6 +182,14 @@ User.init(
       type: DataTypes.ARRAY(DataTypes.STRING),
       allowNull: false,
       defaultValue: [],
+    },
+    provider: {
+      type: DataTypes.STRING,
+      allowNull: true,
+    },
+    providerId: {
+      type: DataTypes.STRING,
+      allowNull: true,
     }
   },
   {

@@ -19,6 +19,10 @@ import matchRoutes from './routes/matches';
 import leagueRoutes from './routes/leagues';
 import notificationRoutes from './routes/notifications';
 import userRoutes from './routes/users'; // <-- ADD THIS
+import Router from '@koa/router';
+import { setupPassport } from './config/passport';
+import passport from 'koa-passport';
+import socialAuthRouter from './routes/auth/social';
 
 // CORS configuration for both development and production
 const allowedOrigins = [
@@ -154,9 +158,15 @@ app.use(async (ctx, next) => {
   }
 })
 
+// Setup Passport
+setupPassport();
+app.use(bodyParser());
+app.use(passport.initialize());
+
 // Mount routes
-app.use(router.routes());
-app.use(router.allowedMethods());
+router.use(socialAuthRouter.routes(), socialAuthRouter.allowedMethods());
+
+app.use(router.routes()).use(router.allowedMethods());
 
 // Mount new routes for notifications and leagues
 app.use(authRoutes.routes());
