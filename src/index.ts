@@ -166,10 +166,22 @@ app.use(passport.initialize());
 // Mount social auth at root: /auth/*
 app.use(socialAuthRouter.routes()).use(socialAuthRouter.allowedMethods());
 
-// Also mount the same routes under /api: /api/auth/*
+// Also mount under /api: /api/auth/*
 const apiSocial = new Router({ prefix: '/api' });
 apiSocial.use(socialAuthRouter.routes(), socialAuthRouter.allowedMethods());
 app.use(apiSocial.routes()).use(apiSocial.allowedMethods());
+
+// NEW: compatibility redirects so /auth/* always works even if router is prefixed internally
+const compat = new Router();
+compat.get('/auth/google', (ctx) => {
+  ctx.status = 302;
+  ctx.redirect('/api/auth/google');
+});
+compat.get('/auth/google/callback', (ctx) => {
+  ctx.status = 302;
+  ctx.redirect('/api/auth/google/callback');
+});
+app.use(compat.routes()).use(compat.allowedMethods());
 
 // Keep your other routes
 app.use(router.routes()).use(router.allowedMethods());
