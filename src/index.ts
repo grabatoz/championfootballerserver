@@ -158,30 +158,29 @@ app.use(async (ctx, next) => {
   }
 })
 
-// Setup Passport
-setupPassport();
+// parse body and init passport
 app.use(bodyParser());
+setupPassport();
 app.use(passport.initialize());
 
-// Mount social auth at root: /auth/*
+// Mount social auth at /auth/*
 app.use(socialAuthRouter.routes()).use(socialAuthRouter.allowedMethods());
 
-// Also mount under /api: /api/auth/*
+// Also expose under /api/auth/* in case your router is prefixed elsewhere
 const apiSocial = new Router({ prefix: '/api' });
 apiSocial.use(socialAuthRouter.routes(), socialAuthRouter.allowedMethods());
 app.use(apiSocial.routes()).use(apiSocial.allowedMethods());
 
-// NEW: compatibility redirects so /auth/* always works even if router is prefixed internally
+// Compatibility redirects (if a client hits the wrong base)
 const compat = new Router();
-compat.get('/auth/google', (ctx) => {
-  ctx.status = 302;
-  ctx.redirect('/api/auth/google');
-});
-compat.get('/auth/google/callback', (ctx) => {
-  ctx.status = 302;
-  ctx.redirect('/api/auth/google/callback');
-});
+compat.get('/auth/google', (ctx) => ctx.redirect('/api/auth/google'));
+compat.get('/auth/google/callback', (ctx) => ctx.redirect('/api/auth/google/callback'));
 app.use(compat.routes()).use(compat.allowedMethods());
+
+// Health check
+const health = new Router();
+health.get('/health', (ctx) => (ctx.body = { ok: true }));
+app.use(health.routes()).use(health.allowedMethods());
 
 // Keep your other routes
 app.use(router.routes()).use(router.allowedMethods());
