@@ -3,10 +3,10 @@ import  sequelize  from '../config/database';
 
 export interface UserAttributes {
   id?: string;
-  firstName: string;
-  lastName: string;
   email: string;
-  password: string;
+  password?: string; // Make password optional
+  firstName?: string;
+  lastName?: string;
   age?: number;
   gender?: string;
   position?: string;
@@ -33,10 +33,10 @@ export interface UserAttributes {
 
 export class User extends Model<UserAttributes> implements UserAttributes {
   public id!: string;
-  public firstName!: string;
-  public lastName!: string;
   public email!: string;
   public password!: string;
+  public firstName!: string;
+  public lastName!: string;
   public age!: number;
   public gender!: string;
   public position!: string;

@@ -4,7 +4,7 @@ const app = new Koa()
 import koaBody from "koa-body"
 import router from "./routes"
 import worldRankingRouter from './routes/worldRanking'
-import cors from "@koa/cors"
+import cors from '@koa/cors';
 import serve from 'koa-static';
 import path from 'path';
 import mount from 'koa-mount';
@@ -34,17 +34,11 @@ const allowedOrigins = [
 ];
 
 app.use(cors({
-  origin: (ctx) => {
-    const origin = ctx.request.header.origin;
-    if (origin && allowedOrigins.includes(origin)) {
-      return origin;
-    }
-    return allowedOrigins[0]; // fallback to first origin
-  },
-  allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
-  allowHeaders: ['Content-Type', 'Authorization', 'Accept', 'Origin', 'Cache-Control', 'Pragma'],
+  origin: process.env.CLIENT_URL || '*',
+  allowHeaders: ['Authorization', 'Content-Type'],
+  exposeHeaders: ['X-Cache'],
   credentials: true,
-  maxAge: 86400 // 24 hours
+  allowMethods: ['GET','POST','PUT','PATCH','DELETE','OPTIONS'],
 }));
 
 // Root route for health check and CORS
@@ -159,16 +153,26 @@ app.use(async (ctx, next) => {
 })
 
 // Setup Passport
+console.log('[SERVER] Setting up passport...');
 setupPassport();
+
+console.log('[SERVER] Setting up middleware...');
 app.use(bodyParser());
 app.use(passport.initialize());
 
-// Mount routes
-router.use(socialAuthRouter.routes(), socialAuthRouter.allowedMethods());
+console.log('[SERVER] Mounting social auth routes...');
+// Mount social auth routes at root level (/auth/*)
+app.use(socialAuthRouter.routes()).use(socialAuthRouter.allowedMethods());
 
+// Also mount under /api prefix for compatibility
+const apiRouter = new Router({ prefix: '/api' });
+apiRouter.use(socialAuthRouter.routes(), socialAuthRouter.allowedMethods());
+app.use(apiRouter.routes()).use(apiRouter.allowedMethods());
+
+console.log('[SERVER] Social routes mounted successfully');
+
+// Mount other routes
 app.use(router.routes()).use(router.allowedMethods());
-
-// Mount new routes for notifications and leagues
 app.use(authRoutes.routes());
 app.use(matchRoutes.routes());
 app.use(leagueRoutes.routes());
