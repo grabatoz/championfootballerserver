@@ -163,17 +163,13 @@ setupPassport();
 app.use(bodyParser());
 app.use(passport.initialize());
 
-// Mount social auth directly (so it is available at /auth/*)
+// Mount social auth at root: /auth/*
 app.use(socialAuthRouter.routes()).use(socialAuthRouter.allowedMethods());
 
-// Optional: keep compatibility redirects if your social router is still also under /api/*
-const compat = new Router();
-compat.get('/auth/google', (ctx) => ctx.redirect('/api/auth/google'));
-compat.get('/auth/google/callback', (ctx) => ctx.redirect('/api/auth/google/callback'));
-app.use(compat.routes()).use(compat.allowedMethods());
-
-// Remove this line if it nests social routes under /api (causing 404 on /auth/*)
-// router.use(socialAuthRouter.routes(), socialAuthRouter.allowedMethods());
+// Also mount the same routes under /api: /api/auth/*
+const apiSocial = new Router({ prefix: '/api' });
+apiSocial.use(socialAuthRouter.routes(), socialAuthRouter.allowedMethods());
+app.use(apiSocial.routes()).use(apiSocial.allowedMethods());
 
 // Keep your other routes
 app.use(router.routes()).use(router.allowedMethods());
