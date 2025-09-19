@@ -1,7 +1,8 @@
 import { Context, Next } from "koa"
 import jwt from 'jsonwebtoken';
 
-const JWT_SECRET = process.env.JWT_SECRET || 'your-super-secret-key-that-is-long-and-secure';
+// IMPORTANT: Use the same default as social auth and routes/auth.ts
+const JWT_SECRET = process.env.JWT_SECRET || "catsay's hello";
 
 interface CustomContext extends Context {
   state: {
