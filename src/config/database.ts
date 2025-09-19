@@ -53,18 +53,19 @@ export async function initializeDatabase() {
 }
 
 // Function to initialize and test connection
-const testConnection = async () => {
+export async function testConnection() {
   try {
     await sequelize.authenticate();
     console.log('✅ PostgreSQL connected successfully.');
-
-    await sequelize.sync({ alter: true });
-    console.log('✅ Database synchronized successfully.');
+    
+    // Skip sync to avoid shared memory issues
+    // await sequelize.sync({ force: false, alter: false });
+    console.log('✅ Database sync skipped (manual migration required).');
   } catch (error) {
-    console.error('❌ Database initialization error:', error);
-    setTimeout(testConnection, 5000);
+    console.error('❌ Database connection failed:', error);
+    process.exit(1);
   }
-};
+}
 
 testConnection();
 

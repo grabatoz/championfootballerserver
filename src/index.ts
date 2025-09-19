@@ -10,7 +10,7 @@ import path from 'path';
 import mount from 'koa-mount';
 import { triggerImmediateXPCalculation } from './utils/xpAchievementsEngine';
 import bodyParser from 'koa-bodyparser';
-import { initializeDatabase } from './config/database'; // Named import now works
+import { initializeDatabase } from './config/database'; // Import sequelize too
 import './models'; // Initialize models and associations
 
 // Import additional routes
@@ -18,7 +18,7 @@ import authRoutes from './routes/auth';
 import matchRoutes from './routes/matches';
 import leagueRoutes from './routes/leagues';
 import notificationRoutes from './routes/notifications';
-import userRoutes from './routes/users'; // <-- ADD THIS
+import userRoutes from './routes/users';
 import Router from '@koa/router';
 import { setupPassport } from './config/passport';
 import passport from 'koa-passport';
@@ -177,7 +177,7 @@ app.use(authRoutes.routes());
 app.use(matchRoutes.routes());
 app.use(leagueRoutes.routes());
 app.use(notificationRoutes.routes());
-app.use(userRoutes.routes()).use(userRoutes.allowedMethods()); // <-- ADD THIS
+app.use(userRoutes.routes()).use(userRoutes.allowedMethods());
 
 // Explicitly mount world-ranking to avoid 404s if server runs an older routes index
 app.use(worldRankingRouter.routes());
@@ -190,7 +190,7 @@ app.on("error", async (error) => {
   // Only log the error and let the connection pool handle reconnection
 });
 
-// Start app
+// Start app - SINGLE LISTEN CALL
 const PORT = process.env.PORT || 5000;
 
 // Initialize database and start server (ONLY ONCE)
@@ -199,5 +199,18 @@ initializeDatabase().then(() => {
     console.log(`🚀 Server is running on http://localhost:${PORT}`);
     console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
     console.log(`🔗 Allowed origins: ${allowedOrigins.join(', ')}`);
+    console.log(`📱 Client URL: ${process.env.CLIENT_URL}`);
+    console.log('🔗 Social routes:');
+    console.log(`   Google: http://localhost:${PORT}/auth/google`);
+    console.log(`   Facebook: http://localhost:${PORT}/auth/facebook`);
+  });
+}).catch((error) => {
+  console.error('❌ Failed to initialize database:', error);
+  // Start server anyway for testing
+  app.listen(PORT, () => {
+    console.log(`🚀 Server is running on http://localhost:${PORT} (without database)`);
+    console.log('🔗 Social routes:');
+    console.log(`   Google: http://localhost:${PORT}/auth/google`);
+    console.log(`   Facebook: http://localhost:${PORT}/auth/facebook`);
   });
 });

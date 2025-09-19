@@ -2,7 +2,6 @@ import passport from 'koa-passport';
 import { Strategy as GoogleStrategy } from 'passport-google-oauth20';
 import { Strategy as FacebookStrategy } from 'passport-facebook';
 import { User } from '../models/User';
-import { findOrCreateSocialUser } from '../utils/socialUser';
 
 export function setupPassport() {
   console.log('[PASSPORT] Setting up passport strategies');
@@ -26,7 +25,7 @@ export function setupPassport() {
         const email = profile.emails?.[0]?.value;
         if (!email) {
           console.error('[PASSPORT] No email from Google profile');
-          return done(new Error('No email from Google'));
+          return done(new Error('No email from Google'), false);
         }
 
         let user = await User.findOne({ where: { email } });
@@ -36,16 +35,19 @@ export function setupPassport() {
           console.log('[PASSPORT] Creating new user for:', email);
           user = await User.create({
             email,
-            password: '', // Add empty password for social users
+            password: '', // Required field - empty for social users
             firstName: profile.name?.givenName || '',
             lastName: profile.name?.familyName || '',
             profilePicture: profile.photos?.[0]?.value,
             provider: 'google',
+            providerId: profile.id,
             position: 'Goalkeeper (GK)',
             positionType: 'Goalkeeper',
             style: 'Axe',
             preferredFoot: 'Right',
             shirtNumber: '1',
+            age: 0,
+            gender: 'male',
             skills: {
               dribbling: 50,
               shooting: 50,
@@ -53,16 +55,19 @@ export function setupPassport() {
               pace: 50,
               defending: 50,
               physical: 50
-            }
+            },
+            xp: 0,
+            achievements: []
           });
           console.log('[PASSPORT] New user created with ID:', user.id);
         }
 
+        // Return basic user without associations to avoid errors
         console.log('[PASSPORT] Returning user to callback:', user.email);
         return done(null, user);
       } catch (error) {
         console.error('[PASSPORT] Error in Google strategy:', error);
-        return done(error);
+        return done(error, false);
       }
     }
   ));
@@ -82,18 +87,48 @@ export function setupPassport() {
         try {
           console.log('[PASSPORT] Facebook strategy callback triggered');
           const email = profile.emails?.[0]?.value || null;
-          const avatar = profile.photos?.[0]?.value || null;
-          const user = await findOrCreateSocialUser({
-            provider: 'facebook',
-            providerId: profile.id,
-            email,
-            name: profile.displayName || null,
-            avatar,
-          });
+          
+          if (!email) {
+            return done(new Error('No email from Facebook'), false);
+          }
+
+          let user = await User.findOne({ where: { email } });
+
+          if (!user) {
+            const [firstName, ...lastNameParts] = (profile.displayName || '').split(' ');
+            user = await User.create({
+              email,
+              password: '',
+              firstName: firstName || '',
+              lastName: lastNameParts.join(' ') || '',
+              profilePicture: profile.photos?.[0]?.value,
+              provider: 'facebook',
+              providerId: profile.id,
+              position: 'Goalkeeper (GK)',
+              positionType: 'Goalkeeper',
+              style: 'Axe',
+              preferredFoot: 'Right',
+              shirtNumber: '1',
+              age: 0,
+              gender: 'male',
+              skills: {
+                dribbling: 50,
+                shooting: 50,
+                passing: 50,
+                pace: 50,
+                defending: 50,
+                physical: 50
+              },
+              xp: 0,
+              achievements: []
+            });
+          }
+
+          // Return basic user without associations
           return done(null, user);
         } catch (e) {
           console.error('[PASSPORT] Error in Facebook strategy:', e);
-          return done(e as any);
+          return done(e as any, false);
         }
       }
     ));
