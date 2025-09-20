@@ -135,7 +135,39 @@ router.post("/auth/register", none, async (ctx: Context) => {
           to: newUser.email,
           subject: `Welcome to Champion Footballer!`,
           html: `
-          <a href="https://championfootballer-client.vercel.app" style="font-size:20px;font-weight:bold;margin-top:10px;">Login to Champion Footballer.</a>
+            <div style="font-family:Arial,sans-serif;line-height:1.6;color:#111;background:#f7f7f9;padding:24px">
+              <div style="max-width:560px;margin:0 auto;background:#ffffff;border:1px solid #e5e7eb;border-radius:8px;padding:24px">
+                <h1 style="margin:0 0 12px;font-size:22px;color:#111;">Welcome, ${newUser.firstName || 'Player'}! ⚽</h1>
+                <p style="margin:0 0 8px;">Your account has been created successfully.</p>
+
+                <p style="margin:0 0 8px;">Quick start:</p>
+                <ol style="padding-left:18px;margin:0 0 16px;">
+                  <li>Click the button below to open Champion Footballer.</li>
+                  <li>Sign in with your email: <b>${newUser.email}</b>.</li>
+                  <li>Complete your profile and join/create a league.</li>
+                </ol>
+
+                <a href="${process.env.CLIENT_URL ?? 'https://championfootballer-client.vercel.app'}"
+                   style="display:inline-block;background:#16a34a;color:#fff;text-decoration:none;padding:12px 18px;border-radius:6px;font-weight:600">
+                  Login to Champion Footballer
+                </a>
+
+                <p style="margin:12px 0 0;font-size:12px;color:#6b7280;">
+                  If the button doesn’t work, copy and paste this link:<br/>
+                  <span style="word-break:break-all;">${process.env.CLIENT_URL ?? 'https://championfootballer-client.vercel.app'}</span>
+                </p>
+
+                <hr style="border:none;border-top:1px solid #e5e7eb;margin:20px 0" />
+
+                <p style="margin:0 0 8px;">Need help? Reply to this email any time.</p>
+                <p style="margin:0 0 6px;">Follow us for updates:</p>
+                <p style="margin:0;">
+                  <a href="${process.env.SOCIAL_X_URL  ?? 'https://x.com/champf2baller'}" style="color:#0ea5e9;text-decoration:none;margin-right:12px;">X (Twitter)</a>
+                  <a href="${process.env.SOCIAL_FB_URL ?? 'https://facebook.com/championfootballer'}" style="color:#0ea5e9;text-decoration:none;margin-right:12px;">Facebook</a>
+                  <a href="${process.env.SOCIAL_IG_URL ?? 'https://www.instagram.com/champf2baller'}" style="color:#0ea5e9;text-decoration:none;">Instagram</a>
+                </p>
+              </div>
+            </div>
           `,
         });
       } else {
