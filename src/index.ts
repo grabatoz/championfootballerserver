@@ -23,7 +23,7 @@ import Router from '@koa/router';
 import { setupPassport } from './config/passport';
 import passport from 'koa-passport';
 import socialAuthRouter from './routes/auth/social';
-// import socialRoutes from './routes/social.js';
+import socialRoutes from './routes/auth/social';
 
 // CORS configuration for both development and production
 const allowedOrigins = [
@@ -179,8 +179,8 @@ app.use(matchRoutes.routes());
 app.use(leagueRoutes.routes());
 app.use(notificationRoutes.routes());
 app.use(userRoutes.routes()).use(userRoutes.allowedMethods());
-// app.use(socialRoutes.routes());
-// app.use(socialRoutes.allowedMethods());
+app.use(socialRoutes.routes());
+app.use(socialRoutes.allowedMethods());
 
 // Explicitly mount world-ranking to avoid 404s if server runs an older routes index
 app.use(worldRankingRouter.routes());
