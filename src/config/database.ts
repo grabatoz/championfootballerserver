@@ -43,9 +43,9 @@ export async function initializeDatabase() {
       console.log('Database cleanup skipped (tables may not exist yet)');
     }
     
-    // Sync database (create tables if they don't exist)
-    await sequelize.sync({ alter: false }); // Use false to avoid schema conflicts
-    console.log('✅ Database synchronized.');
+    // Sync database with alter: true to add missing columns
+    await sequelize.sync({ alter: true }); // This will add missing columns
+    console.log('✅ Database synchronized with schema updates.');
   } catch (error) {
     console.error('❌ Database initialization error:', error);
     // Don't throw error to prevent server crash
@@ -58,15 +58,16 @@ export async function testConnection() {
     await sequelize.authenticate();
     console.log('✅ PostgreSQL connected successfully.');
     
-    // Skip sync to avoid shared memory issues
-    // await sequelize.sync({ force: false, alter: false });
-    console.log('✅ Database sync skipped (manual migration required).');
+    // Call initializeDatabase to sync with alter: true
+    await initializeDatabase();
+    
   } catch (error) {
     console.error('❌ Database connection failed:', error);
     process.exit(1);
   }
 }
 
+// Remove top-level await and call testConnection normally
 testConnection();
 
 process.on('SIGINT', async () => {
