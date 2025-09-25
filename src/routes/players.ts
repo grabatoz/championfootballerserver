@@ -605,4 +605,269 @@ router.get('/:playerId/leagues/:leagueId/teammates', required, async (ctx) => {
   }
 });
 
+interface SimplePairingAgg {
+  playerId: string;
+  name: string;
+  matchesTogether: number;
+  winsTogether: number;
+}
+interface SimpleRivalAgg {
+  playerId: string;
+  name: string;
+  matchesAgainst: number;
+  lossesAgainst: number;
+}
+
+const inMemorySynergyCache = new Map<string, { data: any; ts: number }>();
+const SYNERGY_TTL_MS = 60_000; // 1 min cache
+
+/**
+ * Logic:
+ * For each player in the same league:
+ *  - Best Pairing: teammate with whom the player accumulated the most wins (tie -> higher win rate -> more matches)
+ *  - Toughest Rival: opponent versus whom the player accumulated the most losses (tie -> higher loss rate -> more matches)
+ * Optional leagueId query returns only that league summary; otherwise returns all leagues.
+ */
+router.get('/:playerId/simple-synergy', async (ctx) => {
+  const { playerId } = ctx.params;
+  const { leagueId } = ctx.query as { leagueId?: string };
+
+  if (!playerId) {
+    ctx.status = 400;
+    ctx.body = { error: 'playerId required' };
+    return;
+  }
+
+  const cacheKey = `synergy:leagues:${playerId}:${leagueId || 'ALL'}`;
+  const cached = inMemorySynergyCache.get(cacheKey);
+  if (cached && (Date.now() - cached.ts) < SYNERGY_TTL_MS) {
+    ctx.body = cached.data;
+    return;
+  }
+
+  try {
+    // 1. Get all match ids where this player has a stats row
+    const playerStatRows = await MatchStatistics.findAll({
+      where: { user_id: playerId },
+      attributes: ['match_id']
+    });
+    const allMatchIds = playerStatRows.map(r => r.match_id);
+    if (allMatchIds.length === 0) {
+      const emptyPayload = leagueId
+        ? {
+            playerId,
+            leagueId,
+            participatedMatches: 0,
+            bestPairing: null,
+            toughestRival: null,
+            generatedAt: new Date().toISOString()
+          }
+        : {
+            playerId,
+            leagues: [],
+            generatedAt: new Date().toISOString()
+          };
+      inMemorySynergyCache.set(cacheKey, { data: emptyPayload, ts: Date.now() });
+      ctx.body = emptyPayload;
+      return;
+    }
+
+    // 2. Fetch matches (filtered by league if requested)
+    const matchWhere: any = { id: { [Op.in]: allMatchIds } };
+    if (leagueId) matchWhere.leagueId = leagueId;
+
+    const matches = await MatchModel.findAll({
+      where: matchWhere,
+      include: [
+        { model: models.User, as: 'homeTeamUsers', attributes: ['id', 'firstName', 'lastName'] },
+        { model: models.User, as: 'awayTeamUsers', attributes: ['id', 'firstName', 'lastName'] }
+      ],
+      order: [['date', 'ASC']]
+    });
+
+    if (!matches.length) {
+      const emptyPayload = leagueId
+        ? {
+            playerId,
+            leagueId,
+            participatedMatches: 0,
+            bestPairing: null,
+            toughestRival: null,
+            generatedAt: new Date().toISOString()
+          }
+        : {
+            playerId,
+            leagues: [],
+            generatedAt: new Date().toISOString()
+          };
+      inMemorySynergyCache.set(cacheKey, { data: emptyPayload, ts: Date.now() });
+      ctx.body = emptyPayload;
+      return;
+    }
+
+    // Helper normalize
+    const norm = (arr: any[]): { id: string; name: string }[] =>
+      (Array.isArray(arr) ? arr : [])
+        .map(u => ({
+          id: String(u.id),
+          name: `${u.firstName || ''} ${u.lastName || ''}`.trim()
+        }))
+        .filter(p => p.id);
+
+    interface PairingAgg {
+      playerId: string;
+      name: string;
+      matchesTogether: number;
+      winsTogether: number;
+    }
+    interface RivalAgg {
+      playerId: string;
+      name: string;
+      matchesAgainst: number;
+      lossesAgainst: number;
+    }
+
+    // Group matches by leagueId
+    const leagueBuckets = new Map<string, { leagueId: string; leagueName?: string; matches: any[] }>();
+    matches.forEach(m => {
+      const lid = String(m.leagueId);
+      if (!leagueBuckets.has(lid)) {
+        leagueBuckets.set(lid, { leagueId: lid, leagueName: (m as any).leagueName || undefined, matches: [] });
+      }
+      leagueBuckets.get(lid)!.matches.push(m);
+    });
+
+    const buildLeagueSynergy = (bucket: { leagueId: string; leagueName?: string; matches: any[] }) => {
+      const teammateMap = new Map<string, PairingAgg>();
+      const rivalMap = new Map<string, RivalAgg>();
+      let participated = 0;
+
+      bucket.matches.forEach(m => {
+        const home = norm((m as any).homeTeamUsers);
+        const away = norm((m as any).awayTeamUsers);
+        const pid = String(playerId);
+        const onHome = home.some(p => p.id === pid);
+        const onAway = away.some(p => p.id === pid);
+        if (!onHome && !onAway) return;
+        if (onHome && onAway) return; // corrupt data safety
+        participated++;
+
+        const myTeam = onHome ? home : away;
+        const oppTeam = onHome ? away : home;
+
+        const hGoals = (m as any).homeTeamGoals;
+        const aGoals = (m as any).awayTeamGoals;
+        let res: 'W' | 'L' | 'D' | null = null;
+        if (hGoals != null && aGoals != null) {
+          if (hGoals === aGoals) res = 'D';
+          else {
+            const iWon = onHome ? hGoals > aGoals : aGoals > hGoals;
+            res = iWon ? 'W' : 'L';
+          }
+        }
+
+        myTeam.filter(p => p.id !== pid).forEach(p => {
+          if (!teammateMap.has(p.id)) {
+            teammateMap.set(p.id, {
+              playerId: p.id,
+              name: p.name || p.id,
+              matchesTogether: 0,
+              winsTogether: 0
+            });
+          }
+          const agg = teammateMap.get(p.id)!;
+          agg.matchesTogether++;
+          if (res === 'W') agg.winsTogether++;
+        });
+
+        oppTeam.forEach(p => {
+          if (!rivalMap.has(p.id)) {
+            rivalMap.set(p.id, {
+              playerId: p.id,
+              name: p.name || p.id,
+              matchesAgainst: 0,
+              lossesAgainst: 0
+            });
+          }
+          const agg = rivalMap.get(p.id)!;
+          agg.matchesAgainst++;
+          if (res === 'L') agg.lossesAgainst++;
+        });
+      });
+
+      const teammateArr = [...teammateMap.values()].filter(t => t.matchesTogether > 0);
+      const rivalArr = [...rivalMap.values()].filter(r => r.matchesAgainst > 0);
+
+      const bestPairing = teammateArr
+        .sort((a, b) => {
+          if (b.winsTogether !== a.winsTogether) return b.winsTogether - a.winsTogether;
+          const wrA = a.matchesTogether ? a.winsTogether / a.matchesTogether : 0;
+          const wrB = b.matchesTogether ? b.winsTogether / b.matchesTogether : 0;
+          if (wrB !== wrA) return wrB - wrA;
+          return b.matchesTogether - a.matchesTogether;
+        })[0] || null;
+
+      const toughestRival = rivalArr
+        .sort((a, b) => {
+          if (b.lossesAgainst !== a.lossesAgainst) return b.lossesAgainst - a.lossesAgainst;
+          const lrA = a.matchesAgainst ? a.lossesAgainst / a.matchesAgainst : 0;
+            const lrB = b.matchesAgainst ? b.lossesAgainst / b.matchesAgainst : 0;
+          if (lrB !== lrA) return lrB - lrA;
+          return b.matchesAgainst - a.matchesAgainst;
+        })[0] || null;
+
+      return {
+        leagueId: bucket.leagueId,
+        leagueName: bucket.leagueName || null,
+        participatedMatches: participated,
+        bestPairing: bestPairing && {
+          ...bestPairing,
+          winRate: +(bestPairing.winsTogether / Math.max(1, bestPairing.matchesTogether) * 100).toFixed(2)
+        },
+        toughestRival: toughestRival && {
+          ...toughestRival,
+          lossRate: +(toughestRival.lossesAgainst / Math.max(1, toughestRival.matchesAgainst) * 100).toFixed(2)
+        }
+      };
+    };
+
+    if (leagueId) {
+      const bucket = leagueBuckets.get(String(leagueId));
+      const single = bucket ? buildLeagueSynergy(bucket) : {
+        leagueId: String(leagueId),
+        leagueName: null,
+        participatedMatches: 0,
+        bestPairing: null,
+        toughestRival: null
+      };
+      const payload = {
+        playerId,
+        leagueId: single.leagueId,
+        participatedMatches: single.participatedMatches,
+        bestPairing: single.bestPairing,
+        toughestRival: single.toughestRival,
+        generatedAt: new Date().toISOString()
+      };
+      inMemorySynergyCache.set(cacheKey, { data: payload, ts: Date.now() });
+      ctx.body = payload;
+      return;
+    }
+
+    // All leagues
+    const leagues = [...leagueBuckets.values()].map(buildLeagueSynergy).filter(l => l.participatedMatches > 0);
+    const response = {
+      playerId,
+      leagues,
+      generatedAt: new Date().toISOString()
+    };
+    inMemorySynergyCache.set(cacheKey, { data: response, ts: Date.now() });
+    ctx.body = response;
+
+  } catch (err) {
+    console.error('Synergy league logic error', err);
+    ctx.status = 500;
+    ctx.body = { error: 'Internal error computing league synergy' };
+  }
+});
+
 export default router;
