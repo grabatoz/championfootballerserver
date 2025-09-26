@@ -273,7 +273,8 @@ router.post("/auth/login", none, async (ctx: CustomContext) => {
 
   const userEmail = email.toLowerCase();
   const user = await User.findOne({
-    where: { email: userEmail }
+    where: { email },
+    attributes: ['id','firstName','lastName','email','password','age','gender','position','positionType','style','preferredFoot','shirtNumber','profilePicture','skills','xp','achievements','provider'] // removed providerId
   });
 
   console.log('first',email,user)
