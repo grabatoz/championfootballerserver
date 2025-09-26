@@ -618,6 +618,8 @@ interface SimpleRivalAgg {
   lossesAgainst: number;
 }
 
+
+
 const inMemorySynergyCache = new Map<string, { data: any; ts: number }>();
 const SYNERGY_TTL_MS = 60_000; // 1 min cache
 
