@@ -1,5 +1,6 @@
 import { Sequelize, QueryTypes } from 'sequelize';
 import dotenv from 'dotenv';
+import { QueryInterface, DataTypes } from 'sequelize';
 
 dotenv.config();
 
@@ -27,28 +28,28 @@ const sequelize = new Sequelize(process.env.DATABASE_URL as string, {
   }
 });
 
+async function ensureUserProviderColumn(): Promise<void> {
+  const qi = sequelize.getQueryInterface() as QueryInterface;
+  const table = await qi.describeTable('users');
+  if (!table.provider) {
+    await qi.addColumn('users', 'provider', {
+      type: DataTypes.STRING(255),
+      allowNull: true,
+    });
+  }
+}
+
 // Initialize database function
 export async function initializeDatabase() {
   try {
     await sequelize.authenticate();
-    console.log('✅ PostgreSQL connected successfully.');
-    
-    // Clean orphan data before sync
-    try {
-      await sequelize.query(`
-        DELETE FROM "MatchGuests" 
-        WHERE "matchId" NOT IN (SELECT id FROM matches) OR "matchId" IS NULL
-      `);
-    } catch (cleanupError) {
-      console.log('Database cleanup skipped (tables may not exist yet)');
-    }
-    
-    // Sync database with alter: true to add missing columns
-    await sequelize.sync({ alter: true }); // This will add missing columns
-    console.log('✅ Database synchronized with schema updates.');
-  } catch (error) {
-    console.error('❌ Database initialization error:', error);
-    // Don't throw error to prevent server crash
+    // If you use migrations, REMOVE sync({ alter: true }) and run migrations instead.
+    await sequelize.sync(); // no alter to avoid repeated ALTER TABLE generation
+    await ensureUserProviderColumn(); // idempotent
+    console.log('DB ready');
+  } catch (e) {
+    console.error('Database initialization error:', e);
+    throw e;
   }
 }
 
