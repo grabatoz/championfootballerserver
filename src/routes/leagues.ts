@@ -313,10 +313,11 @@ router.get("/:id", required, async (ctx) => {
         include: [
           { model: User, as: 'homeTeamUsers' },
           { model: User, as: 'awayTeamUsers' },
-          { model: User, as: 'availableUsers' },
+          // { model: User, as: 'availableUsers' },
           { model: User, as: 'homeCaptain' },
           { model: User, as: 'awayCaptain' },
-          { model: MatchGuest, as: 'guestPlayers' } // <-- include guests
+          { model: MatchGuest, as: 'guestPlayers' }, // <-- include guests
+           { model: User, as: 'availableUsers' }
         ]
       }
     ]

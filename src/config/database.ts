@@ -88,6 +88,96 @@ export default sequelize;
 
 
 
+// import { Sequelize, QueryTypes } from 'sequelize';
+// import dotenv from 'dotenv';
+// import { QueryInterface, DataTypes } from 'sequelize';
+
+// dotenv.config();
+
+// // Use the full Neon connection string
+// const sequelize = new Sequelize(process.env.DATABASE_URL as string, {
+//   dialect: 'postgres',
+//   protocol: 'postgres',
+//   logging: false, // Keep disabled for performance
+//   pool: {
+//     max: 20, // Increased connection pool for better performance
+//     min: 5,
+//     acquire: 30000,
+//     idle: 10000,
+//   },
+//   dialectOptions: {
+//     ssl: {
+//       require: true,
+//       rejectUnauthorized: false, // For Neon — allows self-signed certs
+//     },
+//   },
+//   // Performance optimizations
+//   benchmark: false,
+//   retry: {
+//     max: 3
+//   }
+// });
+
+// async function ensureUserProviderColumn(): Promise<void> {
+//   const qi = sequelize.getQueryInterface() as QueryInterface;
+//   const table = await qi.describeTable('users');
+//   if (!table.provider) {
+//     await qi.addColumn('users', 'provider', {
+//       type: DataTypes.STRING(255),
+//       allowNull: true,
+//     });
+//   }
+// }
+
+// // Initialize database function
+// export async function initializeDatabase() {
+//   try {
+//     await sequelize.authenticate();
+//     // If you use migrations, REMOVE sync({ alter: true }) and run migrations instead.
+//     await sequelize.sync(); // no alter to avoid repeated ALTER TABLE generation
+//     await ensureUserProviderColumn(); // idempotent
+//     console.log('DB ready');
+//   } catch (e) {
+//     console.error('Database initialization error:', e);
+//     throw e;
+//   }
+// }
+
+// // Function to initialize and test connection
+// export async function testConnection() {
+//   try {
+//     await sequelize.authenticate();
+//     console.log('✅ PostgreSQL connected successfully.');
+    
+//     // Call initializeDatabase to sync with alter: true
+//     await initializeDatabase();
+    
+//   } catch (error) {
+//     console.error('❌ Database connection failed:', error);
+//     process.exit(1);
+//   }
+// }
+
+// // Remove top-level await and call testConnection normally
+// testConnection();
+
+// process.on('SIGINT', async () => {
+//   try {
+//     await sequelize.close();
+//     console.log('Database connection closed.');
+//     process.exit(0);
+//   } catch (error) {
+//     console.error('Error closing database connection:', error);
+//     process.exit(1);
+//   }
+// });
+
+// export default sequelize;
+
+
+
+
+
 
 
 

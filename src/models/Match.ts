@@ -26,9 +26,10 @@ interface MatchAttributes {
   awayCaptainId?: string;
   homeTeamImage?: string;
   awayTeamImage?: string;
+  archived?: boolean; // <-- ADDED
 }
 
-interface MatchCreationAttributes extends Optional<MatchAttributes, 'id'> {}
+interface MatchCreationAttributes extends Optional<MatchAttributes, 'id' | 'archived'> {}
 
 class Match extends Model<MatchAttributes, MatchCreationAttributes> implements MatchAttributes {
   public id!: string;
@@ -52,6 +53,7 @@ class Match extends Model<MatchAttributes, MatchCreationAttributes> implements M
   public awayCaptainId?: string;
   public homeTeamImage?: string;
   public awayTeamImage?: string;
+  public archived?: boolean; // <-- ADDED
 
   // Static associate function
   public static associate(models: any) {
@@ -233,6 +235,11 @@ Match.init(
       type: DataTypes.STRING,
       allowNull: true,
     },
+    archived: { // <-- ADDED
+      type: DataTypes.BOOLEAN,
+      defaultValue: false,
+      allowNull: false
+    }
   },
   {
     sequelize,
@@ -241,6 +248,5 @@ Match.init(
   }
 );
 
-// Remove duplicate association since it's already defined in the associate method
 export default Match;
-export type { MatchAttributes }; 
+export type { MatchAttributes };

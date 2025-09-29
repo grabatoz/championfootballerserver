@@ -1,7 +1,7 @@
 import Router from '@koa/router';
 import authRouter from './auth';
 import usersRouter from './users';
-import matchesRouter from './matches';
+import matchesRoutes from './matches';
 import leaguesRouter from './leagues';
 import profileRouter from './profile';
 import dreamTeamRouter from './dreamTeam';
@@ -16,7 +16,8 @@ const router = new Router();
 // Mount auth routes
 router.use(authRouter.routes(), authRouter.allowedMethods());
 router.use(usersRouter.routes(), usersRouter.allowedMethods());
-router.use(matchesRouter.routes(), matchesRouter.allowedMethods());
+router.use(matchesRoutes.routes());
+router.use(matchesRoutes.allowedMethods());
 router.use(leaguesRouter.routes(), leaguesRouter.allowedMethods());
 router.use(profileRouter.routes(), profileRouter.allowedMethods());
 router.use(dreamTeamRouter.routes(), dreamTeamRouter.allowedMethods());
@@ -61,4 +62,4 @@ router.get('/', async (ctx: Context) => {
     };
 });
 
-export default router; 
+export default router;

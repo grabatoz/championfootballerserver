@@ -189,7 +189,8 @@ User.init(
     },
     providerId: {
       type: DataTypes.STRING,
-      allowNull: true
+      allowNull: true,
+      defaultValue: null
     }
   },
   {

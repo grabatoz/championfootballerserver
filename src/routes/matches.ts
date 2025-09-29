@@ -1,14 +1,38 @@
 import Router from '@koa/router';
-import { required } from '../modules/auth';
 import models from '../models';
+import { required } from '../modules/auth';
 import { QueryTypes } from 'sequelize';
 import sequelize from '../config/database';
 import { calculateAndAwardXPAchievements } from '../utils/xpAchievementsEngine';
 import { xpPointsTable } from '../utils/xpPointsTable';
 import cache from '../utils/cache';
-const { Match, Vote, User, MatchStatistics } = models;
+const { Match, Vote, User, MatchStatistics, League } = models;
 
 const router = new Router({ prefix: '/matches' });
+
+interface LeagueWithAdmins {
+    id: string;
+    name: string;
+    administrators: Array<{
+        id: string;
+        firstName: string;
+        lastName: string;
+    }>;
+}
+
+interface MatchWithLeague {
+    id: string;
+    leagueId: string;
+    homeTeamGoals?: number;
+    awayTeamGoals?: number;
+    status: string;
+    date: string;
+    archived?: boolean;
+    league?: LeagueWithAdmins;
+    update: (data: any) => Promise<any>;
+    destroy: () => Promise<void>;
+    toJSON: () => any;
+}
 
 router.post('/:id/votes', required, async (ctx) => {
     if (!ctx.state.user?.userId) {
@@ -41,12 +65,12 @@ router.post('/:id/votes', required, async (ctx) => {
     // Update leaderboard cache for MOTM
     const match = await Match.findByPk(matchId);
     if (match && match.leagueId) {
-      const cacheKey = `leaderboard_motm_${match.leagueId}_all`;
-      const newStats = {
-        playerId: votedForId,
-        value: 1 // Increment vote count
-      };
-      cache.updateLeaderboard(cacheKey, newStats);
+        const cacheKey = `leaderboard_motm_${match.leagueId}_all`;
+        const newStats = {
+            playerId: votedForId,
+            value: 1 // Increment vote count
+        };
+        cache.updateLeaderboard(cacheKey, newStats);
     }
 
     ctx.status = 200;
@@ -59,8 +83,8 @@ router.post('/:matchId/availability', required, async (ctx) => {
         return;
     }
     const { action } = ctx.request.query;
-    console.log('action',action);
-    
+    console.log('action', action);
+
     const match = await Match.findByPk(ctx.params.matchId, {
         include: [{ model: User, as: 'availableUsers' }]
     });
@@ -88,13 +112,13 @@ router.post('/:matchId/availability', required, async (ctx) => {
 
     // Update matches cache
     const updatedMatchData = {
-      id: ctx.params.matchId,
-      homeTeamGoals: updatedMatch?.homeTeamGoals,
-      awayTeamGoals: updatedMatch?.awayTeamGoals,
-      status: updatedMatch?.status,
-      date: updatedMatch?.date,
-      leagueId: updatedMatch?.leagueId,
-      availableUsers: updatedMatch?.availableUsers || []
+        id: ctx.params.matchId,
+        homeTeamGoals: updatedMatch?.homeTeamGoals,
+        awayTeamGoals: updatedMatch?.awayTeamGoals,
+        status: updatedMatch?.status,
+        date: updatedMatch?.date,
+        leagueId: updatedMatch?.leagueId,
+        availableUsers: updatedMatch?.availableUsers || []
     };
     cache.updateArray('matches_all', updatedMatchData);
 
@@ -117,12 +141,12 @@ router.patch('/:matchId/goals', required, async (ctx) => {
 
     // Update matches cache
     const updatedMatchData = {
-      id: matchId,
-      homeTeamGoals: homeGoals,
-      awayTeamGoals: awayGoals,
-      status: match.status,
-      date: match.date,
-      leagueId: match.leagueId
+        id: matchId,
+        homeTeamGoals: homeGoals,
+        awayTeamGoals: awayGoals,
+        status: match.status,
+        date: match.date,
+        leagueId: match.leagueId
     };
     cache.updateArray('matches_all', updatedMatchData);
 
@@ -143,13 +167,13 @@ router.patch('/:matchId/note', required, async (ctx) => {
 
     // Update matches cache
     const updatedMatchData = {
-      id: matchId,
-      homeTeamGoals: match.homeTeamGoals,
-      awayTeamGoals: match.awayTeamGoals,
-      status: match.status,
-      date: match.date,
-      leagueId: match.leagueId,
-      notes: note
+        id: matchId,
+        homeTeamGoals: match.homeTeamGoals,
+        awayTeamGoals: match.awayTeamGoals,
+        status: match.status,
+        date: match.date,
+        leagueId: match.leagueId,
+        notes: note
     };
     cache.updateArray('matches_all', updatedMatchData);
 
@@ -218,45 +242,45 @@ router.post('/:matchId/stats', required, async (ctx, next) => {
         stats.freeKicks = freeKicks;
         stats.defence = defence;
         stats.impact = impact;
-            await stats.save();
-  }
+        await stats.save();
+    }
 
-  // Update cache with new stats
-  const updatedMatchData = {
-    id: matchId,
-    homeTeamGoals: match.homeTeamGoals,
-    awayTeamGoals: match.awayTeamGoals,
-    status: match.status,
-    date: match.date,
-    leagueId: match.leagueId
-  };
+    // Update cache with new stats
+    const updatedMatchData = {
+        id: matchId,
+        homeTeamGoals: match.homeTeamGoals,
+        awayTeamGoals: match.awayTeamGoals,
+        status: match.status,
+        date: match.date,
+        leagueId: match.leagueId
+    };
 
-  // Update matches cache
-  cache.updateArray('matches_all', updatedMatchData);
-  
+    // Update matches cache
+    cache.updateArray('matches_all', updatedMatchData);
+
     // Bust per-player match stats cache so subsequent reads reflect latest values
-    try { cache.del(`match_stats_${matchId}_${userId}_ultra_fast`); } catch {}
+    try { cache.del(`match_stats_${matchId}_${userId}_ultra_fast`); } catch { }
 
     // Update leaderboard cache for all metrics
-  const leaderboardKeys = ['goals', 'assists', 'defence', 'motm', 'impact', 'cleanSheet'];
-  leaderboardKeys.forEach(metric => {
-    const cacheKey = `leaderboard_${metric}_all_all`;
-    let value = 0;
-    if (metric === 'defence') value = stats.defence || 0;
-    else if (metric === 'cleanSheet') value = stats.cleanSheets || 0;
-    else if (metric === 'goals') value = stats.goals || 0;
-    else if (metric === 'assists') value = stats.assists || 0;
-    else if (metric === 'impact') value = stats.impact || 0;
-    else if (metric === 'motm') value = 0; // MOTM is calculated separately
-    
-    const newStats = {
-      playerId: userId,
-      value
-    };
-    cache.updateLeaderboard(cacheKey, newStats);
-  });
+    const leaderboardKeys = ['goals', 'assists', 'defence', 'motm', 'impact', 'cleanSheet'];
+    leaderboardKeys.forEach(metric => {
+        const cacheKey = `leaderboard_${metric}_all_all`;
+        let value = 0;
+        if (metric === 'defence') value = stats.defence || 0;
+        else if (metric === 'cleanSheet') value = stats.cleanSheets || 0;
+        else if (metric === 'goals') value = stats.goals || 0;
+        else if (metric === 'assists') value = stats.assists || 0;
+        else if (metric === 'impact') value = stats.impact || 0;
+        else if (metric === 'motm') value = 0; // MOTM is calculated separately
 
-  // XP calculation for this user
+        const newStats = {
+            playerId: userId,
+            value
+        };
+        cache.updateLeaderboard(cacheKey, newStats);
+    });
+
+    // XP calculation for this user
     // Get teams and votes for XP logic
     const matchWithTeams = await Match.findByPk(matchId, {
         include: [
@@ -319,26 +343,26 @@ router.post('/:matchId/stats', required, async (ctx, next) => {
 
 // GET route to fetch votes for each player in a match
 router.get('/:id/votes', required, async (ctx) => {
-  if (!ctx.state.user?.userId) {
-    ctx.throw(401, 'Unauthorized');
-    return;
-  }
-  const matchId = ctx.params.id;
-  const userId = ctx.state.user.userId;
-  const votes = await Vote.findAll({
-    where: { matchId },
-    attributes: ['votedForId', 'voterId'],
-  });
-  const voteCounts: Record<string, number> = {};
-  let userVote: string | null = null;
-  votes.forEach(vote => {
-    const id = String(vote.votedForId);
-    voteCounts[id] = (voteCounts[id] || 0) + 1;
-    if (String(vote.voterId) === String(userId)) {
-      userVote = id;
+    if (!ctx.state.user?.userId) {
+        ctx.throw(401, 'Unauthorized');
+        return;
     }
-  });
-  ctx.body = { success: true, votes: voteCounts, userVote };
+    const matchId = ctx.params.id;
+    const userId = ctx.state.user.userId;
+    const votes = await Vote.findAll({
+        where: { matchId },
+        attributes: ['votedForId', 'voterId'],
+    });
+    const voteCounts: Record<string, number> = {};
+    let userVote: string | null = null;
+    votes.forEach(vote => {
+        const id = String(vote.votedForId);
+        voteCounts[id] = (voteCounts[id] || 0) + 1;
+        if (String(vote.voterId) === String(userId)) {
+            userVote = id;
+        }
+    });
+    ctx.body = { success: true, votes: voteCounts, userVote };
 });
 
 // Add XP calculation when match is completed
@@ -461,28 +485,28 @@ router.get('/:matchId', async (ctx) => {
 });
 
 router.get('/', async (ctx) => {
-  const cacheKey = 'matches_all';
-  const cached = cache.get(cacheKey);
-  if (cached) {
-    ctx.body = cached;
-    return;
-  }
-  try {
-    // Existing DB fetch logic
-    const matches = await Match.findAll({
-      include: [
-        { model: User, as: 'homeTeamUsers' },
-        { model: User, as: 'awayTeamUsers' },
-        { model: Vote, as: 'votes' },
-      ],
-    });
-    const result = { success: true, matches };
-    cache.set(cacheKey, result, 600); // cache for 30 seconds
-    ctx.body = result;
-  } catch (error) {
-    console.error('Error fetching matches:', error);
-    ctx.throw(500, 'Failed to fetch matches.');
-  }
+    const cacheKey = 'matches_all';
+    const cached = cache.get(cacheKey);
+    if (cached) {
+        ctx.body = cached;
+        return;
+    }
+    try {
+        // Existing DB fetch logic
+        const matches = await Match.findAll({
+            include: [
+                { model: User, as: 'homeTeamUsers' },
+                { model: User, as: 'awayTeamUsers' },
+                { model: Vote, as: 'votes' },
+            ],
+        });
+        const result = { success: true, matches };
+        cache.set(cacheKey, result, 600); // cache for 30 seconds
+        ctx.body = result;
+    } catch (error) {
+        console.error('Error fetching matches:', error);
+        ctx.throw(500, 'Failed to fetch matches.');
+    }
 });
 
 // GET /matches/:matchId/stats - Get stats for a specific player in a match - ULTRA FAST
@@ -491,10 +515,10 @@ router.get('/:matchId/stats', required, async (ctx) => {
         ctx.throw(401, 'Unauthorized');
         return;
     }
-    
+
     const { matchId } = ctx.params;
     const { playerId } = ctx.query;
-    
+
     if (!playerId) {
         ctx.throw(400, 'playerId is required');
         return;
@@ -507,7 +531,7 @@ router.get('/:matchId/stats', required, async (ctx) => {
         ctx.body = cached;
         return;
     }
-    
+
     try {
         const stats = await MatchStatistics.findOne({
             where: {
@@ -516,7 +540,7 @@ router.get('/:matchId/stats', required, async (ctx) => {
             },
             attributes: ['goals', 'assists', 'cleanSheets', 'penalties', 'freeKicks', 'defence', 'impact']
         });
-        
+
         const result = {
             success: true,
             stats: stats ? {
@@ -553,15 +577,15 @@ router.post('/:matchId/stats', required, async (ctx) => {
         ctx.throw(401, 'Unauthorized');
         return;
     }
-    
+
     const { matchId } = ctx.params;
     const { playerId, goals, assists, cleanSheets, penalties, freeKicks, defence, impact } = ctx.request.body;
-    
+
     if (!playerId) {
         ctx.throw(400, 'playerId is required');
         return;
     }
-    
+
     try {
         // Check if stats already exist for this player in this match
         let stats = await MatchStatistics.findOne({
@@ -570,7 +594,7 @@ router.post('/:matchId/stats', required, async (ctx) => {
                 user_id: playerId
             }
         });
-        
+
         if (stats) {
             // Update existing stats
             await stats.update({
@@ -601,11 +625,11 @@ router.post('/:matchId/stats', required, async (ctx) => {
                 xpAwarded: 0,
             });
         }
-        
-    // Invalidate cached stats for this player+match so reads get fresh impact
-    try { cache.del(`match_stats_${matchId}_${playerId}_ultra_fast`); } catch {}
 
-    // Update leaderboard cache
+        // Invalidate cached stats for this player+match so reads get fresh impact
+        try { cache.del(`match_stats_${matchId}_${playerId}_ultra_fast`); } catch { }
+
+        // Update leaderboard cache
         const match = await Match.findByPk(matchId);
         if (match && match.leagueId) {
             const updatedStats = {
@@ -617,7 +641,7 @@ router.post('/:matchId/stats', required, async (ctx) => {
                 defence: stats.defence,
                 impact: stats.impact,
             };
-            
+
             // Update cache for each stat
             Object.entries(updatedStats).forEach(([metric, value]) => {
                 if (typeof value === 'number' && value > 0) {
@@ -629,8 +653,8 @@ router.post('/:matchId/stats', required, async (ctx) => {
                 }
             });
         }
-        
-    ctx.body = {
+
+        ctx.body = {
             success: true,
             message: 'Stats saved successfully',
             playerId: playerId,
@@ -656,10 +680,10 @@ router.get('/:matchId/votes', required, async (ctx) => {
         ctx.throw(401, 'Unauthorized');
         return;
     }
-    
+
     const { matchId } = ctx.params;
     const userId = ctx.state.user.userId;
-    
+
     const cacheKey = `match_votes_${matchId}_${userId}_ultra_fast`;
     const cached = cache.get(cacheKey);
     if (cached) {
@@ -667,7 +691,7 @@ router.get('/:matchId/votes', required, async (ctx) => {
         ctx.body = cached;
         return;
     }
-    
+
     try {
         // Get all votes for this match - optimized query
         const votes = await Vote.findAll({
@@ -676,19 +700,19 @@ router.get('/:matchId/votes', required, async (ctx) => {
             group: ['votedForId'],
             limit: 20 // Limit for ultra speed
         });
-        
+
         // Get current user's vote - fast lookup
         const userVote = await Vote.findOne({
             where: { matchId, voterId: userId },
             attributes: ['votedForId']
         });
-        
+
         // Convert to object format
         const votesObject: Record<string, number> = {};
         votes.forEach((vote: any) => {
             votesObject[vote.votedForId] = parseInt(vote.get('voteCount'));
         });
-        
+
         const result = {
             success: true,
             votes: votesObject,
@@ -706,38 +730,185 @@ router.get('/:matchId/votes', required, async (ctx) => {
 
 // GET availability for a match (who marked themselves available)
 router.get('/:matchId/availability', required, async (ctx) => {
-  if (!ctx.state.user?.userId) {
-    ctx.throw(401, 'Unauthorized');
-    return;
-  }
-
-  const { matchId } = ctx.params;
-
-  try {
-    const match = await Match.findByPk(matchId, {
-      include: [{ model: User, as: 'availableUsers' }]
-    });
-
-    if (!match) {
-      ctx.throw(404, 'Match not found');
-      return;
+    if (!ctx.state.user?.userId) {
+        ctx.throw(401, 'Unauthorized');
+        return;
     }
 
-    // Minimal payload (IDs only) + full list if needed
-    const availableUsers = (match as any).availableUsers || [];
-    const userIds = availableUsers.map((u: any) => u.id);
+    const { matchId } = ctx.params;
 
-    ctx.status = 200;
-    ctx.body = {
-      success: true,
-      matchId,
-      availableUserIds: userIds,
-      availableUsers // full user objects (you can remove this if not needed)
-    };
-  } catch (e) {
-    console.error('GET /matches/:matchId/availability error', e);
-    ctx.throw(500, 'Failed to load availability');
-  }
+    try {
+        const match = await Match.findByPk(matchId, {
+            include: [{ model: User, as: 'availableUsers' }]
+        });
+
+        if (!match) {
+            ctx.throw(404, 'Match not found');
+            return;
+        }
+
+        // Minimal payload (IDs only) + full list if needed
+        const availableUsers = (match as any).availableUsers || [];
+        const userIds = availableUsers.map((u: any) => u.id);
+
+        ctx.status = 200;
+        ctx.body = {
+            success: true,
+            matchId,
+            availableUserIds: userIds,
+            availableUsers // full user objects (you can remove this if not needed)
+        };
+    } catch (e) {
+        console.error('GET /matches/:matchId/availability error', e);
+        ctx.throw(500, 'Failed to load availability');
+    }
 });
+
+// Archive/Restore match (PATCH)
+router.patch('/:id', required, async (ctx) => {
+    console.log('=== PATCH ROUTE STARTED ===');
+    console.log('Match ID:', ctx.params.id);
+    console.log('Request body:', ctx.request.body);
+    
+    try {
+        const { id } = ctx.params;
+        const { archived } = ctx.request.body as { archived?: boolean };
+
+        if (!ctx.state.user?.userId) {
+            console.log('No user ID found');
+            ctx.status = 401;
+            ctx.body = { success: false, message: 'Unauthorized' };
+            return;
+        }
+
+        // Get match first
+        const match = await Match.findByPk(id);
+        if (!match) {
+            console.log('Match not found');
+            ctx.status = 404;
+            ctx.body = { success: false, message: 'Match not found' };
+            return;
+        }
+
+        console.log('Current match archived status:', match.archived);
+        console.log('Requested archived status:', archived);
+
+        // Update the match
+        if (archived !== undefined) {
+            await match.update({ archived });
+            console.log('Match updated successfully to archived:', archived);
+            
+            ctx.body = { 
+                success: true, 
+                message: archived ? 'Match archived successfully' : 'Match restored successfully',
+                match: {
+                    id: match.id,
+                    archived: archived,
+                    homeTeamGoals: match.homeTeamGoals,
+                    awayTeamGoals: match.awayTeamGoals,
+                    status: match.status,
+                    date: match.date,
+                    leagueId: match.leagueId
+                }
+            };
+        } else {
+            ctx.status = 400;
+            ctx.body = { success: false, message: 'archived field is required' };
+        }
+    } catch (error) {
+        console.error('Error in PATCH route:', error);
+        ctx.status = 500;
+        ctx.body = { success: false, message: 'Server error' };
+    }
+});
+
+// DELETE route to remove a match
+router.delete('/:id', required, async (ctx) => {
+    try {
+        const { id } = ctx.params;
+
+        if (!ctx.state.user?.userId) {
+            ctx.status = 401;
+            ctx.body = { success: false, message: 'Unauthorized' };
+            return;
+        }
+
+        // Get match first - without includes
+        const match = await Match.findByPk(id) as MatchWithLeague | null;
+        if (!match) {
+            ctx.status = 404;
+            ctx.body = { success: false, message: 'Match not found' };
+            return;
+        }
+
+        // Use raw SQL to check admin permissions
+        const adminCheck = await sequelize.query(`
+            SELECT la.userId 
+            FROM "Leagues" l
+            LEFT JOIN "LeagueAdministrators" la ON l.id = la.leagueId 
+            WHERE l.id = :leagueId AND la.userId = :userId
+        `, {
+            replacements: { 
+                leagueId: match.leagueId, 
+                userId: ctx.state.user.userId 
+            },
+            type: QueryTypes.SELECT
+        });
+
+        if (adminCheck.length === 0) {
+            ctx.status = 403;
+            ctx.body = { success: false, message: 'Only league administrators can delete matches' };
+            return;
+        }
+
+        const hasScores = (match.homeTeamGoals || 0) > 0 ||
+            (match.awayTeamGoals || 0) > 0 ||
+            match.status === 'completed';
+
+        if (hasScores) {
+            ctx.status = 400;
+            ctx.body = {
+                success: false,
+                message: 'Cannot delete match with scores. Archive it instead.'
+            };
+            return;
+        }
+
+        await match.destroy();
+
+        // Cache cleanup
+        try {
+            cache.del('matches_all');
+        } catch (error) {
+            console.log('Cache cleanup failed:', error);
+        }
+
+        ctx.body = { success: true, message: 'Match deleted successfully' };
+    } catch (error) {
+        console.error('Error deleting match:', error);
+        ctx.status = 500;
+        ctx.body = { success: false, message: 'Failed to delete match' };
+    }
+});
+
+// Example of what your League associations should look like:
+// League.belongsToMany(User, { 
+//     through: 'LeagueMembers', 
+//     as: 'members',
+//     foreignKey: 'leagueId',
+//     otherKey: 'userId' 
+// });
+
+// League.belongsToMany(User, { 
+//     through: 'LeagueAdministrators', 
+//     as: 'administrators',  // Different alias
+//     foreignKey: 'leagueId',
+//     otherKey: 'userId'
+// });
+
+// League.belongsTo(User, { 
+//     as: 'creator',  // Different alias
+//     foreignKey: 'creatorId' 
+// });
 
 export default router;

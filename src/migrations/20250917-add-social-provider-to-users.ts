@@ -9,6 +9,7 @@ export = {
     await queryInterface.addColumn('Users', 'providerId', {
       type: DataTypes.STRING,
       allowNull: true,
+      defaultValue: null
     });
     // make password nullable for social accounts
     await queryInterface.changeColumn('Users', 'password', {
