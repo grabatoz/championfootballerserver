@@ -1,6 +1,6 @@
 import Router from '@koa/router';
 import { required } from '../modules/auth';
-import { Notification } from '../models/Notification';
+import  Notification  from '../models/Notification';
 import { Op } from 'sequelize';
 
 const router = new Router({ prefix: '/notifications' });

@@ -7,7 +7,7 @@ import MatchStatistics from './MatchStatistics';
 import Session from './Session';
 import Vote from './Vote';
 import MatchGuest from './MatchGuest';
-import { Notification } from './Notification';
+import  Notification  from './Notification';
 
 // Initialize models that need it
 MatchAvailability.initModel(sequelize);

@@ -4,11 +4,11 @@ import User from './User';
 import League from './League';
 import { Vote } from './Vote';
 
-interface MatchAttributes {
+export interface MatchAttributes {
   id: string;
   date: Date;
   location: string;
-  status: 'scheduled' | 'in_progress' | 'completed' | 'cancelled';
+  status?: 'SCHEDULED' | 'IN_PROGRESS' | 'RESULT_UPLOADED' | 'REVISION_REQUESTED' | 'RESULT_PUBLISHED';
   score?: {
     home: number;
     away: number;
@@ -27,6 +27,14 @@ interface MatchAttributes {
   homeTeamImage?: string;
   awayTeamImage?: string;
   archived?: boolean; // <-- ADDED
+  homeCaptainConfirmed?: boolean;
+  awayCaptainConfirmed?: boolean;
+  resultUploadedAt?: Date | null;
+  resultPublishedAt?: Date | null;
+  // optional captain revision suggestion
+  suggestedHomeGoals?: number | null;
+  suggestedAwayGoals?: number | null;
+  suggestedByCaptainId?: string | null;
 }
 
 interface MatchCreationAttributes extends Optional<MatchAttributes, 'id' | 'archived'> {}
@@ -35,7 +43,7 @@ class Match extends Model<MatchAttributes, MatchCreationAttributes> implements M
   public id!: string;
   public date!: Date;
   public location!: string;
-  public status!: 'scheduled' | 'in_progress' | 'completed' | 'cancelled';
+  public status!: 'SCHEDULED' | 'IN_PROGRESS' | 'RESULT_UPLOADED' | 'REVISION_REQUESTED' | 'RESULT_PUBLISHED';
   public score?: {
     home: number;
     away: number;
@@ -54,6 +62,13 @@ class Match extends Model<MatchAttributes, MatchCreationAttributes> implements M
   public homeTeamImage?: string;
   public awayTeamImage?: string;
   public archived?: boolean; // <-- ADDED
+  public homeCaptainConfirmed?: boolean;
+  public awayCaptainConfirmed?: boolean;
+  public resultUploadedAt?: Date | null;
+  public resultPublishedAt?: Date | null;
+  public suggestedHomeGoals?: number | null;
+  public suggestedAwayGoals?: number | null;
+  public suggestedByCaptainId?: string | null;
 
   // Static associate function
   public static associate(models: any) {
@@ -166,11 +181,7 @@ Match.init(
       type: DataTypes.STRING,
       allowNull: false,
     },
-    status: {
-      type: DataTypes.ENUM('scheduled', 'in_progress', 'completed', 'cancelled'),
-      defaultValue: 'scheduled',
-      allowNull: true,
-    },
+    status: { type: DataTypes.ENUM('SCHEDULED','IN_PROGRESS','RESULT_UPLOADED','REVISION_REQUESTED','RESULT_PUBLISHED'), defaultValue: 'SCHEDULED' },
     score: {
       type: DataTypes.JSONB,
       allowNull: true,
@@ -239,7 +250,14 @@ Match.init(
       type: DataTypes.BOOLEAN,
       defaultValue: false,
       allowNull: false
-    }
+    },
+    homeCaptainConfirmed: { type: DataTypes.BOOLEAN, defaultValue: false },
+    awayCaptainConfirmed: { type: DataTypes.BOOLEAN, defaultValue: false },
+    resultUploadedAt: { type: DataTypes.DATE, allowNull: true },
+    resultPublishedAt: { type: DataTypes.DATE, allowNull: true },
+    suggestedHomeGoals: { type: DataTypes.INTEGER, allowNull: true },
+    suggestedAwayGoals: { type: DataTypes.INTEGER, allowNull: true },
+    suggestedByCaptainId: { type: DataTypes.UUID, allowNull: true },
   },
   {
     sequelize,
@@ -249,4 +267,3 @@ Match.init(
 );
 
 export default Match;
-export type { MatchAttributes };

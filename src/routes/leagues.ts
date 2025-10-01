@@ -2,7 +2,7 @@ import Router from '@koa/router';
 import { required } from '../modules/auth';
 import models from '../models';
 import { MatchAvailability } from '../models/MatchAvailability';
-import { Notification } from '../models/Notification';
+import  Notification  from '../models/Notification';
 import { getInviteCode, verifyLeagueAdmin } from '../modules/utils';
 import type { LeagueAttributes } from '../models/League';
 import { transporter } from '../modules/sendEmail';
@@ -37,6 +37,96 @@ const isUuid = (v: string) =>
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(v);
 
 const router = new Router({ prefix: '/leagues' });
+
+// Helper to return a consistent JSON 404 instead of throwing
+function respondLeagueNotFound(ctx: any) {
+  ctx.status = 404;
+  ctx.body = { success: false, message: 'League not found' };
+}
+
+// REMOVE this incorrect route block (prefix already includes /leagues)
+// router.get('/leagues/:leagueId', required, async (ctx) => { ... });
+
+// ✅ Keep the canonical league-by-id route and return JSON instead of throwing
+router.get("/:id", required, async (ctx) => {
+  if (!ctx.state.user || !ctx.state.user.userId) {
+    ctx.status = 401;
+    ctx.body = { success: false, message: "Unauthorized" };
+    return;
+  }
+  if (!isUuid(ctx.params.id)) {
+    ctx.status = 400;
+    ctx.body = { success: false, message: "Invalid league id" };
+    return;
+  }
+
+  const leagueId = ctx.params.id;
+
+  try {
+    await Match.update(
+      { status: 'RESULT_PUBLISHED' },
+      {
+        where: {
+          leagueId: leagueId,
+          status: 'SCHEDULED',
+          end: { [Op.lt]: new Date() }
+        }
+      }
+    );
+  } catch (error) {
+    console.error('Error auto-updating match statuses:', error);
+  }
+
+  const league = await League.findByPk(ctx.params.id, {
+    include: [
+      { model: User, as: 'members' },
+      { model: User, as: 'administeredLeagues' },
+      {
+        model: Match,
+        as: 'matches',
+        include: [
+          { model: User, as: 'homeTeamUsers' },
+          { model: User, as: 'awayTeamUsers' },
+          { model: User, as: 'homeCaptain' },
+          { model: User, as: 'awayCaptain' },
+          { model: MatchGuest, as: 'guestPlayers' },
+          { model: User, as: 'availableUsers' }
+        ]
+      }
+    ]
+  });
+
+  if (!league) {
+    return respondLeagueNotFound(ctx);
+  }
+
+  const isMember = (league as any).members?.some((member: any) => member.id === ctx.state.user!.userId);
+  const isAdmin = (league as any).administeredLeagues?.some((admin: any) => admin.id === ctx.state.user!.userId);
+
+  if (!isMember && !isAdmin) {
+    // Optional stricter access: keep as 403 JSON instead of throw
+    ctx.status = 403;
+    ctx.body = { success: false, message: "You don't have access to this league" };
+    return;
+  }
+
+  ctx.body = {
+    success: true,
+    league: {
+      id: league.id,
+      name: league.name,
+      inviteCode: league.inviteCode,
+      createdAt: league.createdAt,
+      members: (league as any).members || [],
+      administrators: (league as any).administeredLeagues || [],
+      matches: (league as any).matches || [],
+      active: league.active,
+      maxGames: league.maxGames,
+      showPoints: league.showPoints,
+      image: league.image
+    }
+  };
+});
 
 // ✅ ADD AVAILABILITY ROUTE HERE
 router.get('/:leagueId/matches/:matchId/availability', required, async (ctx) => {
@@ -185,7 +275,7 @@ router.get('/user', required, async (ctx) => {
   }
 });
 
-// Get all leagues for the current user - ULTRA FAST FIXED
+// Get all leagues for the current user - ULTRA FAST FIXED (keep this at "/")
 router.get("/", required, async (ctx) => {
   if (!ctx.state.user || !ctx.state.user.userId) {
     ctx.status = 401;
@@ -283,11 +373,11 @@ router.get("/:id", required, async (ctx) => {
   try {
     // Automatically update status of matches that have ended
     await Match.update(
-      { status: 'completed' },
+      { status: 'RESULT_PUBLISHED' },
       {
         where: {
           leagueId: leagueId,
-          status: 'scheduled',
+          status: 'SCHEDULED',
           end: { [Op.lt]: new Date() }
         }
       }
@@ -324,8 +414,7 @@ router.get("/:id", required, async (ctx) => {
   });
 
   if (!league) {
-    ctx.throw(404, "League not found");
-    return;
+    return respondLeagueNotFound(ctx);
   }
 
   // (XP calculation removed from here)
@@ -504,8 +593,7 @@ router.patch("/:id/status", required, async (ctx) => {
   });
 
   if (!league) {
-    ctx.throw(404, "League not found");
-    return;
+    return respondLeagueNotFound(ctx);
   }
 
   // Update the league status
@@ -557,8 +645,7 @@ router.patch("/:id", required, async (ctx) => {
 
   const league = await League.findByPk(ctx.params.id);
   if (!league) {
-    ctx.throw(404, "League not found");
-    return;
+    return respondLeagueNotFound(ctx);
   }
 
   const { name, maxGames, showPoints, active, admins } = ctx.request.body as (LeagueAttributes & { active?: boolean, admins?: string[] });
@@ -612,8 +699,7 @@ router.del("/:id", required, async (ctx) => {
 
   const league = await League.findByPk(ctx.params.id);
   if (!league) {
-    ctx.throw(404, "League not found");
-    return;
+    return respondLeagueNotFound(ctx);
   }
 
   // Get league members before deletion
@@ -702,8 +788,7 @@ router.post("/:id/matches", required, upload.fields([
   });
 
   if (!league) {
-    ctx.throw(404, "League not found");
-    return;
+    return respondLeagueNotFound(ctx);
   }
 
   if (league.maxGames && (league as any).matches.length >= league.maxGames) {
@@ -753,7 +838,7 @@ router.post("/:id/matches", required, upload.fields([
     date: matchDate,
     start: startDate,
     end: finalEndDate,
-    status: 'scheduled',
+    status: 'SCHEDULED',
     homeCaptainId: homeCaptain || null,
     awayCaptainId: awayCaptain || null,
     homeTeamImage: homeTeamImageUrl,
@@ -882,7 +967,7 @@ router.post("/:id/matches", required, upload.fields([
     date: matchDate,
     start: startDate,
     end: finalEndDate,
-    status: 'scheduled',
+    status: 'SCHEDULED',
     homeCaptainId: homeCaptain || null,
     awayCaptainId: awayCaptain || null,
     homeTeamImage: homeTeamImageUrl,
@@ -931,13 +1016,16 @@ router.get("/:leagueId/matches/:matchId", required, async (ctx) => {
     include: [
       { model: User, as: 'homeTeamUsers' },
       { model: User, as: 'awayTeamUsers' },
-      { model: MatchGuest, as: 'guestPlayers' }, // <-- include guests
+      { model: MatchGuest, as: 'guestPlayers' },
     ],
   });
 
-  if (!match) { ctx.throw(404, "Match not found"); return; } // <-- return
+  if (!match) { 
+    ctx.status = 404;
+    ctx.body = { success: false, message: "Match not found" };
+    return;
+  }
 
-  // Map guestPlayers -> guests for the client
   const plain = (match as any).toJSON ? (match as any).toJSON() : match;
   const guests = (plain.guestPlayers || []).map((g: any) => ({
     id: g.id,
@@ -1358,8 +1446,7 @@ router.post("/:id/leave", required, async (ctx) => {
   }
   const league = await League.findByPk(ctx.params.id);
   if (!league) {
-    ctx.throw(404, "League not found");
-    return;
+    return respondLeagueNotFound(ctx);
   }
 
   await (league as any).removeMember(ctx.state.user.userId);
@@ -1379,8 +1466,7 @@ router.delete("/:id/users/:userId", required, async (ctx) => {
 
   const league = await League.findByPk(ctx.params.id);
   if (!league) {
-    ctx.throw(404, "League not found");
-    return;
+    return respondLeagueNotFound(ctx);
   }
 
   await (league as any).removeMember(ctx.params.userId);
@@ -1397,8 +1483,7 @@ router.patch('/:id/end', required, async (ctx) => {
   });
 
   if (!league) {
-    ctx.throw(404, "League not found");
-    return;
+    return respondLeagueNotFound(ctx);
   }
 
   // Mark league as inactive
@@ -1434,13 +1519,12 @@ router.get('/:leagueId/xp', async (ctx) => {
   const members = (league.members || []) as any[];
   const xp: Record<string, number> = {};
   for (const member of members) {
-    // Get all completed matches for this league for this user
     const stats = await models.MatchStatistics.findAll({
       where: { user_id: member.id },
       include: [{
         model: models.Match,
         as: 'match',
-        where: { leagueId, status: 'completed' }
+        where: { leagueId, status: 'RESULT_PUBLISHED' }
       }]
     });
     xp[member.id] = stats.reduce((sum, s) => sum + (s.xpAwarded || 0), 0);
@@ -1458,7 +1542,7 @@ router.get('/:leagueId/xp-breakdown/:userId', required, async (ctx) => {
   }
   // Get all completed matches in this league
   const matches = await Match.findAll({
-    where: { leagueId, status: 'completed' },
+    where: { leagueId, status: 'RESULT_PUBLISHED' },
     order: [['date', 'ASC']],
     include: [
       { model: User, as: 'homeTeamUsers' },
@@ -1534,7 +1618,7 @@ router.post('/:id/reset-xp', required, async (ctx) => {
   }
   // Get all completed matches in this league
   const matches = await Match.findAll({
-    where: { leagueId, status: 'completed' },
+    where: { leagueId, status: 'RESULT_PUBLISHED' },
     include: [
       { model: User, as: 'homeTeamUsers' },
       { model: User, as: 'awayTeamUsers' },
@@ -1624,41 +1708,25 @@ router.post('/:id/reset-xp', required, async (ctx) => {
   ctx.body = { success: true, message: 'XP reset for all users in this league.' };
 });
 
-// Get ALL available leagues (not just user's leagues)
-router.get('/', required, async (ctx) => {
+// Get ALL available leagues (avoid route collision)
+// CHANGE path from "/" to "/all"
+router.get('/all', required, async (ctx) => {
   if (!ctx.state.user || !ctx.state.user.userId) {
     ctx.status = 401;
     ctx.body = { success: false, message: "Unauthorized" };
     return;
   }
-
   try {
     console.log('Fetching ALL available leagues...');
-    
-    // Get ALL leagues in the system, not just user's leagues
     const allLeagues = await League.findAll({
       include: [
-        { 
-          model: User, 
-          as: 'members',
-          attributes: ['id', 'firstName', 'lastName', 'email', 'shirtNumber']
-        },
-        { 
-          model: User, 
-          as: 'administrators',
-          attributes: ['id', 'firstName', 'lastName', 'email']
-        },
-        {
-          model: Match,
-          as: 'matches',
-          attributes: ['id', 'homeScore', 'awayScore', 'status', 'matchDate']
-        }
+        { model: User, as: 'members', attributes: ['id', 'firstName', 'lastName', 'email', 'shirtNumber'] },
+        { model: User, as: 'administrators', attributes: ['id', 'firstName', 'lastName', 'email'] },
+        { model: Match, as: 'matches', attributes: ['id', 'homeScore', 'awayScore', 'status', 'matchDate'] }
       ],
       order: [['createdAt', 'DESC']],
-      limit: 50 // Reasonable limit to avoid loading too many leagues
+      limit: 50
     });
-
-    // Format the response to match frontend expectations
     const formattedLeagues = allLeagues.map((league: any) => ({
       id: league.id,
       name: league.name,
@@ -1672,13 +1740,10 @@ router.get('/', required, async (ctx) => {
       members: league.members || [],
       administrators: league.administrators || [],
       matches: league.matches || [],
-      // Add admin ID for frontend logic
       adminId: league.administrators?.[0]?.id || null
     }));
-
     console.log(`Found ${formattedLeagues.length} leagues total`);
     ctx.body = { success: true, leagues: formattedLeagues };
-    
   } catch (error) {
     console.error("Error fetching all leagues:", error);
     ctx.status = 500;
@@ -1781,7 +1846,7 @@ router.post('/:leagueId/matches', required, async (ctx) => {
       end: endDate, // ✅ Now guaranteed to be a Date, not null
       location,
       date: date ? new Date(date) : startDate,
-      status: 'scheduled'
+      status: 'SCHEDULED'
     });
 
     // 2. Get ALL league members using raw query to avoid association issues

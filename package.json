@@ -7,8 +7,10 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "dev": "ts-node-dev --respawn --transpile-only src/index.ts",
-    "check-models": "ts-node check-models.ts"
-  
+    "check-models": "ts-node check-models.ts",
+    "db:add-result-columns": "ts-node --transpile-only src/scripts/add-result-confirmation-columns.ts",
+    "db:check-match-columns": "ts-node --transpile-only src/scripts/check-match-columns.ts",
+    "db:fix-users": "ts-node --transpile-only src/scripts/add-missing-user-columns.ts"
   },
   "keywords": [],
   "author": "",
@@ -44,7 +46,8 @@
     "pg": "^8.16.3",
     "pg-hstore": "^2.3.4",
     "sequelize": "^6.37.7",
-    "streamifier": "^0.1.1"
+    "streamifier": "^0.1.1",
+    "uuid": "^13.0.0"
   },
   "devDependencies": {
     "@types/bcrypt": "^5.0.0",
@@ -69,5 +72,3 @@
     "typescript": "^5.8.3"
   }
 }
-
-

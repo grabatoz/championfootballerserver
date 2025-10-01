@@ -1,12 +1,14 @@
 import Router from '@koa/router';
-import models from '../models';
 import { required } from '../modules/auth';
-import { QueryTypes } from 'sequelize';
 import sequelize from '../config/database';
 import { calculateAndAwardXPAchievements } from '../utils/xpAchievementsEngine';
 import { xpPointsTable } from '../utils/xpPointsTable';
 import cache from '../utils/cache';
-const { Match, Vote, User, MatchStatistics, League } = models;
+import { sendCaptainConfirmations, notifyCaptainConfirmed, notifyCaptainRevision } from '../modules/notifications';
+import models from '../models';
+import { QueryTypes } from 'sequelize';
+import { v4 as uuidv4 } from 'uuid';
+const { Match, Vote, User, MatchStatistics, League, Notification } = models;
 
 const router = new Router({ prefix: '/matches' });
 
@@ -86,7 +88,7 @@ router.post('/:matchId/availability', required, async (ctx) => {
     console.log('action', action);
 
     const match = await Match.findByPk(ctx.params.matchId, {
-        include: [{ model: User, as: 'availableUsers' }]
+        include: [{ model: User, as: 'availableUsers', attributes: { exclude: ['providerId'] } }]
     });
     if (!match) {
         ctx.throw(404, 'Match not found');
@@ -107,7 +109,7 @@ router.post('/:matchId/availability', required, async (ctx) => {
     }
     // Fetch the updated match with availableUsers
     const updatedMatch = await Match.findByPk(ctx.params.matchId, {
-        include: [{ model: User, as: 'availableUsers' }]
+        include: [{ model: User, as: 'availableUsers', attributes: { exclude: ['providerId'] } }]
     });
 
     // Update matches cache
@@ -208,8 +210,8 @@ router.post('/:matchId/stats', required, async (ctx, next) => {
         return;
     }
 
-    if (match.status !== 'completed') {
-        ctx.throw(400, 'Statistics can only be added for completed matches.');
+    if (match.status !== 'RESULT_PUBLISHED') {
+        ctx.throw(400, 'Statistics can only be added for published results.');
     }
 
     // Find existing stats or create a new record
@@ -284,8 +286,8 @@ router.post('/:matchId/stats', required, async (ctx, next) => {
     // Get teams and votes for XP logic
     const matchWithTeams = await Match.findByPk(matchId, {
         include: [
-            { model: User, as: 'homeTeamUsers' },
-            { model: User, as: 'awayTeamUsers' }
+            { model: User, as: 'homeTeamUsers', attributes: { exclude: ['providerId'] } },
+            { model: User, as: 'awayTeamUsers', attributes: { exclude: ['providerId'] } }
         ]
     });
     const homeTeamUsers = ((matchWithTeams as any)?.homeTeamUsers || []);
@@ -459,7 +461,8 @@ router.get('/:matchId', async (ctx) => {
                         where: { match_id: matchId },
                         required: false
                     }
-                ]
+                ],
+                attributes: { exclude: ['providerId'] }
             },
             {
                 model: User,
@@ -471,9 +474,10 @@ router.get('/:matchId', async (ctx) => {
                         where: { match_id: matchId },
                         required: false
                     }
-                ]
+                ],
+                attributes: { exclude: ['providerId'] }
             },
-            { model: User, as: 'availableUsers' }
+            { model: User, as: 'availableUsers', attributes: { exclude: ['providerId'] } }
         ]
     });
     if (!match) {
@@ -495,8 +499,8 @@ router.get('/', async (ctx) => {
         // Existing DB fetch logic
         const matches = await Match.findAll({
             include: [
-                { model: User, as: 'homeTeamUsers' },
-                { model: User, as: 'awayTeamUsers' },
+                { model: User, as: 'homeTeamUsers', attributes: { exclude: ['providerId'] } },
+                { model: User, as: 'awayTeamUsers', attributes: { exclude: ['providerId'] } },
                 { model: Vote, as: 'votes' },
             ],
         });
@@ -730,38 +734,41 @@ router.get('/:matchId/votes', required, async (ctx) => {
 
 // GET availability for a match (who marked themselves available)
 router.get('/:matchId/availability', required, async (ctx) => {
-    if (!ctx.state.user?.userId) {
-        ctx.throw(401, 'Unauthorized');
-        return;
+  if (!ctx.state.user?.userId) {
+    ctx.status = 401;
+    ctx.body = { success: false, message: 'Unauthorized' };
+    return;
+  }
+
+  const matchId = String(ctx.params.matchId || '').trim();
+
+  try {
+    const match = await Match.findByPk(matchId, {
+      include: [{ model: User, as: 'availableUsers', attributes: { exclude: ['providerId'] } }]
+    });
+
+    if (!match) {
+      // respond 404 without throwing so it doesn’t get wrapped as 500
+      ctx.status = 404;
+      ctx.body = { success: false, message: 'Match not found' };
+      return;
     }
 
-    const { matchId } = ctx.params;
+    const availableUsers = (match as any).availableUsers || [];
+    const userIds = availableUsers.map((u: any) => String(u.id));
 
-    try {
-        const match = await Match.findByPk(matchId, {
-            include: [{ model: User, as: 'availableUsers' }]
-        });
-
-        if (!match) {
-            ctx.throw(404, 'Match not found');
-            return;
-        }
-
-        // Minimal payload (IDs only) + full list if needed
-        const availableUsers = (match as any).availableUsers || [];
-        const userIds = availableUsers.map((u: any) => u.id);
-
-        ctx.status = 200;
-        ctx.body = {
-            success: true,
-            matchId,
-            availableUserIds: userIds,
-            availableUsers // full user objects (you can remove this if not needed)
-        };
-    } catch (e) {
-        console.error('GET /matches/:matchId/availability error', e);
-        ctx.throw(500, 'Failed to load availability');
-    }
+    ctx.status = 200;
+    ctx.body = {
+      success: true,
+      matchId,
+      availableUserIds: userIds,
+      availableUsers
+    };
+  } catch (e) {
+    console.error('GET /matches/:matchId/availability error', e);
+    ctx.status = 500;
+    ctx.body = { success: false, message: 'Failed to load availability' };
+  }
 });
 
 // Archive/Restore match (PATCH)
@@ -863,7 +870,7 @@ router.delete('/:id', required, async (ctx) => {
 
         const hasScores = (match.homeTeamGoals || 0) > 0 ||
             (match.awayTeamGoals || 0) > 0 ||
-            match.status === 'completed';
+            match.status === 'RESULT_PUBLISHED';
 
         if (hasScores) {
             ctx.status = 400;
@@ -890,6 +897,257 @@ router.delete('/:id', required, async (ctx) => {
         ctx.body = { success: false, message: 'Failed to delete match' };
     }
 });
+
+router.post('/:matchId/upload-result', required, async (ctx) => {
+  const { matchId } = ctx.params;
+  const { homeTeamGoals, awayTeamGoals, note } = ctx.request.body || {};
+  // authorization: only league admins allowed
+  const match = await Match.findByPk(matchId);
+  if (!match) ctx.throw(404, 'Match not found');
+
+  await match?.update({
+    homeTeamGoals,
+    awayTeamGoals,
+    notes: note ?? match?.notes,
+    status: 'RESULT_UPLOADED',
+    homeCaptainConfirmed: false,
+    awayCaptainConfirmed: false,
+    resultUploadedAt: new Date(),
+    suggestedHomeGoals: null,
+    suggestedAwayGoals: null,
+    suggestedByCaptainId: null,
+  });
+
+  const league = await League.findByPk(match?.leagueId);
+  await sendCaptainConfirmations(match, league);
+
+  ctx.body = { ok: true, match };
+});
+
+// REPLACE the existing POST '/:matchId/confirm' route with a unified handler + aliases
+function normalizeDecision(input: any): 'YES' | 'NO' | undefined {
+  if (input == null) return undefined;
+  const s = String(input).trim().toUpperCase();
+  if (['YES', 'Y', 'TRUE', 'CONFIRM', 'APPROVE', 'ACCEPT'].includes(s)) return 'YES';
+  if (['NO', 'N', 'FALSE', 'REJECT', 'DECLINE'].includes(s)) return 'NO';
+  return undefined;
+}
+
+const unifiedConfirmHandler = async (ctx: any) => {
+  const { matchId } = ctx.params;
+  const match = await Match.findByPk(matchId);
+  if (!match) ctx.throw(404, 'Match not found');
+
+  // accept decision from body or query (action/decision)
+  const decision: 'YES' | 'NO' | undefined =
+    normalizeDecision(ctx.request.body?.decision) ||
+    normalizeDecision(ctx.query?.decision) ||
+    normalizeDecision(ctx.query?.action);
+
+  if (!decision) {
+    ctx.throw(400, 'decision is required (YES/NO) or action=confirm|reject');
+    return;
+  }
+
+  // accept captainId from body; fallback to authenticated user
+  const incomingCaptainId = ctx.request.body?.captainId ?? ctx.state.user?.userId;
+  const cId = incomingCaptainId != null ? String(incomingCaptainId) : undefined;
+  const homeCap = match?.homeCaptainId != null ? String(match.homeCaptainId) : undefined;
+  const awayCap = match?.awayCaptainId != null ? String(match.awayCaptainId) : undefined;
+
+  if (!cId || (cId !== homeCap && cId !== awayCap)) {
+    ctx.throw(403, 'Only captains can confirm');
+    return;
+  }
+
+  const suggestedHomeGoals = ctx.request.body?.suggestedHomeGoals ?? null;
+  const suggestedAwayGoals = ctx.request.body?.suggestedAwayGoals ?? null;
+
+  if (decision === 'YES') {
+    if (cId === homeCap) await match?.update({ homeCaptainConfirmed: true });
+    if (cId === awayCap) await match?.update({ awayCaptainConfirmed: true });
+
+    await notifyCaptainConfirmed(match, cId);
+
+    const both = !!match?.homeCaptainConfirmed && !!match?.awayCaptainConfirmed;
+    if (both) {
+      await match.update({ status: 'RESULT_PUBLISHED', resultPublishedAt: new Date() });
+      await Notification.create({
+        type: 'RESULT_PUBLISHED',
+        title: 'Result published',
+        body: `${match.homeTeamName} ${match.homeTeamGoals} - ${match.awayTeamGoals} ${match.awayTeamName}`,
+        meta: { matchId: String(match.id), leagueId: String(match.leagueId) },
+        read: false,
+        created_at: new Date(),
+      });
+      try {
+        await calculateAndAwardXPAchievements(String(match.id));
+      } catch (e) {
+        console.error('XP recalc failed', e);
+      }
+    }
+
+    ctx.body = { ok: true, match };
+    return;
+  }
+
+  // decision === 'NO' -> revision requested
+  await match?.update({
+    status: 'REVISION_REQUESTED',
+    suggestedHomeGoals,
+    suggestedAwayGoals,
+    suggestedByCaptainId: cId,
+  });
+
+  await notifyCaptainRevision(match, cId, suggestedHomeGoals, suggestedAwayGoals);
+
+  // Notify league administrators (per-user, via ORM)
+  try {
+    const adminIds = await getLeagueAdminIdsRobust(String(match?.leagueId));
+
+    if (adminIds.length === 0) {
+      console.warn('No league admins found to notify', { leagueId: match?.leagueId });
+    } else {
+      // NEW: fetch league name + match number + normalize date
+      const leagueRow = await League.findByPk(match?.leagueId);
+      const leagueName =
+        (leagueRow as any)?.name ||
+        (leagueRow as any)?.title ||
+        (leagueRow as any)?.leagueName ||
+        undefined;
+
+      const matchNumber =
+        (match as any)?.matchNumber ??
+        (match as any)?.match_no ??
+        undefined;
+
+      const rawDate =
+        (match as any)?.date ??
+        (match as any)?.startDate ??
+        (match as any)?.start_date ??
+        undefined;
+      const dateIso = rawDate ? new Date(rawDate).toISOString() : undefined;
+
+      const title = `Result revision suggested${matchNumber ? ` — Match ${matchNumber}` : ''}`;
+      const currentHome = match?.homeTeamGoals ?? '-';
+      const currentAway = match?.awayTeamGoals ?? '-';
+      const body = `${match?.homeTeamName} ${currentHome} vs ${match?.awayTeamName} ${currentAway} — suggested ${suggestedHomeGoals ?? '-'}:${suggestedAwayGoals ?? '-'}${
+        leagueName || matchNumber || rawDate
+          ? ` | ${[
+              leagueName ? `League: ${leagueName}` : null,
+              matchNumber ? `Match ${matchNumber}` : null,
+              rawDate ? `Date: ${new Date(rawDate).toLocaleDateString()}` : null
+            ].filter(Boolean).join(' • ')}`
+          : ''
+      }`;
+
+      const path = `/league/${String(match?.leagueId)}/match/${String(match?.id)}/play`;
+      const url = process.env.FRONTEND_BASE_URL ? `${process.env.FRONTEND_BASE_URL}${path}` : path;
+
+      const meta = {
+        matchId: String(match?.id),
+        leagueId: String(match?.leagueId),
+
+        // Rich context for frontend (keys already handled in UI)
+        leagueName,
+        league_title: leagueName,
+        league: { id: String(match?.leagueId), name: leagueName },
+
+        matchNumber,
+        match_no: matchNumber,
+        matchIndex: (match as any)?.matchIndex ?? (match as any)?.match_index,
+        match_index: (match as any)?.match_index ?? (match as any)?.matchIndex,
+
+        // Date variants
+        date: rawDate,
+        matchDate: rawDate,
+        scheduledDate: rawDate,
+        startDateTime: dateIso,
+
+        suggestedHomeGoals,
+        suggestedAwayGoals,
+        suggestedByCaptainId: cId,
+        type: 'RESULT_CONFIRMATION_REJECTED',
+        action: 'NAVIGATE',
+
+        // CTA/fallback links
+        cta: { label: 'See', href: path },
+        ctaLabel: 'See',
+        ctaHref: path,
+        href: path,
+        url,
+      };
+
+      // Insert one row per admin (notifications.user_id is NOT NULL)
+      const rows = adminIds.map((uid) => ({
+        id: uuidv4(),
+        user_id: uid,
+        type: 'CAPTAIN_REVISION_SUGGESTED',
+        title,
+        body,
+        meta, // JSON object
+        read: false,
+        created_at: new Date(),
+      }));
+
+      await Notification.bulkCreate(rows);
+    }
+  } catch (e) {
+    console.error('Notify admins (revision) failed', e);
+  }
+
+  ctx.body = { ok: true, match };
+};
+
+// Primary and legacy endpoints
+router.post('/:matchId/confirm', required, unifiedConfirmHandler);
+router.post('/:matchId/confirm-result', required, unifiedConfirmHandler);
+router.post('/:matchId/result/confirm', required, unifiedConfirmHandler);
+
+// UUID validator
+const isUUID = (v: unknown): v is string =>
+  typeof v === 'string' &&
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(v);
+
+// Prefer ORM association (administrators), fallback to administeredLeagues, then raw join table "LeagueAdmin"
+async function getLeagueAdminIdsRobust(leagueId: string): Promise<string[]> {
+  const { League, User } = models as any;
+
+  const tryAlias = async (alias: string) => {
+    try {
+      const league = await League.findByPk(leagueId, {
+        include: [{ model: User, as: alias, attributes: ['id'] }]
+      });
+      const list = (league as any)?.[alias] || [];
+      return list.map((u: any) => String(u.id)).filter(isUUID);
+    } catch {
+      return [];
+    }
+  };
+
+  // 1) administrators
+  let ids = await tryAlias('administrators');
+  if (ids.length) return Array.from(new Set(ids));
+
+  // 2) administeredLeagues (seen elsewhere in your code)
+  ids = await tryAlias('administeredLeagues');
+  if (ids.length) return Array.from(new Set(ids));
+
+  // 3) raw join table fallback (through looks named LeagueAdmin in your payload)
+  try {
+    // Avoid TS2347: drop generic and cast the result
+    const sequelize = League.sequelize!;
+    const rows = (await sequelize.query(
+      `SELECT "userId"::text AS id FROM "LeagueAdmin" WHERE "leagueId" = :leagueId AND "userId" IS NOT NULL`,
+      { replacements: { leagueId }, type: QueryTypes.SELECT }
+    )) as Array<{ id: string }>;
+    ids = rows.map(r => r.id).filter(isUUID);
+  } catch {
+    ids = [];
+  }
+
+  return Array.from(new Set(ids));
+}
 
 // Example of what your League associations should look like:
 // League.belongsToMany(User, { 
