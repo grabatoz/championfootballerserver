@@ -1136,10 +1136,7 @@ router.patch(
 
     const { matchId } = ctx.params;
     const match = await Match.findByPk(matchId);
-    if (!match) {
-      ctx.throw(404, "Match not found");
-      return;
-    }
+    if (!match) { ctx.throw(404, "Match not found"); return; }
 
     const body = (ctx.request as any).body || {};
     const files = (ctx.files as any) || {};
@@ -1150,12 +1147,8 @@ router.patch(
       if (!v) return [];
       if (Array.isArray(v)) return v.map(String);
       if (typeof v === 'string') {
-        try {
-          const parsed = JSON.parse(v);
-          return Array.isArray(parsed) ? parsed.map(String) : [v];
-        } catch {
-          return [v];
-        }
+        try { const parsed = JSON.parse(v); return Array.isArray(parsed) ? parsed.map(String) : [v]; }
+        catch { return [v]; }
       }
       return [];
     };
@@ -1176,98 +1169,97 @@ router.patch(
       }
     };
 
-  const homeTeamName = body.homeTeamName;
-  const awayTeamName = body.awayTeamName;
-  const date = body.date; // optional legacy single date
-  const startIso = body.start; // preferred explicit start
-  const endIso = body.end;     // preferred explicit end
-  const location = body.location;
+    const homeTeamName = body.homeTeamName;
+    const awayTeamName = body.awayTeamName;
+    const date = body.date;    // optional
+    const startIso = body.start; // optional
+    const endIso = body.end;     // optional
+    const location = body.location; // optional
 
     const homeTeamUsers = parseIds(body.homeTeamUsers);
     const awayTeamUsers = parseIds(body.awayTeamUsers);
 
-  // Accept either ...Id or plain keys from FormData
-  const homeCaptainId = (body.homeCaptain ?? body.homeCaptainId) || null;
-  const awayCaptainId = (body.awayCaptain ?? body.awayCaptainId) || null;
+    // Accept either ...Id or plain keys from FormData (only persist with >=6 players)
+    const homeCaptainIdRaw = (body.homeCaptain ?? body.homeCaptainId);
+    const awayCaptainIdRaw = (body.awayCaptain ?? body.awayCaptainId);
 
+    // Upload images if provided
     let homeTeamImageUrl = match.homeTeamImage;
     let awayTeamImageUrl = match.awayTeamImage;
-
     if (files.homeTeamImage?.[0]?.buffer) {
-      try {
-        homeTeamImageUrl = await uploadToCloudinary(files.homeTeamImage[0].buffer, 'team-images');
-      } catch (e) {
-        console.error('Home team image upload error:', e);
-      }
+      try { homeTeamImageUrl = await uploadToCloudinary(files.homeTeamImage[0].buffer, 'team-images'); }
+      catch (e) { console.error('Home team image upload error:', e); }
     }
     if (files.awayTeamImage?.[0]?.buffer) {
-      try {
-        awayTeamImageUrl = await uploadToCloudinary(files.awayTeamImage[0].buffer, 'team-images');
-      } catch (e) {
-        console.error('Away team image upload error:', e);
-      }
+      try { awayTeamImageUrl = await uploadToCloudinary(files.awayTeamImage[0].buffer, 'team-images'); }
+      catch (e) { console.error('Away team image upload error:', e); }
     }
 
-    // Derive start/end preserving duration when needed
+    // Compute start/end but do not require inputs
     const previousStart = match.start;
     const previousEnd = match.end;
-    const prevDurationMs = previousEnd && previousStart ? (new Date(previousEnd).getTime() - new Date(previousStart).getTime()) : 90 * 60 * 1000;
+    const prevDurationMs = previousEnd && previousStart
+      ? (new Date(previousEnd).getTime() - new Date(previousStart).getTime())
+      : 90 * 60 * 1000;
 
-    const computedStart = startIso ? new Date(startIso) : (date ? new Date(date) : new Date(previousStart));
+    const computedStart = startIso
+      ? new Date(startIso)
+      : (date ? new Date(date) : new Date(previousStart));
     const computedEnd = endIso
       ? new Date(endIso)
       : (date ? new Date(new Date(date).getTime() + prevDurationMs) : new Date(new Date(computedStart).getTime() + prevDurationMs));
+    const matchDate = computedStart;
 
-    const matchDate = computedStart; // keep date aligned with start
-
-    await match.update({
-      homeTeamName,
-      awayTeamName,
-      date: matchDate,
-      start: computedStart,
-      end: computedEnd,
-      location,
-      homeCaptainId,
-      awayCaptainId,
-      homeTeamImage: homeTeamImageUrl,
-      awayTeamImage: awayTeamImageUrl
-    });
-
-    // Always set associations if field was sent (even if empty) so clearing works
-    if (hasProp(body, 'homeTeamUsers')) {
-      await (match as any).setHomeTeamUsers(homeTeamUsers);
+    // Only update provided primitives; avoid overwriting non-sent fields
+    const updatePayload: any = {};
+    if (hasProp(body, 'homeTeamName')) updatePayload.homeTeamName = homeTeamName;
+    if (hasProp(body, 'awayTeamName')) updatePayload.awayTeamName = awayTeamName;
+    if (hasProp(body, 'location')) updatePayload.location = location;
+    // Update timing if any timing field present
+    if (hasProp(body, 'date') || hasProp(body, 'start') || hasProp(body, 'end')) {
+      updatePayload.date = matchDate;
+      updatePayload.start = computedStart;
+      updatePayload.end = computedEnd;
     }
-    if (hasProp(body, 'awayTeamUsers')) {
-      await (match as any).setAwayTeamUsers(awayTeamUsers);
+    // Always allow image updates if uploaded
+    updatePayload.homeTeamImage = homeTeamImageUrl;
+    updatePayload.awayTeamImage = awayTeamImageUrl;
+
+    if (Object.keys(updatePayload).length) {
+      await match.update(updatePayload);
     }
 
-    // Guests sync (client sends in PATCH, see edit page)
-    // Prefer combined 'guests', else merge 'homeGuests' + 'awayGuests'
+    // Detect actual team changes (only if arrays were sent)
+    const currHome = await (match as any).getHomeTeamUsers({ attributes: ['id'] });
+    const currAway = await (match as any).getAwayTeamUsers({ attributes: ['id'] });
+    const currHomeIds = currHome.map((u: any) => String(u.id));
+    const currAwayIds = currAway.map((u: any) => String(u.id));
+    const sameSet = (a: string[], b: string[]) => a.length === b.length && a.every(x => b.includes(x));
+
+    const teamsWereSent = hasProp(body, 'homeTeamUsers') || hasProp(body, 'awayTeamUsers');
+    const teamsChanged = teamsWereSent && (!sameSet(homeTeamUsers, currHomeIds) || !sameSet(awayTeamUsers, currAwayIds));
+
+    // Guests sync (only when provided)
     let desiredGuests = parseGuests(body.guests);
     if (!desiredGuests.length) {
       const homeGuests = parseGuests(body.homeGuests).map(g => ({ ...g, team: 'home' as const }));
       const awayGuests = parseGuests(body.awayGuests).map(g => ({ ...g, team: 'away' as const }));
       desiredGuests = [...homeGuests, ...awayGuests];
     }
-
     if (desiredGuests.length || hasProp(body, 'guests') || hasProp(body, 'homeGuests') || hasProp(body, 'awayGuests')) {
       const existing = await MatchGuest.findAll({ where: { matchId } });
       const existingMap = new Map(existing.map((g: any) => [String(g.id), g]));
 
-      // Delete removed
       const keepIds = new Set(desiredGuests.filter(g => g.id).map(g => String(g.id)));
-      const toDeleteIds = existing
-        .map((g: any) => String(g.id))
-        .filter(id => !keepIds.has(id));
+      const toDeleteIds = existing.map((g: any) => String(g.id)).filter(id => !keepIds.has(id));
       if (toDeleteIds.length) {
         await MatchGuest.destroy({ where: { matchId, id: toDeleteIds } as any });
       }
 
-      // Upsert
       for (const g of desiredGuests) {
         if (g.id && existingMap.has(g.id)) {
           await MatchGuest.update(
-            { team: g.team, firstName: g.firstName, lastName: g.lastName},
+            { team: g.team, firstName: g.firstName, lastName: g.lastName },
             { where: { id: g.id, matchId } as any }
           );
         } else {
@@ -1282,6 +1274,58 @@ router.patch(
       }
     }
 
+    // Selection logic
+    const MIN_PLAYERS = 6;
+    const selectedUserIds = Array.from(new Set([...(homeTeamUsers || []), ...(awayTeamUsers || [])]));
+    const totalSelected = selectedUserIds.length;
+
+    // Persist teams/captains ONLY if teams changed AND enough players
+    if (teamsChanged && totalSelected >= MIN_PLAYERS) {
+      await (match as any).setHomeTeamUsers(homeTeamUsers);
+      await (match as any).setAwayTeamUsers(awayTeamUsers);
+
+      const captainUpdate: any = {};
+      if (hasProp(body, 'homeCaptain') || hasProp(body, 'homeCaptainId')) captainUpdate.homeCaptainId = homeCaptainIdRaw || null;
+      if (hasProp(body, 'awayCaptain') || hasProp(body, 'awayCaptainId')) captainUpdate.awayCaptainId = awayCaptainIdRaw || null;
+      if (Object.keys(captainUpdate).length) {
+        await match.update(captainUpdate);
+      }
+    }
+
+    // Notify only when teams actually changed and < 6; do not save teams in this case
+    try {
+      if (teamsChanged && totalSelected > 0 && totalSelected < MIN_PLAYERS) {
+        const missing = MIN_PLAYERS - totalSelected;
+        const title = '⚠️ Match needs more players';
+        const bodyText = `${homeTeamName || match.homeTeamName} vs ${awayTeamName || match.awayTeamName} needs ${missing} more player${missing === 1 ? '' : 's'} to confirm.`;
+        const matchStartISO = (computedStart instanceof Date ? computedStart : new Date(computedStart)).toISOString();
+
+        const notificationEntries = selectedUserIds.map((userId: string) => ({
+          user_id: userId,
+          type: 'match_needs_players',
+          title,
+          body: bodyText,
+          meta: JSON.stringify({
+            matchId,
+            leagueId: String(match.leagueId),
+            required: MIN_PLAYERS,
+            selectedCount: totalSelected,
+            matchStart: matchStartISO,
+            location: hasProp(body, 'location') ? location : match.location
+          }),
+          read: false,
+          created_at: new Date(),
+          updated_at: new Date()
+        }));
+
+        await Notification.bulkCreate(notificationEntries);
+        console.log(`🔔 Sent "< ${MIN_PLAYERS}" notifications to ${notificationEntries.length} selected players for match ${matchId}`);
+      }
+    } catch (notifyErr) {
+      console.error('Notify (<6 players) error:', notifyErr);
+    }
+
+    // Reload and respond using DB values (avoid undefined from request)
     const updatedMatch = await Match.findByPk(matchId, {
       include: [
         { model: User, as: 'homeTeamUsers' },
@@ -1289,6 +1333,8 @@ router.patch(
         { model: MatchGuest, as: 'guestPlayers' },
       ],
     });
+
+    if (!updatedMatch) { ctx.throw(404, "Match not found after update"); return; }
 
     const guests = (updatedMatch as any)?.guestPlayers?.map((g: any) => ({
       id: g.id,
@@ -1299,19 +1345,19 @@ router.patch(
     })) || [];
 
     const updatedMatchData = {
-      id: matchId,
-      homeTeamName,
-      awayTeamName,
-      location,
-      leagueId: match.leagueId,
-  date: matchDate,
-  start: computedStart,
-  end: computedEnd,
-      status: match.status,
-      homeCaptainId,
-      awayCaptainId,
-      homeTeamImage: homeTeamImageUrl,
-      awayTeamImage: awayTeamImageUrl,
+      id: updatedMatch.id,
+      homeTeamName: (updatedMatch as any).homeTeamName,
+      awayTeamName: (updatedMatch as any).awayTeamName,
+      location: (updatedMatch as any).location,
+      leagueId: (updatedMatch as any).leagueId,
+      date: (updatedMatch as any).date,
+      start: (updatedMatch as any).start,
+      end: (updatedMatch as any).end,
+      status: (updatedMatch as any).status,
+      homeCaptainId: (updatedMatch as any).homeCaptainId,
+      awayCaptainId: (updatedMatch as any).awayCaptainId,
+      homeTeamImage: (updatedMatch as any).homeTeamImage,
+      awayTeamImage: (updatedMatch as any).awayTeamImage,
       homeTeamUsers: (updatedMatch as any)?.homeTeamUsers?.map((user: any) => ({
         id: user.id,
         firstName: user.firstName,
@@ -1337,10 +1383,9 @@ router.patch(
       guests
     };
 
+    // Cache updates
     cache.updateArray('matches_all', updatedMatchData);
-    const league = await League.findByPk(match.leagueId, {
-      include: [{ model: User, as: 'members' }]
-    });
+    const league = await League.findByPk((updatedMatch as any).leagueId, { include: [{ model: User, as: 'members' }] });
     if (league) {
       const memberIds = (league as any)?.members?.map((m: any) => m.id) || [];
       memberIds.forEach((memberId: string) => {
@@ -1916,7 +1961,7 @@ router.post('/:leagueId/matches', required, async (ctx) => {
   } catch (error) {
     console.error('Error creating match with notifications:', error);
     ctx.throw(500, 'Failed to create match');
-  }
+   }
 });
 
 export default router;
