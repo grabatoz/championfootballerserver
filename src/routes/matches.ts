@@ -6,7 +6,7 @@ import { xpPointsTable } from '../utils/xpPointsTable';
 import cache from '../utils/cache';
 import { sendCaptainConfirmations, notifyCaptainConfirmed, notifyCaptainRevision } from '../modules/notifications';
 import models from '../models';
-import { QueryTypes } from 'sequelize';
+import { QueryTypes, Op } from 'sequelize';
 import { v4 as uuidv4 } from 'uuid';
 const { Match, Vote, User, MatchStatistics, League, Notification } = models;
 
@@ -194,15 +194,7 @@ router.post('/:matchId/stats', required, async (ctx, next) => {
     }
     const { matchId } = ctx.params;
     const userId = ctx.state.user.userId;
-    const { goals, assists, cleanSheets, penalties, freeKicks, defence, impact } = ctx.request.body as {
-        goals: number;
-        assists: number;
-        cleanSheets: number;
-        penalties: number;
-        freeKicks: number;
-        defence: number;
-        impact: number;
-    };
+    const { goals, assists, cleanSheets, penalties, freeKicks, defence, impact } = ctx.request.body as any;
 
     const match = await Match.findByPk(matchId);
     if (!match) {
@@ -214,29 +206,28 @@ router.post('/:matchId/stats', required, async (ctx, next) => {
         ctx.throw(400, 'Statistics can only be added for published results.');
     }
 
-    // Find existing stats or create a new record
+    // If all zeros => clear any existing row and do NOT create placeholder
+    if (statsAllZero({ goals, assists, cleanSheets, penalties, freeKicks, defence, impact })) {
+        const existing = await models.MatchStatistics.findOne({ where: { user_id: userId, match_id: matchId } });
+        if (existing) await existing.destroy();
+        try { cache.del(`match_stats_${matchId}_${userId}_ultra_fast`); } catch {}
+        ctx.status = 200;
+        ctx.body = { success: true, message: 'Statistics cleared.' };
+        return;
+    }
+
+    // Find existing stats or create a new record (non-zero payload)
     const [stats, created] = await models.MatchStatistics.findOrCreate({
         where: { user_id: userId, match_id: matchId },
         defaults: {
             user_id: userId,
             match_id: matchId,
-            goals,
-            assists,
-            cleanSheets,
-            penalties,
-            freeKicks,
-            defence,
-            impact,
-            yellowCards: 0,
-            redCards: 0,
-            minutesPlayed: 0,
-            rating: 0,
-            xpAwarded: 0,
+            goals, assists, cleanSheets, penalties, freeKicks, defence, impact,
+            yellowCards: 0, redCards: 0, minutesPlayed: 0, rating: 0, xpAwarded: 0,
         }
     });
 
     if (!created) {
-        // If stats existed, update them
         stats.goals = goals;
         stats.assists = assists;
         stats.cleanSheets = cleanSheets;
@@ -591,47 +582,32 @@ router.post('/:matchId/stats', required, async (ctx) => {
     }
 
     try {
-        // Check if stats already exist for this player in this match
-        let stats = await MatchStatistics.findOne({
-            where: {
-                match_id: matchId,
-                user_id: playerId
-            }
-        });
+        const existing = await MatchStatistics.findOne({ where: { match_id: matchId, user_id: playerId } });
 
+        // All zeros => delete placeholder row (if any)
+        if (statsAllZero({ goals, assists, cleanSheets, penalties, freeKicks, defence, impact })) {
+            if (existing) await existing.destroy();
+            try { cache.del(`match_stats_${matchId}_${playerId}_ultra_fast`); } catch {}
+            ctx.body = { success: true, message: 'Stats cleared (all zeros).' };
+            return;
+        }
+
+        let stats = existing;
         if (stats) {
-            // Update existing stats
             await stats.update({
-                goals: goals || 0,
-                assists: assists || 0,
-                cleanSheets: cleanSheets || 0,
-                penalties: penalties || 0,
-                freeKicks: freeKicks || 0,
-                defence: defence || 0,
-                impact: impact || 0,
+                goals: goals || 0, assists: assists || 0, cleanSheets: cleanSheets || 0,
+                penalties: penalties || 0, freeKicks: freeKicks || 0, defence: defence || 0, impact: impact || 0,
             });
         } else {
-            // Create new stats
             stats = await MatchStatistics.create({
-                match_id: matchId,
-                user_id: playerId,
-                goals: goals || 0,
-                assists: assists || 0,
-                cleanSheets: cleanSheets || 0,
-                penalties: penalties || 0,
-                freeKicks: freeKicks || 0,
-                defence: defence || 0,
-                impact: impact || 0,
-                yellowCards: 0,
-                redCards: 0,
-                minutesPlayed: 0,
-                rating: 0,
-                xpAwarded: 0,
+                match_id: matchId, user_id: playerId,
+                goals: goals || 0, assists: assists || 0, cleanSheets: cleanSheets || 0,
+                penalties: penalties || 0, freeKicks: freeKicks || 0, defence: defence || 0, impact: impact || 0,
+                yellowCards: 0, redCards: 0, minutesPlayed: 0, rating: 0, xpAwarded: 0,
             });
         }
 
-        // Invalidate cached stats for this player+match so reads get fresh impact
-        try { cache.del(`match_stats_${matchId}_${playerId}_ultra_fast`); } catch { }
+        try { cache.del(`match_stats_${matchId}_${playerId}_ultra_fast`); } catch {}
 
         // Update leaderboard cache
         const match = await Match.findByPk(matchId);
@@ -840,7 +816,6 @@ router.delete('/:id', required, async (ctx) => {
             return;
         }
 
-        // Get match first - without includes
         const match = await Match.findByPk(id) as MatchWithLeague | null;
         if (!match) {
             ctx.status = 404;
@@ -848,47 +823,47 @@ router.delete('/:id', required, async (ctx) => {
             return;
         }
 
-        // Use raw SQL to check admin permissions
-        const adminCheck = await sequelize.query(`
-            SELECT la.userId 
-            FROM "Leagues" l
-            LEFT JOIN "LeagueAdministrators" la ON l.id = la.leagueId 
-            WHERE l.id = :leagueId AND la.userId = :userId
-        `, {
-            replacements: { 
-                leagueId: match.leagueId, 
-                userId: ctx.state.user.userId 
-            },
-            type: QueryTypes.SELECT
-        });
-
-        if (adminCheck.length === 0) {
+        const adminIds = await getLeagueAdminIdsRobust(String(match.leagueId));
+        const isAdmin = adminIds.includes(String(ctx.state.user.userId));
+        if (!isAdmin) {
             ctx.status = 403;
             ctx.body = { success: false, message: 'Only league administrators can delete matches' };
             return;
         }
 
-        const hasScores = (match.homeTeamGoals || 0) > 0 ||
-            (match.awayTeamGoals || 0) > 0 ||
-            match.status === 'RESULT_PUBLISHED';
+        // Count only rows with any non-zero metric
+        const nonZeroStatsCount = await MatchStatistics.count({
+            where: {
+                match_id: id,
+                [Op.or]: [
+                    { goals: { [Op.gt]: 0 } },
+                    { assists: { [Op.gt]: 0 } },
+                    { cleanSheets: { [Op.gt]: 0 } },
+                    { penalties: { [Op.gt]: 0 } },
+                    { freeKicks: { [Op.gt]: 0 } },
+                    { defence: { [Op.gt]: 0 } },
+                    { impact: { [Op.gt]: 0 } },
+                ]
+            }
+        });
 
-        if (hasScores) {
+        if (nonZeroStatsCount > 0) {
             ctx.status = 400;
-            ctx.body = {
-                success: false,
-                message: 'Cannot delete match with scores. Archive it instead.'
-            };
+            ctx.body = { success: false, message: 'Cannot permanently delete. Player stats exist for this match.' };
             return;
         }
 
+        // Optional: purge zero-only placeholder rows to avoid FK issues
+        await MatchStatistics.destroy({
+            where: {
+                match_id: id,
+                goals: 0, assists: 0, cleanSheets: 0, penalties: 0, freeKicks: 0, defence: 0, impact: 0,
+            }
+        });
+
         await match.destroy();
 
-        // Cache cleanup
-        try {
-            cache.del('matches_all');
-        } catch (error) {
-            console.log('Cache cleanup failed:', error);
-        }
+        try { cache.del('matches_all'); } catch {}
 
         ctx.body = { success: true, message: 'Match deleted successfully' };
     } catch (error) {
@@ -897,6 +872,46 @@ router.delete('/:id', required, async (ctx) => {
         ctx.body = { success: false, message: 'Failed to delete match' };
     }
 });
+
+// GET /matches/:matchId/has-stats - Check if a match has any stats recorded
+router.get('/:id/has-stats', required, async (ctx) => {
+    if (!ctx.state.user?.userId) {
+        ctx.status = 401;
+        ctx.body = { success: false, message: 'Unauthorized' };
+        return;
+    }
+
+    const { id } = ctx.params;
+    const match = await Match.findByPk(id);
+    if (!match) {
+        ctx.status = 404;
+        ctx.body = { success: false, message: 'Match not found' };
+        return;
+    }
+
+    // Only count non-zero metrics
+    const statsRowCount = await MatchStatistics.count({
+        where: {
+            match_id: id,
+            [Op.or]: [
+                { goals: { [Op.gt]: 0 } },
+                { assists: { [Op.gt]: 0 } },
+                { cleanSheets: { [Op.gt]: 0 } },
+                { penalties: { [Op.gt]: 0 } },
+                { freeKicks: { [Op.gt]: 0 } },
+                { defence: { [Op.gt]: 0 } },
+                { impact: { [Op.gt]: 0 } },
+            ]
+        }
+    });
+
+    ctx.body = {
+        success: true,
+        hasStats: statsRowCount > 0,
+        count: statsRowCount
+    };
+});
+
 
 router.post('/:matchId/upload-result', required, async (ctx) => {
   const { matchId } = ctx.params;
@@ -1170,3 +1185,10 @@ async function getLeagueAdminIdsRobust(leagueId: string): Promise<string[]> {
 // });
 
 export default router;
+
+// Helper: are all submitted metrics zero/empty?
+const statsAllZero = (p: any) => {
+  const n = (v: any) => (v == null ? 0 : Number(v) || 0);
+  return ['goals','assists','cleanSheets','penalties','freeKicks','defence','impact']
+    .every(k => n(p?.[k]) === 0);
+};
