@@ -1259,7 +1259,7 @@ router.patch(
       for (const g of desiredGuests) {
         if (g.id && existingMap.has(g.id)) {
           await MatchGuest.update(
-            { team: g.team, firstName: g.firstName, lastName: g.lastName},
+            { team: g.team, firstName: g.firstName, lastName: g.lastName },
             { where: { id: g.id, matchId } as any }
           );
         } else {
@@ -1268,7 +1268,8 @@ router.patch(
             team: g.team,
             firstName: g.firstName,
             lastName: g.lastName,
-            shirtNumber: g.shirtNumber ?? null
+            // TS: prefer undefined over null for optional attrs
+            shirtNumber: g.shirtNumber ?? undefined
           } as any);
         }
       }
@@ -1323,6 +1324,50 @@ router.patch(
         awayCaptainId: newAwayCaptainId || ''
       });
       // --- END AUTO CAPTAIN ASSIGNMENT ---
+
+      // --- NEW: NOTIFY NEWLY ADDED PLAYERS ---
+      try {
+        // Compare with current team membership captured earlier
+        const addedHomeIds = (homeTeamUsers || []).filter(id => !currHomeIds.includes(String(id)));
+        const addedAwayIds = (awayTeamUsers || []).filter(id => !currAwayIds.includes(String(id)));
+        const addedAll = [
+          ...addedHomeIds.map(id => ({ id, team: 'home' as const })),
+          ...addedAwayIds.map(id => ({ id, team: 'away' as const }))
+        ];
+
+        if (addedAll.length > 0) {
+          const leagueRec = await League.findByPk(match.leagueId, { attributes: ['id', 'name'] });
+          const leagueName = leagueRec ? (leagueRec as any).name : String(match.leagueId);
+          const matchStartISO = (computedStart instanceof Date ? computedStart : new Date(computedStart)).toISOString();
+
+          const title = 'You were added to a match';
+          const bodyTemplate = (team: 'home' | 'away') =>
+            `You have been added to the ${team} team for ${homeTeamName || match.homeTeamName} vs ${awayTeamName || match.awayTeamName} in league ${leagueName}.`;
+
+          const notificationEntries = addedAll.map(({ id, team }) => ({
+            user_id: id,
+            type: 'match_added_to_team',
+            title,
+            body: bodyTemplate(team),
+            meta: JSON.stringify({
+              matchId,
+              leagueId: String(match.leagueId),
+              team,
+              matchStart: matchStartISO,
+              location: hasProp(body, 'location') ? location : match.location
+            }),
+            read: false,
+            created_at: new Date(),
+            updated_at: new Date()
+          }));
+
+          await Notification.bulkCreate(notificationEntries);
+          console.log(`🔔 Sent "added to match" notifications to ${notificationEntries.length} users for match ${matchId}`);
+        }
+      } catch (notifyAddedErr) {
+        console.error('Notify (added to match) error:', notifyAddedErr);
+      }
+      // --- END NEW: NOTIFY NEWLY ADDED PLAYERS ---
     }
 
     // Notify only when teams actually changed and total (including guests) < 6
