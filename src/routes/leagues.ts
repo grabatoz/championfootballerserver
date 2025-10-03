@@ -1259,7 +1259,7 @@ router.patch(
       for (const g of desiredGuests) {
         if (g.id && existingMap.has(g.id)) {
           await MatchGuest.update(
-            { team: g.team, firstName: g.firstName, lastName: g.lastName },
+            { team: g.team, firstName: g.firstName, lastName: g.lastName},
             { where: { id: g.id, matchId } as any }
           );
         } else {
@@ -1277,25 +1277,58 @@ router.patch(
     // Selection logic
     const MIN_PLAYERS = 6;
     const selectedUserIds = Array.from(new Set([...(homeTeamUsers || []), ...(awayTeamUsers || [])]));
-    const totalSelected = selectedUserIds.length;
+    const registeredCount = selectedUserIds.length;
+    const guestCount = (desiredGuests || []).length;
+    const totalWithGuests = registeredCount + guestCount;
 
-    // Persist teams/captains ONLY if teams changed AND enough players
-    if (teamsChanged && totalSelected >= MIN_PLAYERS) {
+    // Persist teams/captains ONLY if teams changed AND enough players (including guests)
+    if (teamsChanged && totalWithGuests >= MIN_PLAYERS) {
       await (match as any).setHomeTeamUsers(homeTeamUsers);
       await (match as any).setAwayTeamUsers(awayTeamUsers);
 
-      const captainUpdate: any = {};
-      if (hasProp(body, 'homeCaptain') || hasProp(body, 'homeCaptainId')) captainUpdate.homeCaptainId = homeCaptainIdRaw || null;
-      if (hasProp(body, 'awayCaptain') || hasProp(body, 'awayCaptainId')) captainUpdate.awayCaptainId = awayCaptainIdRaw || null;
-      if (Object.keys(captainUpdate).length) {
-        await match.update(captainUpdate);
+      // --- AUTO CAPTAIN ASSIGNMENT WITH 3-GAME GAP RULE ---
+      const homeCandidates: string[] = homeTeamUsers || [];
+      const awayCandidates: string[] = awayTeamUsers || [];
+      const refDate: Date = computedStart instanceof Date ? computedStart : new Date(computedStart || match.start || Date.now());
+
+      const prevMatches = await Match.findAll({
+        where: { leagueId: match.leagueId, id: { [Op.ne]: matchId }, start: { [Op.lt]: refDate } },
+        attributes: ['id', 'homeCaptainId', 'awayCaptainId', 'start'],
+        order: [['start', 'DESC']],
+        limit: 3
+      });
+
+      const ineligible = new Set<string>();
+      for (const m of prevMatches) {
+        const hc = (m as any).homeCaptainId ? String((m as any).homeCaptainId) : null;
+        const ac = (m as any).awayCaptainId ? String((m as any).awayCaptainId) : null;
+        if (hc) ineligible.add(hc);
+        if (ac) ineligible.add(ac);
       }
+
+      const pickCaptain = (teamIds: string[], preferredRaw?: any): string | null => {
+        const preferred = preferredRaw ? String(preferredRaw) : undefined;
+        const inTeam = (id: string | undefined) => !!id && teamIds.includes(id);
+        if (preferred && inTeam(preferred) && !ineligible.has(preferred)) return preferred;
+        const eligible = teamIds.filter((id) => !ineligible.has(String(id)));
+        if (eligible.length > 0) return eligible[0];
+        return teamIds[0] || null;
+      };
+
+      const newHomeCaptainId = pickCaptain(homeCandidates, body.homeCaptain ?? body.homeCaptainId);
+      const newAwayCaptainId = pickCaptain(awayCandidates, body.awayCaptain ?? body.awayCaptainId);
+
+      await match.update({
+        homeCaptainId: newHomeCaptainId || '',
+        awayCaptainId: newAwayCaptainId || ''
+      });
+      // --- END AUTO CAPTAIN ASSIGNMENT ---
     }
 
-    // Notify only when teams actually changed and < 6; do not save teams in this case
+    // Notify only when teams actually changed and total (including guests) < 6
     try {
-      if (teamsChanged && totalSelected > 0 && totalSelected < MIN_PLAYERS) {
-        const missing = MIN_PLAYERS - totalSelected;
+      if (teamsChanged && registeredCount > 0 && totalWithGuests < MIN_PLAYERS) {
+        const missing = MIN_PLAYERS - totalWithGuests;
         const title = '⚠️ Match needs more players';
         const bodyText = `${homeTeamName || match.homeTeamName} vs ${awayTeamName || match.awayTeamName} needs ${missing} more player${missing === 1 ? '' : 's'} to confirm.`;
         const matchStartISO = (computedStart instanceof Date ? computedStart : new Date(computedStart)).toISOString();
@@ -1309,7 +1342,7 @@ router.patch(
             matchId,
             leagueId: String(match.leagueId),
             required: MIN_PLAYERS,
-            selectedCount: totalSelected,
+            selectedCount: totalWithGuests,
             matchStart: matchStartISO,
             location: hasProp(body, 'location') ? location : match.location
           }),
