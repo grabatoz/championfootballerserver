@@ -33,3 +33,4 @@ Object.values(models).forEach((model: any) => {
 
 export default models;
 export { User, League, Match, MatchGuest, MatchStatistics, Session, Vote, MatchAvailability, Notification };
+export { default as MatchPlayerLayout } from './MatchPlayerLayout';

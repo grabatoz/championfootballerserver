@@ -13,6 +13,7 @@ import MatchStatistics from '../models/MatchStatistics';
 import { xpPointsTable } from '../utils/xpPointsTable';
 import cache from '../utils/cache';
 import { upload, uploadToCloudinary } from '../middleware/upload';
+import { MatchPlayerLayout } from '../models';
 const { League, Match, User, MatchGuest } = models;
 
 // Add these helpers below imports
@@ -920,16 +921,16 @@ router.post("/:id/matches", required, upload.fields([
   // Serialize match data to avoid circular references
   const serializedMatch = {
     id: match.id,
-    homeTeamName: match.homeTeamName,
-    awayTeamName: match.awayTeamName,
-    location: match.location,
+    homeTeamName,
+    awayTeamName,
+    location,
     leagueId,
     date: matchDate,
     start: startDate,
     end: finalEndDate,
-    status: match.status,
-    homeCaptainId: match.homeCaptainId,
-    awayCaptainId: match.awayCaptainId,
+    status: 'SCHEDULED',
+    homeCaptainId: homeCaptain || null,
+    awayCaptainId: awayCaptain || null,
     homeTeamImage: homeTeamImageUrl,
     awayTeamImage: awayTeamImageUrl,
     homeTeamUsers: (matchWithUsers as any)?.homeTeamUsers?.map((user: any) => ({
@@ -1886,6 +1887,9 @@ router.get('/:leagueId/matches/:matchId/guests', required, async (ctx) => {
 
 // Add a guest player to a match (ADMIN ONLY)
 router.post('/:leagueId/matches/:matchId/guests', required, async (ctx) => {
+
+
+
   const { leagueId, matchId } = ctx.params;
   const { team, firstName, lastName, shirtNumber } = (ctx.request as any).body || {};
 
@@ -2040,6 +2044,187 @@ router.post('/:leagueId/matches', required, async (ctx) => {
     console.error('Error creating match with notifications:', error);
     ctx.throw(500, 'Failed to create match');
    }
+});
+
+// Team view for a match (used by "view team" dialog)
+router.get("/:leagueId/matches/:matchId/team-view", required, async (ctx) => {
+  const { leagueId, matchId } = ctx.params;
+
+  const match = await Match.findByPk(matchId, {
+    attributes: [
+      'id','leagueId','homeTeamName','awayTeamName','homeCaptainId','awayCaptainId',
+      'homeTeamImage','awayTeamImage','status','date','start','end','location',
+      'homeTeamGoals','awayTeamGoals'
+    ],
+    include: [
+      { model: User, as: 'homeTeamUsers', attributes: ['id','firstName','lastName','email','profilePicture','shirtNumber','positionType'] },
+      { model: User, as: 'awayTeamUsers', attributes: ['id','firstName','lastName','email','profilePicture','shirtNumber','positionType'] },
+      { model: MatchGuest, as: 'guestPlayers', attributes: ['id','team','firstName','lastName','shirtNumber'] },
+    ]
+  });
+
+  if (!match || String(match.leagueId) !== String(leagueId)) {
+    ctx.status = 404;
+    ctx.body = { success: false, message: 'Match not found' };
+    return;
+  }
+
+  const homeUsers = ((match as any).homeTeamUsers || []);
+  const awayUsers = ((match as any).awayTeamUsers || []);
+
+  // per-match XP (existing logic)
+  const xpMap: Record<string, number> = {};
+  if ((match as any).status === 'RESULT_PUBLISHED') {
+    const homeGoals = Number((match as any).homeTeamGoals || 0);
+    const awayGoals = Number((match as any).awayTeamGoals || 0);
+
+    const allStats = await MatchStatistics.findAll({ where: { match_id: matchId } });
+    const votes = await Vote.findAll({ where: { matchId } });
+
+    const voteCounts: Record<string, number> = {};
+    votes.forEach((v: any) => { const id = String(v.votedForId); voteCounts[id] = (voteCounts[id] || 0) + 1; });
+    let motmId: string | null = null; let maxVotes = 0;
+    Object.entries(voteCounts).forEach(([id, count]) => { if (count > maxVotes) { motmId = id; maxVotes = count; } });
+
+    const statFor = (userId: string) => allStats.find((s: any) => String(s.user_id) === userId);
+    const computeXp = (userId: string, isHome: boolean) => {
+      let result: 'win'|'draw'|'lose' = 'lose';
+      if (homeGoals === awayGoals) result = 'draw';
+      else if ((isHome && homeGoals > awayGoals) || (!isHome && awayGoals > homeGoals)) result = 'win';
+      let xp = result === 'win' ? xpPointsTable.winningTeam : result === 'draw' ? xpPointsTable.draw : xpPointsTable.losingTeam;
+      const s: any = statFor(userId);
+      if (s) {
+        const goals = Number(s.goals || 0), assists = Number(s.assists || 0), cleanSheets = Number(s.cleanSheets || 0);
+        if (goals) xp += (result === 'win' ? xpPointsTable.goal.win : xpPointsTable.goal.lose) * goals;
+        if (assists) xp += (result === 'win' ? xpPointsTable.assist.win : xpPointsTable.assist.lose) * assists;
+        if (cleanSheets) xp += xpPointsTable.cleanSheet * cleanSheets;
+      }
+      if (motmId && motmId === userId) xp += (result === 'win' ? xpPointsTable.motm.win : xpPointsTable.motm.lose);
+      if (voteCounts[userId]) xp += (result === 'win' ? xpPointsTable.motmVote.win : xpPointsTable.motmVote.lose) * voteCounts[userId];
+      return xp;
+    };
+    homeUsers.forEach((u: any) => { xpMap[String(u.id)] = computeXp(String(u.id), true); });
+    awayUsers.forEach((u: any) => { xpMap[String(u.id)] = computeXp(String(u.id), false); });
+  }
+
+  // Fetch saved positions for this match (guard when model missing)
+  const positionsHome: Record<string, { x: number; y: number }> = {};
+  const positionsAway: Record<string, { x: number; y: number }> = {};
+  if (MatchPlayerLayout) {
+    const layoutRows = await MatchPlayerLayout.findAll({ where: { matchId } });
+    layoutRows.forEach((r: any) => {
+      const rec = { x: Number(r.x), y: Number(r.y) };
+      if ((r.team as string) === 'home') positionsHome[String(r.userId)] = rec;
+      else positionsAway[String(r.userId)] = rec;
+    });
+  }
+
+  const toPlayer = (u: any) => ({
+    id: String(u.id),
+    firstName: u.firstName,
+    lastName: u.lastName,
+    email: u.email,
+    profilePicture: u.profilePicture,
+    shirtNumber: u.shirtNumber ?? undefined,
+    positionType: u.positionType ?? undefined,
+    xp: xpMap[String(u.id)] !== undefined ? xpMap[String(u.id)] : undefined
+  });
+
+  const home = homeUsers.map(toPlayer);
+  const away = awayUsers.map(toPlayer);
+
+  const rawGuests = ((match as any).guestPlayers || []);
+  const guests = Array.from(new Map(rawGuests.map((g: any) => [String(g.id), g])).values())
+    .map((g: any) => ({
+      id: g.id,
+      team: g.team,
+      firstName: g.firstName,
+      lastName: g.lastName,
+      shirtNumber: g.shirtNumber,
+    }));
+
+  // Auto-role assignment per spec
+  const assignRoles = (list: any[]) => {
+    const n = list.length;
+    const roles: Array<'GK'|'DF'|'MD'|'FW'> = [];
+    if (n < 5) { roles.push('GK'); for (let i=1;i<n;i++) roles.push('DF'); }
+    else if (n === 5) { roles.push('GK','DF','DF','FW','FW'); }
+    else if (n === 6) { roles.push('GK','DF','DF','DF','FW','FW'); }
+    else if (n === 7) { roles.push('GK','DF','DF','DF','FW','FW','FW'); }
+    else { roles.push('GK','DF','DF','DF'); for (let i=roles.length;i<n;i++) roles.push('FW'); }
+    return list.map((p, i) => ({ ...p, role: roles[i] || 'FW' }));
+  };
+
+  ctx.body = {
+    success: true,
+    match: {
+      id: String(match.id),
+      leagueId: String(match.leagueId),
+      homeTeamName: (match as any).homeTeamName,
+      awayTeamName: (match as any).awayTeamName,
+      homeTeamImage: (match as any).homeTeamImage,
+      awayTeamImage: (match as any).awayTeamImage,
+      status: (match as any).status,
+      date: (match as any).date,
+      start: (match as any).start,
+      end: (match as any).end,
+      location: (match as any).location,
+      homeCaptainId: (match as any).homeCaptainId ? String((match as any).homeCaptainId) : undefined,
+      awayCaptainId: (match as any).awayCaptainId ? String((match as any).awayCaptainId) : undefined,
+      homeTeam: assignRoles(home),
+      awayTeam: assignRoles(away),
+      guests,
+      // saved positions (normalized 0..1 coords)
+      positions: { home: positionsHome, away: positionsAway }
+    }
+  };
+});
+
+// Save layout (only captain can modify)
+router.patch('/:leagueId/matches/:matchId/layout', required, async (ctx) => {
+  const { leagueId, matchId } = ctx.params;
+  const { team, positions } = ctx.request.body as { team: 'home'|'away'; positions: Record<string, { x: number, y: number }> };
+
+  // Ensure model is available
+  if (!MatchPlayerLayout) {
+    ctx.status = 501;
+    ctx.body = { success: false, message: 'Layout persistence not enabled on server (model missing)' };
+    return;
+  }
+
+  const match = await Match.findByPk(matchId, { attributes: ['id','leagueId','homeCaptainId','awayCaptainId'] });
+  if (!match || String(match.leagueId) !== String(leagueId)) {
+    ctx.status = 404; ctx.body = { success: false, message: 'Match not found' }; return;
+  }
+
+  const userId = String((ctx.state.user as any).id || (ctx.state.user as any).userId);
+  // Allow either captain to save layout for any team
+  const isCaptainOfMatch =
+    String((match as any).homeCaptainId) === userId ||
+    String((match as any).awayCaptainId) === userId;
+
+  if (!isCaptainOfMatch) {
+    ctx.status = 403;
+    ctx.body = { success: false, message: 'Only a match captain can save layout' };
+    return;
+  }
+
+  const entries = Object.entries(positions || {});
+  for (const [pid, pos] of entries) {
+    const x = Math.max(0, Math.min(1, Number((pos as any).x)));
+    const y = Math.max(0, Math.min(1, Number((pos as any).y)));
+    const payload = { matchId, userId: pid, team, x, y };
+
+    if (typeof (MatchPlayerLayout as any).upsert === 'function') {
+      await (MatchPlayerLayout as any).upsert(payload);
+    } else {
+      const row = await MatchPlayerLayout.findOne({ where: { matchId, userId: pid } });
+      if (row) await row.update(payload);
+      else await MatchPlayerLayout.create(payload as any);
+    }
+  }
+
+  ctx.body = { success: true };
 });
 
 export default router;
