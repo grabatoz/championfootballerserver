@@ -225,18 +225,10 @@ Match.init(
     homeCaptainId: {
       type: DataTypes.UUID,
       allowNull: true,
-      references: {
-        model: 'users',
-        key: 'id',
-      },
     },
     awayCaptainId: {
       type: DataTypes.UUID,
       allowNull: true,
-      references: {
-        model: 'users',
-        key: 'id',
-      },
     },
     homeTeamImage: {
       type: DataTypes.STRING,

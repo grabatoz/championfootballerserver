@@ -36,6 +36,9 @@ interface MatchWithLeague {
     toJSON: () => any;
 }
 
+const normalizeTeam = (t: any): 'home' | 'away' =>
+  String(t).toLowerCase() === 'away' ? 'away' : 'home';
+
 router.post('/:id/votes', required, async (ctx) => {
     if (!ctx.state.user?.userId) {
         ctx.throw(401, 'Unauthorized');

@@ -31,11 +31,13 @@ const conditionalUpload = (fields: Array<{ name: string; maxCount?: number }>) =
   };
 };
 
-// Koa app: remove express types
-
 // UUID validator (for Koa routes)
 const isUuid = (v: string) =>
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(v);
+
+// Add this just below isUuid or the other helpers
+const normalizeTeam = (v: any): 'home' | 'away' =>
+  String(v).toLowerCase() === 'away' ? 'away' : 'home';
 
 const router = new Router({ prefix: '/leagues' });
 
@@ -931,8 +933,6 @@ router.post("/:id/matches", required, upload.fields([
     status: 'SCHEDULED',
     homeCaptainId: homeCaptain || null,
     awayCaptainId: awayCaptain || null,
-    homeTeamImage: homeTeamImageUrl,
-    awayTeamImage: awayTeamImageUrl,
     homeTeamUsers: (matchWithUsers as any)?.homeTeamUsers?.map((user: any) => ({
       id: user.id,
       firstName: user.firstName,
@@ -971,8 +971,6 @@ router.post("/:id/matches", required, upload.fields([
     status: 'SCHEDULED',
     homeCaptainId: homeCaptain || null,
     awayCaptainId: awayCaptain || null,
-    homeTeamImage: homeTeamImageUrl,
-    awayTeamImage: awayTeamImageUrl,
     homeTeamUsers: serializedMatch.homeTeamUsers,
     awayTeamUsers: serializedMatch.awayTeamUsers,
     guests: []
@@ -1321,8 +1319,8 @@ router.patch(
       const newAwayCaptainId = pickCaptain(awayCandidates, body.awayCaptain ?? body.awayCaptainId);
 
       await match.update({
-        homeCaptainId: newHomeCaptainId || '',
-        awayCaptainId: newAwayCaptainId || ''
+        homeCaptainId: toNullableUUID(newHomeCaptainId ?? null) as any,
+        awayCaptainId: toNullableUUID(newAwayCaptainId ?? null) as any
       });
       // --- END AUTO CAPTAIN ASSIGNMENT ---
 
@@ -1888,8 +1886,6 @@ router.get('/:leagueId/matches/:matchId/guests', required, async (ctx) => {
 // Add a guest player to a match (ADMIN ONLY)
 router.post('/:leagueId/matches/:matchId/guests', required, async (ctx) => {
 
-
-
   const { leagueId, matchId } = ctx.params;
   const { team, firstName, lastName, shirtNumber } = (ctx.request as any).body || {};
 
@@ -2054,7 +2050,7 @@ router.get("/:leagueId/matches/:matchId/team-view", required, async (ctx) => {
     attributes: [
       'id','leagueId','homeTeamName','awayTeamName','homeCaptainId','awayCaptainId',
       'homeTeamImage','awayTeamImage','status','date','start','end','location',
-      'homeTeamGoals','awayTeamGoals'
+      'homeTeamGoals','awayTeamGoals','removed' // ADDED: return removed list
     ],
     include: [
       { model: User, as: 'homeTeamUsers', attributes: ['id','firstName','lastName','email','profilePicture','shirtNumber','positionType'] },
@@ -2130,8 +2126,8 @@ router.get("/:leagueId/matches/:matchId/team-view", required, async (ctx) => {
     xp: xpMap[String(u.id)] !== undefined ? xpMap[String(u.id)] : undefined
   });
 
-  const home = homeUsers.map(toPlayer);
-  const away = awayUsers.map(toPlayer);
+  const home = homeUsers?.map(toPlayer);
+  const away = awayUsers?.map(toPlayer);
 
   const rawGuests = ((match as any).guestPlayers || []);
   const guests = Array.from(new Map(rawGuests.map((g: any) => [String(g.id), g])).values())
@@ -2155,6 +2151,13 @@ router.get("/:leagueId/matches/:matchId/team-view", required, async (ctx) => {
     return list.map((p, i) => ({ ...p, role: roles[i] || 'FW' }));
   };
 
+  // Normalise removed for client greying logic
+  const rm = ((match as any).removed || {}) as { home?: any[]; away?: any[] };
+  const removed = {
+    home: Array.isArray(rm.home) ? rm.home.map((v: any) => String(v)) : [],
+    away: Array.isArray(rm.away) ? rm.away.map((v: any) => String(v)) : []
+  };
+
   ctx.body = {
     success: true,
     match: {
@@ -2174,57 +2177,257 @@ router.get("/:leagueId/matches/:matchId/team-view", required, async (ctx) => {
       homeTeam: assignRoles(home),
       awayTeam: assignRoles(away),
       guests,
-      // saved positions (normalized 0..1 coords)
-      positions: { home: positionsHome, away: positionsAway }
+      positions: { home: positionsHome, away: positionsAway },
+      removed // ADDED
     }
   };
 });
 
-// Save layout (only captain can modify)
+// Save layout (captain/admin only, clamp to half, include guests)
 router.patch('/:leagueId/matches/:matchId/layout', required, async (ctx) => {
   const { leagueId, matchId } = ctx.params;
-  const { team, positions } = ctx.request.body as { team: 'home'|'away'; positions: Record<string, { x: number, y: number }> };
+  let { team, positions } = ctx.request.body || {};
+  team = normalizeTeam(team);
 
-  // Ensure model is available
-  if (!MatchPlayerLayout) {
-    ctx.status = 501;
-    ctx.body = { success: false, message: 'Layout persistence not enabled on server (model missing)' };
-    return;
-  }
+  const actorId = String((ctx.state.user as any).id || (ctx.state.user as any).userId);
+  const isAdmin = Boolean((ctx.state.user as any)?.role === 'admin' || (ctx.state.user as any)?.isAdmin);
 
-  const match = await Match.findByPk(matchId, { attributes: ['id','leagueId','homeCaptainId','awayCaptainId'] });
+  // Helpers
+  const clamp01 = (n: number) => Math.max(0, Math.min(1, Number(n) || 0));
+  const sanitizeToHalf = (side: 'home'|'away', pos: {x:number;y:number}) => {
+    const minY = side === 'home' ? 0.0 : 0.5;
+    const maxY = side === 'home' ? 0.5 : 1.0;
+    return { x: clamp01(pos.x), y: Math.max(minY, Math.min(maxY, clamp01(pos.y))) };
+  };
+
+  const match = await Match.findByPk(matchId, {
+    attributes: ['id', 'leagueId', 'homeCaptainId', 'awayCaptainId', 'removed'],
+    include: [
+      { model: User, as: 'homeTeamUsers', attributes: ['id'] },
+      { model: User, as: 'awayTeamUsers', attributes: ['id'] },
+      { model: MatchGuest, as: 'guestPlayers', attributes: ['id','team'] }
+    ]
+  });
   if (!match || String(match.leagueId) !== String(leagueId)) {
     ctx.status = 404; ctx.body = { success: false, message: 'Match not found' }; return;
   }
 
-  const userId = String((ctx.state.user as any).id || (ctx.state.user as any).userId);
-  // Allow either captain to save layout for any team
-  const isCaptainOfMatch =
-    String((match as any).homeCaptainId) === userId ||
-    String((match as any).awayCaptainId) === userId;
+  const removedObj = ((match as any).removed || {}) as { home?: any[]; away?: any[] };
+  const removedSet = new Set<string>([
+    ...((removedObj.home || []).map((x: any) => String(x))),
+    ...((removedObj.away || []).map((x: any) => String(x))),
+  ]);
 
-  if (!isCaptainOfMatch) {
+  // Build membership sets (users + guests)
+  const homeIds = new Set([
+    ...(((match as any).homeTeamUsers || []).map((u: any) => String(u.id))),
+    ...(((match as any).guestPlayers || []).filter((g: any) => g.team === 'home').map((g: any) => String(g.id))),
+  ]);
+  const awayIds = new Set([
+    ...(((match as any).awayTeamUsers || []).map((u: any) => String(u.id))),
+    ...(((match as any).guestPlayers || []).filter((g: any) => g.team === 'away').map((g: any) => String(g.id))),
+  ]);
+
+  const isCaptainOfTeam =
+    (team === 'home'
+      ? String((match as any).homeCaptainId || '')
+      : String((match as any).awayCaptainId || '')) === actorId;
+
+  if (!isAdmin && !isCaptainOfTeam) {
     ctx.status = 403;
-    ctx.body = { success: false, message: 'Only a match captain can save layout' };
+    ctx.body = { success: false, message: 'Only the captain of this team or an admin can update the layout' };
     return;
   }
 
-  const entries = Object.entries(positions || {});
-  for (const [pid, pos] of entries) {
-    const x = Math.max(0, Math.min(1, Number((pos as any).x)));
-    const y = Math.max(0, Math.min(1, Number((pos as any).y)));
-    const payload = { matchId, userId: pid, team, x, y };
+  const incoming = positions && typeof positions === 'object'
+    ? (positions as Record<string, {x:number;y:number}>)
+    : {};
+  const incomingIds = Object.keys(incoming).map(String);
 
-    if (typeof (MatchPlayerLayout as any).upsert === 'function') {
-      await (MatchPlayerLayout as any).upsert(payload);
-    } else {
-      const row = await MatchPlayerLayout.findOne({ where: { matchId, userId: pid } });
-      if (row) await row.update(payload);
-      else await MatchPlayerLayout.create(payload as any);
-    }
+  // Block moves of removed players
+  if (incomingIds.some(id => removedSet.has(id))) {
+    ctx.status = 400;
+    ctx.body = { success: false, message: 'Removed players cannot be moved' };
+    return;
   }
+
+  // Filter to team membership (users + guests) and clamp to the correct half
+  const allowedSet = team === 'home' ? homeIds : awayIds;
+  const filtered: Record<string, { x:number, y:number }> = {};
+  for (const id of incomingIds) {
+    if (allowedSet.has(id)) filtered[id] = sanitizeToHalf(team, incoming[id]);
+  }
+
+  const updates = Object.entries(filtered);
+  for (const [entityId, pos] of updates) {
+    await MatchPlayerLayout.upsert({
+      matchId,
+      userId: entityId,
+      team,
+      x: Number(pos.x),
+      y: Number(pos.y)
+    } as any);
+  }
+
+  ctx.body = { success: true, count: updates.length, positions: filtered };
+});
+
+// NEW: a player can remove themselves (or admin can remove anyone)
+router.post('/:leagueId/matches/:matchId/remove', required, async (ctx) => {
+  const { leagueId, matchId } = ctx.params;
+  const { playerId } = ctx.request.body || {};
+  const actorId = String((ctx.state.user as any).id || (ctx.state.user as any).userId);
+  const isAdmin = Boolean((ctx.state.user as any)?.role === 'admin' || (ctx.state.user as any)?.isAdmin);
+
+  const match = await Match.findByPk(matchId, {
+    attributes: ['id', 'leagueId', 'removed'],
+    include: [
+      { model: User, as: 'homeTeamUsers', attributes: ['id'] },
+      { model: User, as: 'awayTeamUsers', attributes: ['id'] }
+    ]
+  });
+  if (!match || String(match.leagueId) !== String(leagueId)) { ctx.status = 404; ctx.body = { success: false }; return; }
+
+  const pid = String(playerId);
+  const onHome = ((match as any).homeTeamUsers || []).some((u: any) => String(u.id) === pid);
+  const onAway = ((match as any).awayTeamUsers || []).some((u: any) => String(u.id) === pid);
+  if (!onHome && !onAway) { ctx.status = 400; ctx.body = { success: false, message: 'Player not on this match' }; return; }
+
+  if (!isAdmin && pid !== actorId) { ctx.status = 403; ctx.body = { success: false, message: 'You can only remove yourself' }; return; }
+
+  const removed = ((match as any).removed || { home: [], away: [] });
+  if (onHome) removed.home = Array.from(new Set([...(removed.home || []).map(String), pid]));
+  if (onAway) removed.away = Array.from(new Set([...(removed.away || []).map(String), pid]));
+  (match as any).removed = removed;
+  await match.save();
+
+  ctx.body = { success: true, removed: { home: (removed.home || []).map(String), away: (removed.away || []).map(String) } };
+});
+
+// NEW: admin replaces a removed player with someone not yet in the teams
+router.post('/:leagueId/matches/:matchId/replace', required, async (ctx) => {
+  const { leagueId, matchId } = ctx.params;
+  const { removedId, replacementId } = ctx.request.body || {};
+  const actorId = String((ctx.state.user as any).id || (ctx.state.user as any).userId);
+  const isAdmin = Boolean((ctx.state.user as any)?.role === 'admin' || (ctx.state.user as any)?.isAdmin);
+  if (!removedId || !replacementId) { ctx.status = 400; ctx.body = { success: false, message: 'removedId and replacementId required' }; return; }
+
+  const match = await Match.findByPk(matchId, {
+    attributes: ['id','leagueId','removed','homeCaptainId','awayCaptainId'],
+    include: [
+      { model: User, as: 'homeTeamUsers', attributes: ['id'] },
+      { model: User, as: 'awayTeamUsers', attributes: ['id'] }
+    ]
+  });
+  if (!match || String(match.leagueId) !== String(leagueId)) { ctx.status = 404; ctx.body = { success: false }; return; }
+
+  const rid = String(removedId); const repId = String(replacementId);
+  const homeIds = new Set(((match as any).homeTeamUsers || []).map((u: any) => String(u.id)));
+  const awayIds = new Set(((match as any).awayTeamUsers || []).map((u: any) => String(u.id)));
+  const team: 'home'|'away'|null = homeIds.has(rid) ? 'home' : (awayIds.has(rid) ? 'away' : null);
+  if (!team) { ctx.status = 400; ctx.body = { success: false, message: 'Removed player is not on this match' }; return; }
+
+  const isTeamCaptain = team === 'home'
+    ? String((match as any).homeCaptainId || '') === actorId
+    : String((match as any).awayCaptainId || '') === actorId;
+  if (!(isAdmin || isTeamCaptain)) { ctx.status = 403; ctx.body = { success: false, message: 'Captain or admin only' }; return; }
+
+  const removed = ((match as any).removed || { home: [], away: [] });
+  const removedSet = new Set<string>(Array.isArray((removed as any)[team]) ? (removed as any)[team].map(String) : []);
+  if (!removedSet.has(rid)) { ctx.status = 400; ctx.body = { success: false, message: 'Player must be removed before replacement' }; return; }
+  if (homeIds.has(repId) || awayIds.has(repId)) { ctx.status = 400; ctx.body = { success: false, message: 'Replacement already in a team' }; return; }
+
+  if (team === 'home') {
+    if ((match as any).removeHomeTeamUser) await (match as any).removeHomeTeamUser(rid);
+    if ((match as any).addHomeTeamUser) await (match as any).addHomeTeamUser(repId);
+  } else {
+    if ((match as any).removeAwayTeamUser) await (match as any).removeAwayTeamUser(rid);
+    if ((match as any).addAwayTeamUser) await (match as any).addAwayTeamUser(repId);
+  }
+
+  const oldPos = await MatchPlayerLayout.findOne({ where: { matchId, userId: rid, team } });
+  if (oldPos) {
+    await MatchPlayerLayout.upsert({ matchId, userId: repId, team, x: Number(oldPos.x), y: Number(oldPos.y) } as any);
+    await MatchPlayerLayout.destroy({ where: { matchId, userId: rid, team } });
+  }
+
+  (removed as any)[team] = (Array.isArray((removed as any)[team]) ? (removed as any)[team] : []).filter((x: any) => String(x) !== rid);
+  (match as any).removed = removed;
+  await match.save();
+
+  ctx.body = { success: true, team, replaced: { out: rid, in: repId } };
+});
+
+// NEW: swap two players’ positions on the same team (captain/admin)
+router.post('/:leagueId/matches/:matchId/switch', required, async (ctx) => {
+  const { leagueId, matchId } = ctx.params;
+  const { team, aId, bId } = ctx.request.body || {};
+  const t: 'home'|'away' = normalizeTeam(team);
+  const actorId = String((ctx.state.user as any).id || (ctx.state.user as any).userId);
+  const isAdmin = Boolean((ctx.state.user as any)?.role === 'admin' || (ctx.state.user as any)?.isAdmin);
+
+  const match = await Match.findByPk(matchId, {
+    attributes: ['id','leagueId','homeCaptainId','awayCaptainId'],
+    include: [
+      { model: User, as: t === 'home' ? 'homeTeamUsers' : 'awayTeamUsers', attributes: ['id'] },
+    ]
+  });
+  if (!match || String(match.leagueId) !== String(leagueId)) { ctx.status = 404; ctx.body = { success: false }; return; }
+
+  const capId = String(t === 'home' ? (match as any).homeCaptainId || '' : (match as any).awayCaptainId || '');
+  const isTeamCaptain = capId === actorId;
+  if (!(isAdmin || isTeamCaptain)) { ctx.status = 403; ctx.body = { success: false, message: 'Captain or admin only' }; return; }
+
+  const ids = new Set<string>((((match as any)[t === 'home' ? 'homeTeamUsers' : 'awayTeamUsers']) || []).map((u: any) => String(u.id)));
+  const A = String(aId), B = String(bId);
+  if (!ids.has(A) || !ids.has(B)) { ctx.status = 400; ctx.body = { success: false, message: 'Both players must be on the same team' }; return; }
+
+  const [pa, pb] = await Promise.all([
+    MatchPlayerLayout.findOne({ where: { matchId, userId: A, team: t } }),
+    MatchPlayerLayout.findOne({ where: { matchId, userId: B, team: t } })
+  ]);
+  const posA = pa ? { x: pa.x, y: pa.y } : { x: 0.5, y: t === 'home' ? 0.25 : 0.75 };
+  const posB = pb ? { x: pb.x, y: pb.y } : { x: 0.5, y: t === 'home' ? 0.25 : 0.75 };
+
+  await MatchPlayerLayout.upsert({ matchId, userId: A, team: t, x: Number(posB.x), y: Number(posB.y) } as any);
+  await MatchPlayerLayout.upsert({ matchId, userId: B, team: t, x: Number(posA.x), y: Number(posA.y) } as any);
 
   ctx.body = { success: true };
 });
+
+// NEW: make captain (admin)
+router.post('/:leagueId/matches/:matchId/make-captain', required, async (ctx) => {
+  const { leagueId, matchId } = ctx.params;
+  const { team, userId } = ctx.request.body || {};
+  const t: 'home'|'away' = normalizeTeam(team);
+  const actorId = String((ctx.state.user as any).id || (ctx.state.user as any).userId);
+  const isAdmin = Boolean((ctx.state.user as any)?.role === 'admin' || (ctx.state.user as any)?.isAdmin);
+
+  const match = await Match.findByPk(matchId, {
+    attributes: ['id','leagueId','homeCaptainId','awayCaptainId'],
+    include: [{ model: User, as: t === 'home' ? 'homeTeamUsers' : 'awayTeamUsers', attributes: ['id'] }]
+  });
+  if (!match || String(match.leagueId) !== String(leagueId)) { ctx.status = 404; ctx.body = { success: false }; return; }
+
+  const capId = String(t === 'home' ? (match as any).homeCaptainId || '' : (match as any).awayCaptainId || '');
+  const isTeamCaptain = capId === actorId;
+  if (!(isAdmin || isTeamCaptain)) { ctx.status = 403; ctx.body = { success: false, message: 'Captain or admin only' }; return; }
+
+  const ids = new Set<string>((((match as any)[t === 'home' ? 'homeTeamUsers' : 'awayTeamUsers']) || []).map((u: any) => String(u.id)));
+  const uid = String(userId);
+  if (!ids.has(uid)) { ctx.status = 400; ctx.body = { success: false, message: 'User must be on this team' }; return; }
+
+  if (t === 'home') (match as any).homeCaptainId = uid; else (match as any).awayCaptainId = uid;
+  await match.save();
+
+  ctx.body = { success: true, team: t, captainId: uid };
+});
+
+// Utility: normalize UUID-like inputs (empty string -> null)
+const toNullableUUID = (v: any) => {
+  if (v === undefined) return undefined; // do not touch
+  if (v === '' || v === null) return null; // store as NULL
+  return String(v); // let PG validate actual UUID string
+};
 
 export default router;
