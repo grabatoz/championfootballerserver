@@ -35,9 +35,9 @@ const conditionalUpload = (fields: Array<{ name: string; maxCount?: number }>) =
 const isUuid = (v: string) =>
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(v);
 
-// Add this just below isUuid or the other helpers
-const normalizeTeam = (v: any): 'home' | 'away' =>
-  String(v).toLowerCase() === 'away' ? 'away' : 'home';
+// Small helper to normalize team
+const normalizeTeam = (v: unknown): 'home' | 'away' =>
+  String(v || '').toLowerCase() === 'away' ? 'away' : 'home';
 
 const router = new Router({ prefix: '/leagues' });
 
@@ -1885,7 +1885,6 @@ router.get('/:leagueId/matches/:matchId/guests', required, async (ctx) => {
 
 // Add a guest player to a match (ADMIN ONLY)
 router.post('/:leagueId/matches/:matchId/guests', required, async (ctx) => {
-
   const { leagueId, matchId } = ctx.params;
   const { team, firstName, lastName, shirtNumber } = (ctx.request as any).body || {};
 
@@ -2190,7 +2189,9 @@ router.patch('/:leagueId/matches/:matchId/layout', required, async (ctx) => {
   team = normalizeTeam(team);
 
   const actorId = String((ctx.state.user as any).id || (ctx.state.user as any).userId);
-  const isAdmin = Boolean((ctx.state.user as any)?.role === 'admin' || (ctx.state.user as any)?.isAdmin);
+  // REPLACED: role-admin check -> league admin via verifyLeagueAdmin
+  let isLeagueAdmin = false;
+  try { await verifyLeagueAdmin(ctx, leagueId); isLeagueAdmin = true; } catch {}
 
   // Helpers
   const clamp01 = (n: number) => Math.max(0, Math.min(1, Number(n) || 0));
@@ -2233,9 +2234,9 @@ router.patch('/:leagueId/matches/:matchId/layout', required, async (ctx) => {
       ? String((match as any).homeCaptainId || '')
       : String((match as any).awayCaptainId || '')) === actorId;
 
-  if (!isAdmin && !isCaptainOfTeam) {
+  if (!(isLeagueAdmin || isCaptainOfTeam)) {
     ctx.status = 403;
-    ctx.body = { success: false, message: 'Only the captain of this team or an admin can update the layout' };
+    ctx.body = { success: false, message: 'Only the league administrator or the team captain can update the layout' };
     return;
   }
 
@@ -2277,40 +2278,78 @@ router.post('/:leagueId/matches/:matchId/remove', required, async (ctx) => {
   const { leagueId, matchId } = ctx.params;
   const { playerId } = ctx.request.body || {};
   const actorId = String((ctx.state.user as any).id || (ctx.state.user as any).userId);
-  const isAdmin = Boolean((ctx.state.user as any)?.role === 'admin' || (ctx.state.user as any)?.isAdmin);
+
+  // League admin or team captain or self
+  let isLeagueAdmin = false;
+  try { await verifyLeagueAdmin(ctx, leagueId); isLeagueAdmin = true; } catch {}
 
   const match = await Match.findByPk(matchId, {
-    attributes: ['id', 'leagueId', 'removed'],
+    attributes: ['id', 'leagueId', 'removed', 'homeCaptainId', 'awayCaptainId'],
     include: [
       { model: User, as: 'homeTeamUsers', attributes: ['id'] },
       { model: User, as: 'awayTeamUsers', attributes: ['id'] }
     ]
   });
-  if (!match || String(match.leagueId) !== String(leagueId)) { ctx.status = 404; ctx.body = { success: false }; return; }
+  if (!match || String(match.leagueId) !== String(leagueId)) {
+    ctx.status = 404; ctx.body = { success: false, message: 'Match not found' }; return;
+  }
 
-  const pid = String(playerId);
+  const pid = String(playerId || '');
+  if (!pid) { ctx.status = 400; ctx.body = { success: false, message: 'playerId required' }; return; }
+
   const onHome = ((match as any).homeTeamUsers || []).some((u: any) => String(u.id) === pid);
   const onAway = ((match as any).awayTeamUsers || []).some((u: any) => String(u.id) === pid);
-  if (!onHome && !onAway) { ctx.status = 400; ctx.body = { success: false, message: 'Player not on this match' }; return; }
+  if (!onHome && !onAway) {
+    ctx.status = 400;
+    ctx.body = { success: false, message: 'Player not on this match' };
+    return;
+  }
 
-  if (!isAdmin && pid !== actorId) { ctx.status = 403; ctx.body = { success: false, message: 'You can only remove yourself' }; return; }
+  const isTeamCaptain = onHome
+    ? String((match as any).homeCaptainId || '') === actorId
+    : String((match as any).awayCaptainId || '') === actorId;
 
-  const removed = ((match as any).removed || { home: [], away: [] });
-  if (onHome) removed.home = Array.from(new Set([...(removed.home || []).map(String), pid]));
-  if (onAway) removed.away = Array.from(new Set([...(removed.away || []).map(String), pid]));
-  (match as any).removed = removed;
-  await match.save();
+  if (!(isLeagueAdmin || isTeamCaptain || pid === actorId)) {
+    ctx.status = 403;
+    ctx.body = { success: false, message: 'Only league admin, team captain, or the player can remove' };
+    return;
+  }
 
-  ctx.body = { success: true, removed: { home: (removed.home || []).map(String), away: (removed.away || []).map(String) } };
+  // Build new removed map (dedup + stringify)
+  const prevRemoved = ((match as any).removed || { home: [], away: [] }) as { home?: any[]; away?: any[] };
+  const toSet = (arr?: any[]) => new Set<string>((arr || []).map(String));
+  const homeSet = toSet(prevRemoved.home);
+  const awaySet = toSet(prevRemoved.away);
+  if (onHome) homeSet.add(pid);
+  if (onAway) awaySet.add(pid);
+  const newRemoved = { home: Array.from(homeSet), away: Array.from(awaySet) };
+
+  // Persist removed and detach from team(s)
+  await Match.update({ removed: newRemoved }, { where: { id: matchId } });
+  try { if (onHome && (match as any).removeHomeTeamUser) await (match as any).removeHomeTeamUser(pid); } catch {}
+  try { if (onAway && (match as any).removeAwayTeamUser) await (match as any).removeAwayTeamUser(pid); } catch {}
+  // Optional: clear saved layout for this player (if model present)
+  try { if (MatchPlayerLayout) await MatchPlayerLayout.destroy({ where: { matchId, userId: pid } } as any); } catch {}
+
+  ctx.body = {
+    success: true,
+    removed: { home: newRemoved.home, away: newRemoved.away }
+  };
 });
 
 // NEW: admin replaces a removed player with someone not yet in the teams
 router.post('/:leagueId/matches/:matchId/replace', required, async (ctx) => {
   const { leagueId, matchId } = ctx.params;
-  const { removedId, replacementId } = ctx.request.body || {};
+  const { team, removedId, replacementId } = ctx.request.body || {};
+  const sideFromBody: 'home' | 'away' = String(team || '').toLowerCase() === 'away' ? 'away' : 'home';
+
   const actorId = String((ctx.state.user as any).id || (ctx.state.user as any).userId);
-  const isAdmin = Boolean((ctx.state.user as any)?.role === 'admin' || (ctx.state.user as any)?.isAdmin);
-  if (!removedId || !replacementId) { ctx.status = 400; ctx.body = { success: false, message: 'removedId and replacementId required' }; return; }
+  let isLeagueAdmin = false;
+  try { await verifyLeagueAdmin(ctx, leagueId); isLeagueAdmin = true; } catch {}
+
+  if (!removedId || !replacementId) {
+    ctx.status = 400; ctx.body = { success: false, message: 'removedId and replacementId required' }; return;
+  }
 
   const match = await Match.findByPk(matchId, {
     attributes: ['id','leagueId','removed','homeCaptainId','awayCaptainId'],
@@ -2319,43 +2358,58 @@ router.post('/:leagueId/matches/:matchId/replace', required, async (ctx) => {
       { model: User, as: 'awayTeamUsers', attributes: ['id'] }
     ]
   });
-  if (!match || String(match.leagueId) !== String(leagueId)) { ctx.status = 404; ctx.body = { success: false }; return; }
+  if (!match || String(match.leagueId) !== String(leagueId)) { ctx.status = 404; ctx.body = { success: false, message: 'Match not found' }; return; }
 
-  const rid = String(removedId); const repId = String(replacementId);
+  const rid = String(removedId);
+  const repId = String(replacementId);
+
   const homeIds = new Set(((match as any).homeTeamUsers || []).map((u: any) => String(u.id)));
   const awayIds = new Set(((match as any).awayTeamUsers || []).map((u: any) => String(u.id)));
-  const team: 'home'|'away'|null = homeIds.has(rid) ? 'home' : (awayIds.has(rid) ? 'away' : null);
-  if (!team) { ctx.status = 400; ctx.body = { success: false, message: 'Removed player is not on this match' }; return; }
 
-  const isTeamCaptain = team === 'home'
+  // Determine side: prefer current membership; fallback to provided team
+  const teamDetected: 'home' | 'away' | null =
+    homeIds.has(rid) ? 'home' : (awayIds.has(rid) ? 'away' : null);
+  const t: 'home' | 'away' = teamDetected ?? sideFromBody;
+
+  // Captain permission by team
+  const isTeamCaptain = t === 'home'
     ? String((match as any).homeCaptainId || '') === actorId
     : String((match as any).awayCaptainId || '') === actorId;
-  if (!(isAdmin || isTeamCaptain)) { ctx.status = 403; ctx.body = { success: false, message: 'Captain or admin only' }; return; }
 
-  const removed = ((match as any).removed || { home: [], away: [] });
-  const removedSet = new Set<string>(Array.isArray((removed as any)[team]) ? (removed as any)[team].map(String) : []);
-  if (!removedSet.has(rid)) { ctx.status = 400; ctx.body = { success: false, message: 'Player must be removed before replacement' }; return; }
-  if (homeIds.has(repId) || awayIds.has(repId)) { ctx.status = 400; ctx.body = { success: false, message: 'Replacement already in a team' }; return; }
-
-  if (team === 'home') {
-    if ((match as any).removeHomeTeamUser) await (match as any).removeHomeTeamUser(rid);
-    if ((match as any).addHomeTeamUser) await (match as any).addHomeTeamUser(repId);
-  } else {
-    if ((match as any).removeAwayTeamUser) await (match as any).removeAwayTeamUser(rid);
-    if ((match as any).addAwayTeamUser) await (match as any).addAwayTeamUser(repId);
+  if (!(isLeagueAdmin || isTeamCaptain)) {
+    ctx.status = 403; ctx.body = { success: false, message: 'League admin or team captain only' }; return;
   }
 
-  const oldPos = await MatchPlayerLayout.findOne({ where: { matchId, userId: rid, team } });
-  if (oldPos) {
-    await MatchPlayerLayout.upsert({ matchId, userId: repId, team, x: Number(oldPos.x), y: Number(oldPos.y) } as any);
-    await MatchPlayerLayout.destroy({ where: { matchId, userId: rid, team } });
-  }
+  // Make operation idempotent and permissive:
+  // 1) Ensure "removed" JSON is present and mark rid as removed on side t (if not yet)
+  const removed = ((match as any).removed || { home: [], away: [] }) as { home?: any[]; away?: any[] };
+  const ensureSideArr = (arr?: any[]) => Array.isArray(arr) ? arr.map(String) : [];
+  const removedHome = new Set<string>(ensureSideArr(removed.home));
+  const removedAway = new Set<string>(ensureSideArr(removed.away));
+  if (t === 'home') removedHome.add(rid); else removedAway.add(rid);
+  (match as any).removed = { home: Array.from(removedHome), away: Array.from(removedAway) };
 
-  (removed as any)[team] = (Array.isArray((removed as any)[team]) ? (removed as any)[team] : []).filter((x: any) => String(x) !== rid);
-  (match as any).removed = removed;
+  // 2) Remove rid from both sides if present
+  try { if (homeIds.has(rid) && (match as any).removeHomeTeamUser) await (match as any).removeHomeTeamUser(rid); } catch {}
+  try { if (awayIds.has(rid) && (match as any).removeAwayTeamUser) await (match as any).removeAwayTeamUser(rid); } catch {}
+
+  // 3) If replacement already in match, move to requested side if needed; else add to side
+  const repInHome = homeIds.has(repId);
+  const repInAway = awayIds.has(repId);
+
+  if (repInHome && t === 'away') {
+    try { await (match as any).removeHomeTeamUser(repId); } catch {}
+    await (match as any).addAwayTeamUser(repId);
+  } else if (repInAway && t === 'home') {
+    try { await (match as any).removeAwayTeamUser(repId); } catch {}
+    await (match as any).addHomeTeamUser(repId);
+  } else if (!repInHome && !repInAway) {
+    if (t === 'home') await (match as any).addHomeTeamUser(repId);
+    else await (match as any).addAwayTeamUser(repId);
+  }
   await match.save();
 
-  ctx.body = { success: true, team, replaced: { out: rid, in: repId } };
+  ctx.body = { success: true, team: t, replaced: { out: rid, in: repId } };
 });
 
 // NEW: swap two players’ positions on the same team (captain/admin)
@@ -2364,7 +2418,9 @@ router.post('/:leagueId/matches/:matchId/switch', required, async (ctx) => {
   const { team, aId, bId } = ctx.request.body || {};
   const t: 'home'|'away' = normalizeTeam(team);
   const actorId = String((ctx.state.user as any).id || (ctx.state.user as any).userId);
-  const isAdmin = Boolean((ctx.state.user as any)?.role === 'admin' || (ctx.state.user as any)?.isAdmin);
+  // REPLACED: role-admin check -> league admin via verifyLeagueAdmin
+  let isLeagueAdmin = false;
+  try { await verifyLeagueAdmin(ctx, leagueId); isLeagueAdmin = true; } catch {}
 
   const match = await Match.findByPk(matchId, {
     attributes: ['id','leagueId','homeCaptainId','awayCaptainId'],
@@ -2376,7 +2432,7 @@ router.post('/:leagueId/matches/:matchId/switch', required, async (ctx) => {
 
   const capId = String(t === 'home' ? (match as any).homeCaptainId || '' : (match as any).awayCaptainId || '');
   const isTeamCaptain = capId === actorId;
-  if (!(isAdmin || isTeamCaptain)) { ctx.status = 403; ctx.body = { success: false, message: 'Captain or admin only' }; return; }
+  if (!(isLeagueAdmin || isTeamCaptain)) { ctx.status = 403; ctx.body = { success: false, message: 'League admin or team captain only' }; return; }
 
   const ids = new Set<string>((((match as any)[t === 'home' ? 'homeTeamUsers' : 'awayTeamUsers']) || []).map((u: any) => String(u.id)));
   const A = String(aId), B = String(bId);
@@ -2401,17 +2457,15 @@ router.post('/:leagueId/matches/:matchId/make-captain', required, async (ctx) =>
   const { team, userId } = ctx.request.body || {};
   const t: 'home'|'away' = normalizeTeam(team);
   const actorId = String((ctx.state.user as any).id || (ctx.state.user as any).userId);
-  const isAdmin = Boolean((ctx.state.user as any)?.role === 'admin' || (ctx.state.user as any)?.isAdmin);
+  // REPLACED: role-admin check -> league admin via verifyLeagueAdmin
+  let isLeagueAdmin = false;
+  try { await verifyLeagueAdmin(ctx, leagueId); isLeagueAdmin = true; } catch {}
 
   const match = await Match.findByPk(matchId, {
     attributes: ['id','leagueId','homeCaptainId','awayCaptainId'],
     include: [{ model: User, as: t === 'home' ? 'homeTeamUsers' : 'awayTeamUsers', attributes: ['id'] }]
   });
   if (!match || String(match.leagueId) !== String(leagueId)) { ctx.status = 404; ctx.body = { success: false }; return; }
-
-  const capId = String(t === 'home' ? (match as any).homeCaptainId || '' : (match as any).awayCaptainId || '');
-  const isTeamCaptain = capId === actorId;
-  if (!(isAdmin || isTeamCaptain)) { ctx.status = 403; ctx.body = { success: false, message: 'Captain or admin only' }; return; }
 
   const ids = new Set<string>((((match as any)[t === 'home' ? 'homeTeamUsers' : 'awayTeamUsers']) || []).map((u: any) => String(u.id)));
   const uid = String(userId);

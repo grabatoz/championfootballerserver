@@ -35,9 +35,10 @@ export interface MatchAttributes {
   suggestedHomeGoals?: number | null;
   suggestedAwayGoals?: number | null;
   suggestedByCaptainId?: string | null;
+  removed?: { home: string[]; away: string[] }; // <-- added
 }
 
-interface MatchCreationAttributes extends Optional<MatchAttributes, 'id' | 'archived'> {}
+interface MatchCreationAttributes extends Optional<MatchAttributes, 'id' | 'archived' | 'removed'> {} // <-- added 'removed'
 
 class Match extends Model<MatchAttributes, MatchCreationAttributes> implements MatchAttributes {
   public id!: string;
@@ -69,6 +70,7 @@ class Match extends Model<MatchAttributes, MatchCreationAttributes> implements M
   public suggestedHomeGoals?: number | null;
   public suggestedAwayGoals?: number | null;
   public suggestedByCaptainId?: string | null;
+  public removed?: { home: string[]; away: string[] }; // <-- added
 
   // Static associate function
   public static associate(models: any) {
@@ -250,6 +252,11 @@ Match.init(
     suggestedHomeGoals: { type: DataTypes.INTEGER, allowNull: true },
     suggestedAwayGoals: { type: DataTypes.INTEGER, allowNull: true },
     suggestedByCaptainId: { type: DataTypes.UUID, allowNull: true },
+    removed: {
+      type: DataTypes.JSONB, // use DataTypes.JSON if not on Postgres
+      allowNull: true,
+      defaultValue: { home: [], away: [] }
+    },
   },
   {
     sequelize,
