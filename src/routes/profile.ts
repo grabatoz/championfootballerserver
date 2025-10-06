@@ -308,24 +308,18 @@ router.delete('/', required, async (ctx: CustomContext) => {
 
 // Add after other routes, before export default router
 router.post('/picture', required, upload.single('profilePicture'), async (ctx: CustomContext) => {
-  if (!ctx.state.user?.userId) {
-    ctx.throw(401, 'User not authenticated');
-  }
+  if (!ctx.state.user?.userId) ctx.throw(401, 'User not authenticated');
 
   const user = await User.findByPk(ctx.state.user.userId);
-  if (!user) {
-    ctx.throw(404, 'User not found');
-  }
+  if (!user) ctx.throw(404, 'User not found');
+  if (!ctx.file) ctx.throw(400, 'No file uploaded');
 
   // Upload to Cloudinary and save URL
-  if (!ctx.file) {
-    ctx.throw(400, 'No file uploaded');
-  }
   const imageUrl = await uploadToCloudinary(ctx.file.buffer, 'profile-pictures');
   user.profilePicture = imageUrl;
   await user.save();
 
-  // Update cache with new user data
+  // Update players cache
   const updatedUserData = {
     id: user.id,
     firstName: user.firstName,
@@ -337,7 +331,11 @@ router.post('/picture', required, upload.single('profilePicture'), async (ctx: C
   };
   cache.updateArray('players_all', updatedUserData);
 
-  ctx.body = { success: true, user };
+  // Build a cacheBuster using Cloudinary version in URL (e.g. .../v1696000000/...)
+  const m = typeof imageUrl === 'string' ? imageUrl.match(/\/v(\d+)\//) : null;
+  const cacheBuster = m ? Number(m[1]) : Date.now();
+  ctx.set('Cache-Control', 'no-store');
+  ctx.body = { success: true, user: updatedUserData, cacheBuster };
 });
 
 // JWT-protected /me route
@@ -360,4 +358,4 @@ router.get('/me', jwtRequired, async (ctx) => {
   ctx.body = { success: true, user: ctx.state.user };
 });
 
-export default router; 
+export default router;
