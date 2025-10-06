@@ -185,156 +185,228 @@ router.patch('/:matchId/note', required, async (ctx) => {
     ctx.body = { success: true };
 });
 
+const MATCH_RESULTS_STATES: ReadonlySet<string> = new Set(['RESULT_UPLOADED', 'RESULT_PUBLISHED']);
+
+// Helper to compute window info for a match
+async function computeStatsWindow(matchId: string, actingUserId?: string) {
+  const match = await Match.findByPk(matchId, { attributes: ['id', 'leagueId', 'status', 'date', 'start', 'createdAt'] });
+  if (!match) return null;
+
+  const leagueId = String(match.leagueId);
+  const list = await Match.findAll({
+    where: { leagueId, status: { [Op.in]: Array.from(MATCH_RESULTS_STATES) } },
+    attributes: ['id', 'date', 'start', 'createdAt', 'status'],
+    order: [['date', 'ASC'], ['start', 'ASC'], ['createdAt', 'ASC']],
+  });
+
+  const ids = list.map((m: any) => String(m.id));
+  const idx = ids.indexOf(String(matchId));
+  const indexFromEnd = idx >= 0 ? (list.length - 1 - idx) : null; // 0=current, 1=previous
+  const isWithinLastTwo = indexFromEnd !== null && indexFromEnd <= 1;
+  const isOlderThanTwo = indexFromEnd !== null && indexFromEnd > 1;
+  const resultsUploaded = MATCH_RESULTS_STATES.has(String(match.status));
+  const canPlayerSubmit = resultsUploaded && isWithinLastTwo;
+
+  let isAdmin = false;
+  if (actingUserId) {
+    const adminIds = await getLeagueAdminIdsRobust(leagueId);
+    isAdmin = adminIds.includes(String(actingUserId));
+  }
+
+  return {
+    resultsUploaded,
+    isWithinLastTwo,
+    isOlderThanTwo,
+    canPlayerSubmit,
+    adminCanSubmit: true,
+    isAdmin,
+    indexFromEnd,
+    leagueId,
+    matchStatus: String(match.status),
+  };
+}
+
+// GET: stats window for current user
+router.get('/:matchId/stats-window', required, async (ctx) => {
+  if (!ctx.state.user?.userId) {
+    ctx.status = 401;
+    ctx.body = { success: false, message: 'Unauthorized' };
+    return;
+  }
+  const win = await computeStatsWindow(String(ctx.params.matchId), String(ctx.state.user.userId));
+  if (!win) {
+    ctx.status = 404;
+    ctx.body = { success: false, message: 'Match not found' };
+    return;
+  }
+  ctx.body = { success: true, window: win };
+});
+
+// PLAYER self-submit stats (no playerId in body)
 router.post('/:matchId/stats', required, async (ctx, next) => {
-    // If a playerId is provided in body, defer to the admin-capable handler below
-    if ((ctx.request.body as any)?.playerId) {
-        await next();
-        return;
-    }
-    if (!ctx.state.user?.userId) {
-        ctx.throw(401, 'Unauthorized');
-        return;
-    }
-    const { matchId } = ctx.params;
-    const userId = ctx.state.user.userId;
-    const { goals, assists, cleanSheets, penalties, freeKicks, defence, impact } = ctx.request.body as any;
+  // If a playerId is provided in body, defer to the admin-capable handler below
+  if ((ctx.request.body as any)?.playerId) {
+    await next();
+    return;
+  }
+  if (!ctx.state.user?.userId) {
+    ctx.throw(401, 'Unauthorized');
+    return;
+  }
+  const { matchId } = ctx.params;
+  const userId = ctx.state.user.userId;
+  const { goals, assists, cleanSheets, penalties, freeKicks, defence, impact } = ctx.request.body as any;
 
-    const match = await Match.findByPk(matchId);
-    if (!match) {
-        ctx.throw(404, 'Match not found');
-        return;
-    }
+  const match = await Match.findByPk(matchId);
+  if (!match) {
+    ctx.throw(404, 'Match not found');
+    return;
+  }
 
-    if (match.status !== 'RESULT_PUBLISHED') {
-        ctx.throw(400, 'Statistics can only be added for published results.');
-    }
-
-    // If all zeros => clear any existing row and do NOT create placeholder
-    if (statsAllZero({ goals, assists, cleanSheets, penalties, freeKicks, defence, impact })) {
-        const existing = await models.MatchStatistics.findOne({ where: { user_id: userId, match_id: matchId } });
-        if (existing) await existing.destroy();
-        try { cache.del(`match_stats_${matchId}_${userId}_ultra_fast`); } catch {}
-        ctx.status = 200;
-        ctx.body = { success: true, message: 'Statistics cleared.' };
-        return;
-    }
-
-    // Find existing stats or create a new record (non-zero payload)
-    const [stats, created] = await models.MatchStatistics.findOrCreate({
-        where: { user_id: userId, match_id: matchId },
-        defaults: {
-            user_id: userId,
-            match_id: matchId,
-            goals, assists, cleanSheets, penalties, freeKicks, defence, impact,
-            yellowCards: 0, redCards: 0, minutesPlayed: 0, rating: 0, xpAwarded: 0,
-        }
-    });
-
-    if (!created) {
-        stats.goals = goals;
-        stats.assists = assists;
-        stats.cleanSheets = cleanSheets;
-        stats.penalties = penalties;
-        stats.freeKicks = freeKicks;
-        stats.defence = defence;
-        stats.impact = impact;
-        await stats.save();
-    }
-
-    // Update cache with new stats
-    const updatedMatchData = {
-        id: matchId,
-        homeTeamGoals: match.homeTeamGoals,
-        awayTeamGoals: match.awayTeamGoals,
-        status: match.status,
-        date: match.date,
-        leagueId: match.leagueId
+  const win = await computeStatsWindow(String(matchId), String(userId));
+  if (!win) {
+    ctx.throw(404, 'Match not found');
+    return;
+  }
+  if (!win.resultsUploaded) {
+    ctx.throw(400, 'Statistics can only be added after result upload.');
+    return;
+  }
+  if (!win.canPlayerSubmit) {
+    ctx.status = 403;
+    ctx.body = {
+      success: false,
+      message: "It's not possible to add stats for earlier games. Please ask the admin to make changes to older games.",
     };
+    return;
+  }
 
-    // Update matches cache
-    cache.updateArray('matches_all', updatedMatchData);
-
-    // Bust per-player match stats cache so subsequent reads reflect latest values
-    try { cache.del(`match_stats_${matchId}_${userId}_ultra_fast`); } catch { }
-
-    // Update leaderboard cache for all metrics
-    const leaderboardKeys = ['goals', 'assists', 'defence', 'motm', 'impact', 'cleanSheet'];
-    leaderboardKeys.forEach(metric => {
-        const cacheKey = `leaderboard_${metric}_all_all`;
-        let value = 0;
-        if (metric === 'defence') value = stats.defence || 0;
-        else if (metric === 'cleanSheet') value = stats.cleanSheets || 0;
-        else if (metric === 'goals') value = stats.goals || 0;
-        else if (metric === 'assists') value = stats.assists || 0;
-        else if (metric === 'impact') value = stats.impact || 0;
-        else if (metric === 'motm') value = 0; // MOTM is calculated separately
-
-        const newStats = {
-            playerId: userId,
-            value
-        };
-        cache.updateLeaderboard(cacheKey, newStats);
-    });
-
-    // XP calculation for this user
-    // Get teams and votes for XP logic
-    const matchWithTeams = await Match.findByPk(matchId, {
-        include: [
-            { model: User, as: 'homeTeamUsers', attributes: { exclude: ['providerId'] } },
-            { model: User, as: 'awayTeamUsers', attributes: { exclude: ['providerId'] } }
-        ]
-    });
-    const homeTeamUsers = ((matchWithTeams as any)?.homeTeamUsers || []);
-    const awayTeamUsers = ((matchWithTeams as any)?.awayTeamUsers || []);
-    const isHome = homeTeamUsers.some((u: any) => u.id === userId);
-    const isAway = awayTeamUsers.some((u: any) => u.id === userId);
-    const homeGoals = matchWithTeams?.homeTeamGoals ?? 0;
-    const awayGoals = matchWithTeams?.awayTeamGoals ?? 0;
-    let teamResult: 'win' | 'draw' | 'lose' = 'lose';
-    if (isHome && homeGoals > awayGoals) teamResult = 'win';
-    else if (isAway && awayGoals > homeGoals) teamResult = 'win';
-    else if (homeGoals === awayGoals) teamResult = 'draw';
-    let matchXP = 0;
-    if (teamResult === 'win') matchXP += xpPointsTable.winningTeam;
-    else if (teamResult === 'draw') matchXP += xpPointsTable.draw;
-    else matchXP += xpPointsTable.losingTeam;
-    // Get votes for this match
-    const votes = await Vote.findAll({ where: { matchId } });
-    const voteCounts: Record<string, number> = {};
-    votes.forEach(vote => {
-        const id = String(vote.votedForId);
-        voteCounts[id] = (voteCounts[id] || 0) + 1;
-    });
-    let motmId: string | null = null;
-    let maxVotes = 0;
-    Object.entries(voteCounts).forEach(([id, count]) => {
-        if (count > maxVotes) {
-            motmId = id;
-            maxVotes = count;
-        }
-    });
-    // XP for stats
-    if (stats.goals) matchXP += (teamResult === 'win' ? xpPointsTable.goal.win : xpPointsTable.goal.lose) * stats.goals;
-    if (stats.assists) matchXP += (teamResult === 'win' ? xpPointsTable.assist.win : xpPointsTable.assist.lose) * stats.assists;
-    if (stats.cleanSheets) matchXP += xpPointsTable.cleanSheet * stats.cleanSheets;
-    // MOTM
-    if (motmId === String(userId)) matchXP += (teamResult === 'win' ? xpPointsTable.motm.win : xpPointsTable.motm.lose);
-    // MOTM Votes
-    if (voteCounts[String(userId)]) matchXP += (teamResult === 'win' ? xpPointsTable.motmVote.win : xpPointsTable.motmVote.lose) * voteCounts[String(userId)];
-    // Save XP for this match
-    stats.xpAwarded = matchXP;
-    await stats.save();
-    // Update user's total XP (sum of all xpAwarded)
-    const allStats = await models.MatchStatistics.findAll({ where: { user_id: userId } });
-    const totalXP = allStats.reduce((sum, s) => sum + (s.xpAwarded || 0), 0);
-    const user = await models.User.findByPk(userId);
-    if (user) {
-        user.xp = totalXP;
-        await user.save();
-    }
-
+  // If all zeros => clear any existing row and do NOT create placeholder
+  if (statsAllZero({ goals, assists, cleanSheets, penalties, freeKicks, defence, impact })) {
+    const existing = await models.MatchStatistics.findOne({ where: { user_id: userId, match_id: matchId } });
+    if (existing) await existing.destroy();
+    try { cache.del(`match_stats_${matchId}_${userId}_ultra_fast`); } catch {}
     ctx.status = 200;
-    ctx.body = { success: true, message: 'Statistics and XP saved successfully.' };
+    ctx.body = { success: true, message: 'Statistics cleared.' };
+    return;
+  }
+
+  // Find existing stats or create a new record (non-zero payload)
+  const [stats, created] = await models.MatchStatistics.findOrCreate({
+    where: { user_id: userId, match_id: matchId },
+    defaults: {
+      user_id: userId,
+      match_id: matchId,
+      goals, assists, cleanSheets, penalties, freeKicks, defence, impact,
+      yellowCards: 0, redCards: 0, minutesPlayed: 0, rating: 0, xpAwarded: 0,
+    }
+  });
+
+  if (!created) {
+    stats.goals = goals;
+    stats.assists = assists;
+    stats.cleanSheets = cleanSheets;
+    stats.penalties = penalties;
+    stats.freeKicks = freeKicks;
+    stats.defence = defence;
+    stats.impact = impact;
+    await stats.save();
+  }
+
+  // Update cache with new stats
+  const updatedMatchData = {
+    id: matchId,
+    homeTeamGoals: match.homeTeamGoals,
+    awayTeamGoals: match.awayTeamGoals,
+    status: match.status,
+    date: match.date,
+    leagueId: match.leagueId
+  };
+
+  // Update matches cache
+  cache.updateArray('matches_all', updatedMatchData);
+
+  // Bust per-player match stats cache so subsequent reads reflect latest values
+  try { cache.del(`match_stats_${matchId}_${userId}_ultra_fast`); } catch { }
+
+  // Update leaderboard cache for all metrics
+  const leaderboardKeys = ['goals', 'assists', 'defence', 'motm', 'impact', 'cleanSheet'];
+  leaderboardKeys.forEach(metric => {
+    const cacheKey = `leaderboard_${metric}_all_all`;
+    let value = 0;
+    if (metric === 'defence') value = stats.defence || 0;
+    else if (metric === 'cleanSheet') value = stats.cleanSheets || 0;
+    else if (metric === 'goals') value = stats.goals || 0;
+    else if (metric === 'assists') value = stats.assists || 0;
+    else if (metric === 'impact') value = stats.impact || 0;
+    else if (metric === 'motm') value = 0; // MOTM is calculated separately
+
+    const newStats = {
+      playerId: userId,
+      value
+    };
+    cache.updateLeaderboard(cacheKey, newStats);
+  });
+
+  // XP calculation for this user
+  // Get teams and votes for XP logic
+  const matchWithTeams = await Match.findByPk(matchId, {
+    include: [
+      { model: User, as: 'homeTeamUsers', attributes: { exclude: ['providerId'] } },
+      { model: User, as: 'awayTeamUsers', attributes: { exclude: ['providerId'] } }
+    ]
+  });
+  const homeTeamUsers = ((matchWithTeams as any)?.homeTeamUsers || []);
+  const awayTeamUsers = ((matchWithTeams as any)?.awayTeamUsers || []);
+  const isHome = homeTeamUsers.some((u: any) => u.id === userId);
+  const isAway = awayTeamUsers.some((u: any) => u.id === userId);
+  const homeGoals = matchWithTeams?.homeTeamGoals ?? 0;
+  const awayGoals = matchWithTeams?.awayTeamGoals ?? 0;
+  let teamResult: 'win' | 'draw' | 'lose' = 'lose';
+  if (isHome && homeGoals > awayGoals) teamResult = 'win';
+  else if (isAway && awayGoals > homeGoals) teamResult = 'win';
+  else if (homeGoals === awayGoals) teamResult = 'draw';
+  let matchXP = 0;
+  if (teamResult === 'win') matchXP += xpPointsTable.winningTeam;
+  else if (teamResult === 'draw') matchXP += xpPointsTable.draw;
+  else matchXP += xpPointsTable.losingTeam;
+  // Get votes for this match
+  const votes = await Vote.findAll({ where: { matchId } });
+  const voteCounts: Record<string, number> = {};
+  votes.forEach(vote => {
+    const id = String(vote.votedForId);
+    voteCounts[id] = (voteCounts[id] || 0) + 1;
+  });
+  let motmId: string | null = null;
+  let maxVotes = 0;
+  Object.entries(voteCounts).forEach(([id, count]) => {
+    if (count > maxVotes) {
+      motmId = id;
+      maxVotes = count;
+    }
+  });
+  // XP for stats
+  if (stats.goals) matchXP += (teamResult === 'win' ? xpPointsTable.goal.win : xpPointsTable.goal.lose) * stats.goals;
+  if (stats.assists) matchXP += (teamResult === 'win' ? xpPointsTable.assist.win : xpPointsTable.assist.lose) * stats.assists;
+  if (stats.cleanSheets) matchXP += xpPointsTable.cleanSheet * stats.cleanSheets;
+  // MOTM
+  if (motmId === String(userId)) matchXP += (teamResult === 'win' ? xpPointsTable.motm.win : xpPointsTable.motm.lose);
+  // MOTM Votes
+  if (voteCounts[String(userId)]) matchXP += (teamResult === 'win' ? xpPointsTable.motmVote.win : xpPointsTable.motmVote.lose) * voteCounts[String(userId)];
+  // Save XP for this match
+  stats.xpAwarded = matchXP;
+  await stats.save();
+  // Update user's total XP (sum of all xpAwarded)
+  const allStats = await models.MatchStatistics.findAll({ where: { user_id: userId } });
+  const totalXP = allStats.reduce((sum, s) => sum + (s.xpAwarded || 0), 0);
+  const user = await models.User.findByPk(userId);
+  if (user) {
+      user.xp = totalXP;
+      await user.save();
+  }
+
+  ctx.status = 200;
+  ctx.body = { success: true, message: 'Statistics and XP saved successfully.' };
 });
 
 // GET route to fetch votes for each player in a match
