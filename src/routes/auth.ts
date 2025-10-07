@@ -322,6 +322,7 @@ router.post("/auth/login", none, async (ctx: CustomContext) => {
       shirtNumber: user.shirtNumber,
       profilePicture: user.profilePicture,
       skills: user.skills,
+      xp: user.xp || 0,
       joinedLeagues: [],
       managedLeagues: [],
       homeTeamMatches: [],

@@ -2484,4 +2484,184 @@ const toNullableUUID = (v: any) => {
   return String(v); // let PG validate actual UUID string
 };
 
+// ▶️ League statistics (played/remaining/players/best pairing/hottest player)
+router.get('/:id/statistics', required, async (ctx) => {
+  const { id } = ctx.params;
+
+  if (!isUuid(id)) {
+    ctx.status = 400;
+    ctx.body = { success: false, message: 'Invalid league id' };
+    return;
+  }
+
+  // Load league with members and completed matches
+  const league = await League.findByPk(id, {
+    attributes: ['id', 'name', 'createdAt', 'maxGames'],
+    include: [
+      { model: User, as: 'members', attributes: ['id', 'firstName', 'lastName'] },
+      {
+        model: Match,
+        as: 'matches',
+        attributes: ['id', 'date', 'start', 'homeTeamGoals', 'awayTeamGoals', 'status', 'archived'],
+        include: [
+          { model: User, as: 'homeTeamUsers', attributes: ['id'] },
+          { model: User, as: 'awayTeamUsers', attributes: ['id'] },
+        ],
+      },
+    ],
+  });
+
+  if (!league) {
+    ctx.status = 404;
+    ctx.body = { success: false, message: 'League not found' };
+    return;
+  }
+
+  // Access: members only (keep simple and consistent)
+  const actorId = String((ctx.state.user as any)?.id || (ctx.state.user as any)?.userId || '');
+  const isMember = ((league as any).members || []).some((m: any) => String(m.id) === actorId);
+  if (!isMember) {
+    ctx.status = 403;
+    ctx.body = { success: false, message: "You don't have access to this league" };
+    return;
+  }
+
+  const members = (league as any).members as Array<{ id: string; firstName: string; lastName: string }>;
+  const memberById = new Map(members.map((u) => [String(u.id), `${u.firstName} ${u.lastName}`.trim()]));
+
+  const allMatches = ((league as any).matches || []) as Array<any>;
+  const completed = allMatches
+    .filter(
+      (m) =>
+        !m.archived &&
+        (m.status === 'RESULT_PUBLISHED' || m.status === 'RESULT_UPLOADED') &&
+        m.homeTeamGoals != null &&
+        m.awayTeamGoals != null
+    )
+    .sort((a, b) => new Date(a.date || a.start || 0).getTime() - new Date(b.date || b.start || 0).getTime());
+
+  const playedMatches = completed.length;
+  const remaining = Math.max((league as any).maxGames || 0 - playedMatches, 0);
+  const players = members.length;
+
+  // Preload per-match player stats for completed matches (if available)
+  const matchIds = completed.map((m) => m.id);
+  const statsRows = matchIds.length
+    ? await MatchStatistics.findAll({ where: { match_id: matchIds } as any })
+    : [];
+  // Quick access maps
+  const statMapByMatchUser = new Map(
+    statsRows.map((s: any) => [`${s.match_id}:${s.user_id}`, s])
+  );
+
+  // Build best pairing (wins together, then combined goals/assists, then matches together)
+  type PairData = {
+    ids: [string, string];
+    names: [string, string];
+    togetherMatches: number;
+    togetherWins: number;
+    combinedGoals: number;
+    combinedAssists: number;
+  };
+  const pairMap = new Map<string, PairData>();
+
+  const addPairForTeam = (m: any, teamUsers: any[], teamWon: boolean) => {
+    for (let i = 0; i < teamUsers.length; i++) {
+      for (let j = i + 1; j < teamUsers.length; j++) {
+        const aId = String(teamUsers[i].id);
+        const bId = String(teamUsers[j].id);
+        const ids = [aId, bId].sort() as [string, string];
+        const key = ids.join('|');
+        const names: [string, string] = [
+          memberById.get(ids[0]) || 'Unknown',
+          memberById.get(ids[1]) || 'Unknown',
+        ];
+        const rec =
+          pairMap.get(key) || {
+            ids,
+            names,
+            togetherMatches: 0,
+            togetherWins: 0,
+            combinedGoals: 0,
+            combinedAssists: 0,
+          };
+        rec.togetherMatches += 1;
+        if (teamWon) rec.togetherWins += 1;
+
+        // Add their goals/assists for this match (if stats exist)
+        const aStat = statMapByMatchUser.get(`${m.id}:${ids[0]}`) as any;
+        const bStat = statMapByMatchUser.get(`${m.id}:${ids[1]}`) as any;
+        rec.combinedGoals += Number(aStat?.goals || 0) + Number(bStat?.goals || 0);
+        rec.combinedAssists += Number(aStat?.assists || 0) + Number(bStat?.assists || 0);
+
+        pairMap.set(key, rec);
+      }
+    }
+  };
+
+  for (const m of completed) {
+    const home = (m.homeTeamUsers || []) as any[];
+    const away = (m.awayTeamUsers || []) as any[];
+    const homeWon = Number(m.homeTeamGoals) > Number(m.awayTeamGoals);
+    const awayWon = Number(m.awayTeamGoals) > Number(m.homeTeamGoals);
+
+    addPairForTeam(m, home, homeWon);
+    addPairForTeam(m, away, awayWon);
+  }
+
+  const bestPairing =
+    Array.from(pairMap.values()).sort((a, b) => {
+      if (b.togetherWins !== a.togetherWins) return b.togetherWins - a.togetherWins;
+      const aGA = a.combinedGoals + a.combinedAssists;
+      const bGA = b.combinedGoals + b.combinedAssists;
+      if (bGA !== aGA) return bGA - aGA;
+      return b.togetherMatches - a.togetherMatches;
+    })[0] || null;
+
+  // Hottest player: most XP over last 5 completed matches
+  let hottestPlayer: null | {
+    playerId: string;
+    name: string;
+    xpInLast5: number;
+    matchesConsidered: number;
+  } = null;
+
+  if (completed.length > 0) {
+    const recent = completed.slice(-5);
+    const recentIds = recent.map((m) => m.id);
+    const recentStats = statsRows.length
+      ? statsRows.filter((s: any) => recentIds.includes(s.match_id))
+      : await MatchStatistics.findAll({ where: { match_id: recentIds } as any });
+
+    const xpTotals: Record<string, number> = {};
+    for (const s of recentStats) {
+      const pid = String((s as any).user_id);
+      const xp = Number((s as any).xpAwarded || 0);
+      xpTotals[pid] = (xpTotals[pid] || 0) + xp;
+    }
+    const top = Object.entries(xpTotals).sort((a, b) => b[1] - a[1])[0];
+    if (top) {
+      const [pid, total] = top;
+      hottestPlayer = {
+        playerId: pid,
+        name: memberById.get(pid) || 'Unknown',
+        xpInLast5: total,
+        matchesConsidered: recent.length,
+      };
+    }
+  }
+
+  ctx.body = {
+    success: true,
+    data: {
+      playedMatches,
+      remaining,
+      players,
+      created: (league as any).createdAt,
+      bestPairing,
+      hottestPlayer,
+    },
+  };
+});
+
 export default router;
