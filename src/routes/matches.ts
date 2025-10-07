@@ -1348,3 +1348,175 @@ const statsAllZero = (p: any) => {
   return ['goals','assists','cleanSheets','penalties','freeKicks','defence','impact']
     .every(k => n(p?.[k]) === 0);
 };
+
+
+async function adjustUserTotalXP(userId: string) {
+  const allStats = await MatchStatistics.findAll({ where: { user_id: userId } });
+  const totalXP = allStats.reduce((sum, s) => sum + (s.xpAwarded || 0), 0);
+  const user = await models.User.findByPk(userId);
+  if (user) {
+    user.xp = totalXP;
+    await user.save();
+  }
+}
+
+// Compute captain bonus by team result
+function captainBonusByContext(result: 'win' | 'draw' | 'lose', category: 'defence' | 'influence') {
+  const loseOrDraw = { defence: 10, influence: 5 } as const;
+  const win = { defence: 15, influence: 10 } as const;
+  return (result === 'win' ? win : loseOrDraw)[category];
+}
+
+// Determine result for a given team on this match
+function teamResultFor(match: any, team: 'home' | 'away'): 'win' | 'draw' | 'lose' {
+  const hg = Number(match.homeTeamGoals ?? 0);
+  const ag = Number(match.awayTeamGoals ?? 0);
+  if (hg === ag) return 'draw';
+  const homeWin = hg > ag;
+  if (team === 'home') return homeWin ? 'win' : 'lose';
+  return homeWin ? 'lose' : 'win';
+}
+
+// Captain picks strong types
+type TeamKey = 'home' | 'away';
+type CaptainPickCategory = 'defence' | 'influence';
+type TeamCaptainPicks = { defence: string | null; influence: string | null; pickedBy?: string | null };
+type CaptainPicksStore = Record<TeamKey, TeamCaptainPicks>;
+
+const defaultCaptainPicks = (): CaptainPicksStore => ({
+  home: { defence: null, influence: null, pickedBy: null },
+  away: { defence: null, influence: null, pickedBy: null },
+});
+
+// GET captain picks for a match
+router.get('/:matchId/captain-picks', required, async (ctx) => {
+  if (!ctx.state.user?.userId) {
+    ctx.status = 401;
+    ctx.body = { success: false, message: 'Unauthorized' };
+    return;
+  }
+  const { matchId } = ctx.params;
+  const key = `captain_picks_${matchId}`;
+  const raw = cache.get(key) as CaptainPicksStore | undefined;
+  const picks: CaptainPicksStore = raw ?? defaultCaptainPicks();
+  ctx.body = { success: true, picks, ...picks };
+});
+
+// POST captain pick (only captains, only own team)
+router.post('/:matchId/captain-picks', required, async (ctx) => {
+  if (!ctx.state.user?.userId) {
+    ctx.status = 401;
+    ctx.body = { success: false, message: 'Unauthorized' };
+    return;
+  }
+
+  const { matchId } = ctx.params;
+  const { category, playerId } = ctx.request.body as { category?: 'defence' | 'influence'; playerId?: string };
+
+  if (!category || !['defence', 'influence'].includes(category)) {
+    ctx.status = 400;
+    ctx.body = { success: false, message: 'category must be "defence" or "influence"' };
+    return;
+  }
+  if (!playerId) {
+    ctx.status = 400;
+    ctx.body = { success: false, message: 'playerId is required' };
+    return;
+  }
+
+  // Load match with team users
+  const match = await Match.findByPk(matchId, {
+    include: [
+      { model: User, as: 'homeTeamUsers', attributes: ['id'] },
+      { model: User, as: 'awayTeamUsers', attributes: ['id'] },
+    ]
+  });
+  if (!match) {
+    ctx.status = 404;
+    ctx.body = { success: false, message: 'Match not found' };
+    return;
+  }
+
+  const callerId = String(ctx.state.user.userId);
+  const homeCap = String(match.homeCaptainId || '');
+  const awayCap = String(match.awayCaptainId || '');
+
+  let team: TeamKey | null = null;
+  if (callerId === homeCap) team = 'home';
+  if (callerId === awayCap) team = 'away';
+  if (!team) {
+    ctx.status = 403;
+    ctx.body = { success: false, message: 'Only captains can make a pick' };
+    return;
+  }
+  const teamKey: TeamKey = team;
+
+  // Validate player belongs to the captain's team
+  const list = (teamKey === 'home' ? (match as any).homeTeamUsers : (match as any).awayTeamUsers) || [];
+  const valid = list.some((u: any) => String(u.id) === String(playerId));
+  if (!valid) {
+    ctx.status = 400;
+    ctx.body = { success: false, message: 'Selected player is not in your team' };
+    return;
+  }
+
+  const key = `captain_picks_${matchId}`;
+  const raw = cache.get(key) as CaptainPicksStore | undefined;
+  const picks: CaptainPicksStore = raw ?? defaultCaptainPicks();
+
+  const prevPlayer = picks[teamKey][category] ?? null;
+  const newPlayer = String(playerId);
+
+  if (prevPlayer && prevPlayer === newPlayer) {
+    ctx.body = { success: true, message: 'No change', picks };
+    return;
+  }
+
+  picks[teamKey] = { ...picks[teamKey], [category]: newPlayer, pickedBy: callerId };
+  cache.set(key, picks, 60 * 60 * 24 * 30);
+
+  // Determine XP bonus for team and category
+  const result = teamResultFor(match, team);
+  const bonus = captainBonusByContext(result, category);
+
+  // Helper to apply a delta to xpAwarded and recalc user.xp
+  const applyDelta = async (uid: string, delta: number) => {
+    const [stats] = await MatchStatistics.findOrCreate({
+      where: { user_id: uid, match_id: matchId },
+      defaults: {
+        user_id: uid,
+        match_id: matchId,
+        goals: 0, assists: 0, cleanSheets: 0, penalties: 0, freeKicks: 0, defence: 0, impact: 0,
+        yellowCards: 0, redCards: 0, minutesPlayed: 0, rating: 0, xpAwarded: 0,
+      }
+    });
+    stats.xpAwarded = (stats.xpAwarded || 0) + delta;
+    await stats.save();
+    await adjustUserTotalXP(uid);
+  };
+
+  try {
+    // Remove bonus from previous player if there was one
+    if (prevPlayer) {
+      await applyDelta(String(prevPlayer), -bonus);
+    }
+    // Add bonus to the new selected player
+    await applyDelta(newPlayer, bonus);
+  } catch (e) {
+    // Rollback pick if XP update fails
+    picks[teamKey][category] = prevPlayer || null;
+    cache.set(key, picks, 60 * 60 * 24 * 30);
+    console.error('Captain pick XP update failed', e);
+    ctx.status = 500;
+    ctx.body = { success: false, message: 'Failed to award XP, try again' };
+    return;
+  }
+
+  ctx.body = {
+    success: true,
+    message: `Captain pick saved (${team} ${category}). ${bonus} XP awarded to selected player.`,
+    picks
+  };
+});
+
+
