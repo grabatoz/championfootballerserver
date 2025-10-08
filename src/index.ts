@@ -29,6 +29,7 @@ import socialRoutes from './routes/auth/social';
 const allowedOrigins = [
   'http://localhost:3000',
   'http://localhost:3001',
+  'http://192.168.18.102:3000',
   'https://championfootballer-client.vercel.app',
   'https://championfootballer-client-git-main-championfootballer.vercel.app',
   'https://championfootballer-client-championfootballer.vercel.app'
