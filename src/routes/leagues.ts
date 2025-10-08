@@ -45,7 +45,7 @@ type ApiMatchStatus = 'RESULT_PUBLISHED' | 'SCHEDULED' | 'ONGOING';
 // Normalize backend match status strings to our enum
 const normalizeStatus = (s?: string): ApiMatchStatus => {
   const v = String(s ?? '').toLowerCase();
-  if (['result_published', 'complete', 'finished', 'ended', 'done'].includes(v)) return 'RESULT_PUBLISHED';
+  if (['result_published', 'result_uploaded', 'uploaded', 'complete', 'finished', 'ended', 'done'].includes(v)) return 'RESULT_PUBLISHED';
   if (['ongoing', 'inprogress', 'in_progress', 'live', 'playing'].includes(v)) return 'ONGOING';
   return 'SCHEDULED';
 };
@@ -715,24 +715,17 @@ router.get("/:id", required, async (ctx) => {
 
   const league = await League.findByPk(ctx.params.id, {
     include: [
-      {
-        model: User,
-        as: 'members',
-      },
-      {
-        model: User,
-        as: 'administeredLeagues',
-      },
+      { model: User, as: 'members' },
+      { model: User, as: 'administeredLeagues' },
       {
         model: Match,
         as: 'matches',
         include: [
           { model: User, as: 'homeTeamUsers' },
           { model: User, as: 'awayTeamUsers' },
-          // { model: User, as: 'availableUsers' },
           { model: User, as: 'homeCaptain' },
           { model: User, as: 'awayCaptain' },
-          { model: MatchGuest, as: 'guestPlayers' }, // <-- include guests
+          { model: MatchGuest, as: 'guestPlayers' },
           { model: User, as: 'availableUsers' }
         ]
       }
@@ -742,8 +735,6 @@ router.get("/:id", required, async (ctx) => {
   if (!league) {
     return respondLeagueNotFound(ctx);
   }
-
-  // (XP calculation removed from here)
 
   const isMember = (league as any).members?.some((member: any) => member.id === ctx.state.user!.userId);
   const isAdmin = (league as any).administeredLeagues?.some((admin: any) => admin.id === ctx.state.user!.userId);
@@ -1834,6 +1825,8 @@ router.post("/join", required, async (ctx) => {
     return;
   }
 
+ 
+
   await (league as any).addMember(user.id);
 
   const emailHtml = `
@@ -2091,7 +2084,7 @@ router.post('/:id/reset-xp', required, async (ctx) => {
       else if (homeGoals === awayGoals) teamResult = 'draw';
       // Only one of these applies:
       if (teamResult === 'win') userXP += xpPointsTable.winningTeam;
-      else if (teamResult === 'draw') userXP += xpPointsTable.draw;
+      else if (teamResult === 'draw' ) userXP += xpPointsTable.draw;
       else userXP += xpPointsTable.losingTeam;
       // Get stats for this user in this match (from pre-fetched allStats)
       const stat = allStats.find(s => s.user_id === member.id && s.match_id === match.id);
@@ -2375,8 +2368,8 @@ router.get("/:leagueId/matches/:matchId/team-view", required, async (ctx) => {
       'homeTeamGoals', 'awayTeamGoals', 'removed' // ADDED: return removed list
     ],
     include: [
-      { model: User, as: 'homeTeamUsers', attributes: ['id', 'firstName', 'lastName', 'email', 'profilePicture', 'shirtNumber', 'positionType'] },
-      { model: User, as: 'awayTeamUsers', attributes: ['id', 'firstName', 'lastName', 'email', 'profilePicture', 'shirtNumber', 'positionType'] },
+      { model: User, as: 'homeTeamUsers', attributes: ['id', 'firstName', 'lastName', 'email', 'shirtNumber', 'positionType'] },
+      { model: User, as: 'awayTeamUsers', attributes: ['id', 'firstName', 'lastName', 'email', 'shirtNumber', 'positionType'] },
       { model: MatchGuest, as: 'guestPlayers', attributes: ['id', 'team', 'firstName', 'lastName', 'shirtNumber'] },
     ]
   });
@@ -2995,37 +2988,31 @@ router.get('/:id/statistics', required, async (ctx) => {
 router.get('/:leagueId/player/:playerId/quick-view', required, async (ctx) => {
   const leagueId = String(ctx.params.leagueId || '');
   const playerId = String(ctx.params.playerId || '');
+
+  // Safe actor id (avoid property 'id' TS error)
+  const authUser = (ctx.state.user || {}) as any;
+  const requesterId = String(authUser.userId ?? authUser.id ?? '');
+
+  // Debug
+  console.log('[GET] /leagues/:leagueId/player/:playerId/quick-view', {
+    leagueId,
+    playerId,
+    user: requesterId || null,
+  });
+
   if (!leagueId || !playerId) {
     ctx.status = 400;
     ctx.body = { success: false, message: 'leagueId and playerId are required' };
     return;
   }
 
-  // local helpers
-  const toUserBasic = (u: any) => ({
-    id: String(u?.id ?? ''),
-    firstName: u?.firstName ?? '',
-    lastName: u?.lastName ?? '',
-    position: u?.positionType ?? u?.position ?? undefined,
-    preferredFoot: u?.preferredFoot ?? undefined,
-    shirtNumber: u?.shirtNumber ?? undefined,
-    profilePicture: u?.profilePicture ?? u?.profilePicture ?? undefined,
-  });
-  const normalizeStatus = (s?: string) => {
-    const v = String(s || '').toLowerCase();
-    if (['result_published', 'complete', 'finished', 'ended', 'done'].includes(v)) return 'RESULT_PUBLISHED';
-    if (['ongoing', 'inprogress', 'in_progress', 'live', 'playing'].includes(v)) return 'ONGOING';
-    return 'SCHEDULED';
-  };
-
-  type PlayerStats = { played: number; wins: number; draws: number; losses: number; goals: number; assists: number; motmVotes: number; teamGoalsConceded: number };
-
-  // fetch league with members and completed matches
+  // 1) Fetch league with members + matches and normalize (so "league" exists)
   const leagueRow = await League.findByPk(leagueId, {
     include: [
-      { model: User, as: 'members', attributes: ['id', 'firstName', 'lastName', 'position', 'positionType', 'preferredFoot', 'shirtNumber', 'profilePicture', 'profilePicture'] },
+      { model: User, as: 'members', attributes: ['id', 'firstName', 'lastName', 'position', 'positionType', 'preferredFoot', 'shirtNumber', 'profilePicture'] },
       {
-        model: Match, as: 'matches',
+        model: Match,
+        as: 'matches',
         include: [
           { model: User, as: 'homeTeamUsers', attributes: ['id', 'firstName', 'lastName', 'position', 'positionType'] },
           { model: User, as: 'awayTeamUsers', attributes: ['id', 'firstName', 'lastName', 'position', 'positionType'] },
@@ -3040,11 +3027,10 @@ router.get('/:leagueId/player/:playerId/quick-view', required, async (ctx) => {
     return;
   }
 
-  // normalize league payload
-  const rawMembers = (leagueRow as any).members || [];
-  const rawMatches = (leagueRow as any).matches || [];
+  const rawMembers = ((leagueRow as any).members || []) as any[];
+  const rawMatches = ((leagueRow as any).matches || []) as any[];
 
-  // merge members + participants
+  // derive members from match participants and merge
   const derivedFromMatches = [
     ...rawMatches.flatMap((m: any) => (m.homeTeamUsers || [])),
     ...rawMatches.flatMap((m: any) => (m.awayTeamUsers || [])),
@@ -3054,32 +3040,32 @@ router.get('/:leagueId/player/:playerId/quick-view', required, async (ctx) => {
     const id = String(u.id);
     if (!mergedMap.has(id)) mergedMap.set(id, u);
   });
-  const members = Array.from(mergedMap.values()).map(toUserBasic);
-
-  const matches = rawMatches.map((m: any) => ({
-    id: String(m.id),
-    homeTeamGoals: Number(m.homeTeamGoals || 0),
-    awayTeamGoals: Number(m.awayTeamGoals || 0),
-    homeTeamUsers: ((m as any).homeTeamUsers || []).map(toUserBasic),
-    awayTeamUsers: ((m as any).awayTeamUsers || []).map(toUserBasic),
-    manOfTheMatchVotes: (m as any).manOfTheMatchVotes || {},
-    playerStats: Object.fromEntries(
-      (Object.entries((m as any).playerStats || {}) as Array<[string, any]>).map(([pid, s]) => [
-        String(pid),
-        { goals: Number(s?.goals || 0), assists: Number(s?.assists || 0) },
-      ])
-    ),
-    status: normalizeStatus((m as any).status),
-  }));
 
   const league = {
     id: String(leagueRow.id),
-    name: leagueRow.name,
-    members,
-    matches,
+    name: (leagueRow as any).name,
+    members: Array.from(mergedMap.values()).map(toUserBasic),
+    matches: rawMatches.map((m: any) => ({
+      id: String(m.id),
+      homeTeamGoals: Number(m.homeTeamGoals || 0),
+      awayTeamGoals: Number(m.awayTeamGoals || 0),
+      homeTeamUsers: ((m as any).homeTeamUsers || []).map(toUserBasic),
+      awayTeamUsers: ((m as any).awayTeamUsers || []).map(toUserBasic),
+      manOfTheMatchVotes: (m as any).manOfTheMatchVotes || {},
+      playerStats: Object.fromEntries(
+        (Object.entries((m as any).playerStats || {}) as Array<[string, any]>).map(([pid, s]) => [
+          String(pid),
+          { goals: Number(s?.goals || 0), assists: Number(s?.assists || 0) },
+        ])
+      ),
+      status: normalizeStatus((m as any).status),
+      start: (m as any).start,
+      date: (m as any).date,
+    })),
   };
 
-  // compute stats (same logic as trophy-room)
+  // 2) Compute base stats (then override goals/assists/motmVotes from DB below)
+  type PlayerStats = { played: number; wins: number; draws: number; losses: number; goals: number; assists: number; motmVotes: number; teamGoalsConceded: number };
   const calcStats = (lg: any): Record<string, PlayerStats> => {
     const stats: Record<string, PlayerStats> = {};
     const ensure = (pid: string) => {
@@ -3095,35 +3081,26 @@ router.get('/:leagueId/player/:playerId/quick-view', required, async (ctx) => {
       .forEach((m: any) => {
         const home: string[] = (m.homeTeamUsers || []).map((p: any) => String(p.id));
         const away: string[] = (m.awayTeamUsers || []).map((p: any) => String(p.id));
-
         [...home, ...away].forEach((pid: string) => {
-          if (!stats[pid]) return;
+          ensure(pid);
           stats[pid].played += 1;
           const ps = (m.playerStats || {})[pid] || { goals: 0, assists: 0 };
           stats[pid].goals += Number(ps.goals || 0);
           stats[pid].assists += Number(ps.assists || 0);
         });
-
-        const motmVals = Object.values(m.manOfTheMatchVotes || {}) as Array<string | number>;
-        motmVals.forEach((pid) => {
-          const id = String(pid);
-          if (stats[id]) stats[id].motmVotes += 1;
-        });
-
         const hg = Number(m.homeTeamGoals || 0);
         const ag = Number(m.awayTeamGoals || 0);
         const homeWon = hg > ag;
         const draw = hg === ag;
-
         home.forEach((pid: string) => {
-          if (!stats[pid]) return;
+          ensure(pid);
           if (homeWon) stats[pid].wins += 1;
           else if (draw) stats[pid].draws += 1;
           else stats[pid].losses += 1;
           stats[pid].teamGoalsConceded += ag;
         });
         away.forEach((pid: string) => {
-          if (!stats[pid]) return;
+          ensure(pid);
           if (!homeWon && !draw) stats[pid].wins += 1;
           else if (draw) stats[pid].draws += 1;
           else stats[pid].losses += 1;
@@ -3134,91 +3111,179 @@ router.get('/:leagueId/player/:playerId/quick-view', required, async (ctx) => {
   };
 
   const statsMap = calcStats(league);
-  const stats = statsMap[playerId] || { played: 0, wins: 0, draws: 0, losses: 0, goals: 0, assists: 0, motmVotes: 0, teamGoalsConceded: 0 };
+  const stats: PlayerStats = statsMap[playerId] || { played: 0, wins: 0, draws: 0, losses: 0, goals: 0, assists: 0, motmVotes: 0, teamGoalsConceded: 0 };
 
-  // build per-match summaries for this player (completed matches only)
-  type UserMatchSummary = { goals: number; assists: number; conceded: number; result: 'W' | 'D' | 'L'; motmVotes: number };
-  const summaries: UserMatchSummary[] = [];
-  (league.matches || []).forEach((m: any) => {
-    if (m.status !== 'RESULT_PUBLISHED') return;
+  // 3) Completed matches for this league
+  const completedMatches = (league.matches || []).filter((m: any) => m.status === 'RESULT_PUBLISHED');
+  const completedIds = completedMatches.map((m: any) => String(m.id));
+
+  // 4) Pull per-match player stats and votes from DB
+  const allStats = completedIds.length
+    ? await MatchStatistics.findAll({ where: { match_id: completedIds } as any })
+    : [];
+  const userStatsAll = allStats.filter((s: any) => String(s.user_id) === playerId);
+
+  const allVotes = completedIds.length
+    ? await Vote.findAll({ where: { matchId: completedIds } as any })
+    : [];
+
+  const statByMatchUser = new Map<string, any>(
+    allStats.map((s: any) => [`${String(s.match_id)}:${String(s.user_id)}`, s])
+  );
+
+  const votesByMatch: Record<string, { counts: Record<string, number>; winnerId: string | null; maxVotes: number }> = {};
+  completedIds.forEach((mid: string) => {
+    const vlist = allVotes.filter((v: any) => String(v.matchId) === mid);
+    const counts: Record<string, number> = {};
+    vlist.forEach((v: any) => {
+      const id = String(v.votedForId);
+      counts[id] = (counts[id] || 0) + 1;
+    });
+    let winnerId: string | null = null, maxVotes = 0;
+    Object.entries(counts).forEach(([id, c]) => { if (c > maxVotes) { maxVotes = c as number; winnerId = id; } });
+    votesByMatch[mid] = { counts, winnerId, maxVotes };
+  });
+
+  // 5) Override totals in stats strictly from DB
+  const totalGoals = userStatsAll.reduce((s: number, r: any) => s + Number(r.goals || 0), 0);
+  const totalAssists = userStatsAll.reduce((s: number, r: any) => s + Number(r.assists || 0), 0);
+  const totalMotmVotes = allVotes.filter((v: any) => String(v.votedForId) === playerId).length;
+
+  stats.goals = Number(totalGoals || 0);
+  stats.assists = Number(totalAssists || 0);
+  stats.motmVotes = Number(totalMotmVotes || 0);
+
+  // 6) Build lastFiveDetailed from DB rows (plus a legacy lastFive)
+  type UserMatchSummary = { goals: number; assists: number; conceded: number; result: 'W'|'D'|'L'; motmVotes: number };
+  type LastFiveDetailed = {
+    matchId: string;
+    date: string | null;
+    result: 'W' | 'D' | 'L';
+    goals: number;
+    assists: number;
+    conceded: number;
+    cleanSheet: boolean;
+    motmVotes: number;
+    isMOTM: boolean;
+    xp: number;
+  };
+
+  const detailedAll: LastFiveDetailed[] = [];
+  completedMatches.forEach((m: any) => {
+    const matchId = String(m.id);
     const isHome = (m.homeTeamUsers || []).some((u: any) => String(u.id) === playerId);
     const isAway = (m.awayTeamUsers || []).some((u: any) => String(u.id) === playerId);
     if (!isHome && !isAway) return;
-    const ps = (m.playerStats || {})[playerId] || { goals: 0, assists: 0 };
-    const teamGoals = isHome ? m.homeTeamGoals : m.awayTeamGoals;
-    const oppGoals = isHome ? m.awayTeamGoals : m.homeTeamGoals;
-    const result: 'W' | 'D' | 'L' = teamGoals > oppGoals ? 'W' : (teamGoals === oppGoals ? 'D' : 'L');
-    const motmVotes = Object.values(m.manOfTheMatchVotes || {}).filter((v) => String(v) === playerId).length;
-    summaries.push({ goals: Number(ps.goals || 0), assists: Number(ps.assists || 0), conceded: Number(oppGoals || 0), result, motmVotes });
+
+    const teamGoals = isHome ? Number(m.homeTeamGoals || 0) : Number(m.awayTeamGoals || 0);
+    const oppGoals = isHome ? Number(m.awayTeamGoals || 0) : Number(m.homeTeamGoals || 0);
+    const result: 'W'|'D'|'L' = teamGoals > oppGoals ? 'W' : (teamGoals === oppGoals ? 'D' : 'L');
+
+    const stat = statByMatchUser.get(`${matchId}:${playerId}`);
+    const goals = Number(stat?.goals || 0);
+    const assists = Number(stat?.assists || 0);
+    const cleanSheet = Number(stat?.cleanSheets || 0) > 0 ? true : oppGoals === 0;
+
+    const v = votesByMatch[matchId] || { counts: {}, winnerId: null, maxVotes: 0 };
+    const motmVotes = Number((v.counts as any)[playerId] || 0);
+    const isMOTM = v.winnerId === playerId && v.maxVotes > 0;
+
+    detailedAll.push({
+      matchId,
+      date: m.start ? new Date(m.start).toISOString() : (m.date ? new Date(m.date).toISOString() : null),
+      result,
+      goals,
+      assists,
+      conceded: oppGoals,
+      cleanSheet,
+      motmVotes,
+      isMOTM,
+      xp: 0 // filled below
+    });
   });
 
-  const cleanSheets = summaries.filter(s => s.conceded === 0).length;
-  const motmCount = summaries.filter(s => s.motmVotes > 0).length;
-  const lastFive = summaries.slice(-5).reverse();
+  const detailedSorted = detailedAll.sort((a, b) => (b.date ? Date.parse(b.date) : 0) - (a.date ? Date.parse(a.date) : 0));
+  const lastFiveDetailedIds = detailedSorted.slice(0, 5).map(d => d.matchId);
 
-  // Get player record from DB with skills (JSONB) and profile fields
+  // After building detailedSorted and lastFiveDetailedIds, REMOVE per-match XP fetch:
+  // const statsRowsForFive = lastFiveDetailedIds.length
+  //   ? await MatchStatistics.findAll({ where: { match_id: lastFiveDetailedIds, user_id: playerId } as any })
+  //   : [];
+  // const xpByMatch: Record<string, number> = {};
+  // (statsRowsForFive || []).forEach((r: any) => { xpByMatch[String(r.match_id)] = Number(r.xpAwarded || 0); });
+
+  // Keep last five details, but set xp to 0 (no per-match XP)
+  const lastFiveDetailed: LastFiveDetailed[] =
+    detailedSorted.slice(0, 5).map(d => ({ ...d, xp: 0 }));
+
+  const lastFive: UserMatchSummary[] = lastFiveDetailed.map(d => ({
+    goals: d.goals,
+    assists: d.assists,
+    conceded: d.conceded,
+    result: d.result,
+    motmVotes: d.motmVotes
+  }));
+
+  const cleanSheets = detailedAll.filter(d => d.cleanSheet).length;
+  const motmCount = detailedAll.filter(d => d.isMOTM).length;
+
+  // 7) Player + skills (DB only)
   const dbPlayer = await User.findByPk(String(ctx.params.playerId), {
     attributes: [
-      'id',
-      'firstName',
-      'lastName',
-      'position',
-      'positionType',
-      'preferredFoot',
-      'shirtNumber',
-      'profilePicture',
-      'skills', // JSONB: { dribbling, shooting, passing, pace, defending, physical }
+      'id', 'firstName', 'lastName', 'position', 'positionType',
+      'preferredFoot', 'shirtNumber', 'profilePicture', 'skills', 'xp'
     ],
   });
 
-  // Normalize player object for response (prefer DB values)
   const player = dbPlayer
     ? {
-      id: String(dbPlayer.get('id')),
-      firstName: dbPlayer.get('firstName') as string,
-      lastName: dbPlayer.get('lastName') as string,
-      position: (dbPlayer.get('position') as string) ?? (dbPlayer.get('positionType') as string),
-      positionType: (dbPlayer.get('positionType') as string) ?? undefined,
-      preferredFoot: (dbPlayer.get('preferredFoot') as string) ?? undefined,
-      shirtNumber: (dbPlayer.get('shirtNumber') as string) ?? undefined,
-      profilePicture: (dbPlayer.get('profilePicture') as string) ?? undefined,
-    }
+        id: String(dbPlayer.get('id')),
+        firstName: dbPlayer.get('firstName') as string,
+        lastName: dbPlayer.get('lastName') as string,
+        position: (dbPlayer.get('position') as string) ?? (dbPlayer.get('positionType') as string),
+        positionType: (dbPlayer.get('positionType') as string) ?? undefined,
+        preferredFoot: (dbPlayer.get('preferredFoot') as string) ?? undefined,
+        shirtNumber: (dbPlayer.get('shirtNumber') as string) ?? undefined,
+        profilePicture: (dbPlayer.get('profilePicture') as string) ?? undefined,
+      }
     : undefined;
 
-  // Fetch skills only from DB (guard when model missing)
   const rawSkills = (dbPlayer?.get('skills') ?? null) as
     | null
-    | {
-      dribbling?: number;
-      shooting?: number;
-      passing?: number;
-      pace?: number;
-      defending?: number;
-      physical?: number;
-    };
+    | { dribbling?: number; shooting?: number; passing?: number; pace?: number; defending?: number; physical?: number; };
 
-  // Pass through as-is (model default provides 50s if missing)
   const skills =
     rawSkills && typeof rawSkills === 'object'
       ? {
-        dribbling: Number(rawSkills.dribbling ?? 0),
-        shooting: Number(rawSkills.shooting ?? 0),
-        passing: Number(rawSkills.passing ?? 0),
-        pace: Number(rawSkills.pace ?? 0),
-        defending: Number(rawSkills.defending ?? 0),
-        physical: Number(rawSkills.physical ?? 0),
-      }
+          dribbling: Number(rawSkills.dribbling ?? 0),
+          shooting: Number(rawSkills.shooting ?? 0),
+          passing: Number(rawSkills.passing ?? 0),
+          pace: Number(rawSkills.pace ?? 0),
+          defending: Number(rawSkills.defending ?? 0),
+          physical: Number(rawSkills.physical ?? 0),
+        }
       : null;
+
+  // XP ONLY from User model
+  const profileXP = Number(dbPlayer?.get('xp') ?? 0);
+  console.log('xpppppppppppppppppppppp',profileXP)
+  const xpLatest = profileXP;       // keep fields for compatibility
+  const xpRecentTotal = profileXP;  // keep fields for compatibility
 
   ctx.body = {
     success: true,
     league: { id: league.id, name: league.name },
     player,
-    stats,        // from your existing stats build
-    lastFive,     // from your existing summaries
-    cleanSheets,  // from your existing summaries
-    motmCount,    // from your existing summaries
-    skills,       // DB-only
+    stats,
+    lastFive,
+    lastFiveDetailed,
+    cleanSheets,
+    motmCount,
+    xp: profileXP,     // NEW: explicit XP from User.xp
+    profileXP,
+    xpLatest,
+    xpRecentTotal,
+    skills
   };
 });
 
