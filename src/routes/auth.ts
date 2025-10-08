@@ -8,6 +8,8 @@ import { getLoginCode } from "../modules/utils"
 import { Context } from "koa";
 import jwt from 'jsonwebtoken';
 import cache from '../utils/cache'; // ensure this exists and has get/set
+import crypto from 'crypto';
+import type { FindAttributeOptions } from 'sequelize'; // ADD THIS
 
 const router = new Router();
 const { League, Match, Session } = models;
@@ -337,15 +339,40 @@ router.get("/auth/data", required, async (ctx: CustomContext) => {
     ctx.throw(401, "User not authenticated");
   }
 
+  // Short cache TTLs (env overrideable)
+  const AUTH_CACHE_TTL_SEC = Number(process.env.AUTH_DATA_CACHE_TTL_SEC ?? 5);      // server cache (memory)
+  const AUTH_CLIENT_MAX_AGE_SEC = Number(process.env.AUTH_DATA_CLIENT_MAX_AGE_SEC ?? 5); // browser cache
+
+  // Allow manual bypass: /auth/data?refresh=1 (or nocache=1)
+  const q = ctx.query as Record<string, string | undefined>;
+  const forceRefresh = q?.refresh === '1' || q?.nocache === '1';
+
   const userId = ctx.state.user.userId;
   const cacheKey = `auth_data_${userId}_ultra_fast`;
 
-  const cached = cache.get(cacheKey);
-  if (cached) {
-    ctx.set('X-Cache', 'HIT');
-    ctx.body = cached;
-    return;
+  // Serve cache if present (unless bypassed)
+  if (!forceRefresh) {
+    const cached = cache.get(cacheKey);
+    if (cached) {
+      const etag = crypto.createHash('sha1').update(JSON.stringify(cached)).digest('hex');
+      ctx.set('ETag', etag);
+      ctx.set('Cache-Control', `private, max-age=${AUTH_CLIENT_MAX_AGE_SEC}`);
+      if (ctx.get('If-None-Match') === etag) {
+        ctx.status = 304;
+        return;
+      }
+      ctx.set('X-Cache', 'HIT');
+      ctx.body = cached;
+      return;
+    }
+  } else {
+    ctx.set('X-Cache', 'BYPASS');
   }
+
+  const t0 = Date.now();
+
+  // Lighten payload: add league settings, slim nested users on matches to just ids
+  const lightUserAttrsOnMatch: FindAttributeOptions = ['id'];
 
   const user = await User.findByPk(userId, {
     attributes: [
@@ -353,6 +380,8 @@ router.get("/auth/data", required, async (ctx: CustomContext) => {
       'firstName',
       'lastName',
       'email',
+      'age',
+      'gender',
       'position',
       'positionType',
       'style',
@@ -361,57 +390,32 @@ router.get("/auth/data", required, async (ctx: CustomContext) => {
       'profilePicture',
       'skills',
       'xp',
+      'updatedAt', // ensure ETag changes on user edits
     ],
     include: [
       {
         model: League,
         as: 'leagues',
-        attributes: ['id', 'name', 'inviteCode', 'createdAt'],
+        attributes: ['id', 'name', 'inviteCode', 'createdAt', 'updatedAt', 'maxGames', 'showPoints', 'active'],
         through: { attributes: [] },
         include: [
           {
             model: User,
             as: 'members',
-            attributes: ['id', 'firstName', 'lastName', 'positionType', 'shirtNumber', 'profilePicture'],
+            attributes: ['id', 'firstName', 'lastName', 'positionType', 'shirtNumber', 'profilePicture', 'updatedAt'],
             through: { attributes: [] },
           },
           {
             model: Match,
             as: 'matches',
-            attributes: [
-              'id',
-              'date',
-              'status',
-              'homeTeamGoals',
-              'awayTeamGoals',
-              'notes',
-              'leagueId',
-              'start',
-              'homeCaptainId',
-              'awayCaptainId',
-              'createdAt',
-            ],
+            attributes: ['id','date','status','homeTeamGoals','awayTeamGoals','notes','leagueId','start','homeCaptainId','awayCaptainId','createdAt','updatedAt','archived'],
+            separate: true,
+            order: [['date', 'DESC']],
             include: [
-              {
-                model: User,
-                as: 'availableUsers',
-                attributes: ['id', 'firstName', 'lastName', 'positionType', 'shirtNumber', 'profilePicture'],
-                through: { attributes: [] },
-              },
-              {
-                model: User,
-                as: 'homeTeamUsers',
-                attributes: ['id', 'firstName', 'lastName', 'positionType', 'shirtNumber', 'profilePicture'],
-                through: { attributes: [] },
-              },
-              {
-                model: User,
-                as: 'awayTeamUsers',
-                attributes: ['id', 'firstName', 'lastName', 'positionType', 'shirtNumber', 'profilePicture'],
-                through: { attributes: [] },
-              },
-              // keep association for compatibility, but very light
-              { model: User, as: 'statistics', attributes: ['id'], through: { attributes: [] } },
+              { model: User, as: 'availableUsers', attributes: lightUserAttrsOnMatch, through: { attributes: [] } },
+              { model: User, as: 'homeTeamUsers',  attributes: lightUserAttrsOnMatch, through: { attributes: [] } },
+              { model: User, as: 'awayTeamUsers',  attributes: lightUserAttrsOnMatch, through: { attributes: [] } },
+              { model: User, as: 'statistics',     attributes: lightUserAttrsOnMatch, through: { attributes: [] } },
             ],
           },
         ],
@@ -419,58 +423,33 @@ router.get("/auth/data", required, async (ctx: CustomContext) => {
       {
         model: League,
         as: 'administeredLeagues',
-        attributes: ['id', 'name', 'inviteCode', 'createdAt'],
+        attributes: ['id', 'name', 'inviteCode', 'createdAt', 'updatedAt', 'maxGames', 'showPoints', 'active'],
         through: { attributes: [] },
         include: [
           {
             model: User,
             as: 'members',
-            attributes: ['id', 'firstName', 'lastName', 'positionType', 'shirtNumber', 'profilePicture'],
+            attributes: ['id', 'firstName', 'lastName', 'positionType', 'shirtNumber', 'profilePicture', 'updatedAt'],
             through: { attributes: [] },
           },
           {
             model: Match,
             as: 'matches',
-            attributes: [
-              'id',
-              'date',
-              'status',
-              'homeTeamGoals',
-              'awayTeamGoals',
-              'notes',
-              'leagueId',
-              'start',
-              'homeCaptainId',
-              'awayCaptainId',
-              'createdAt',
-            ],
+            attributes: ['id','date','status','homeTeamGoals','awayTeamGoals','notes','leagueId','start','homeCaptainId','awayCaptainId','createdAt','updatedAt','archived'],
+            separate: true,
+            order: [['date', 'DESC']],
             include: [
-              {
-                model: User,
-                as: 'availableUsers',
-                attributes: ['id', 'firstName', 'lastName', 'positionType', 'shirtNumber', 'profilePicture'],
-                through: { attributes: [] },
-              },
-              {
-                model: User,
-                as: 'homeTeamUsers',
-                attributes: ['id', 'firstName', 'lastName', 'positionType', 'shirtNumber', 'profilePicture'],
-                through: { attributes: [] },
-              },
-              {
-                model: User,
-                as: 'awayTeamUsers',
-                attributes: ['id', 'firstName', 'lastName', 'positionType', 'shirtNumber', 'profilePicture'],
-                through: { attributes: [] },
-              },
-              { model: User, as: 'statistics', attributes: ['id'], through: { attributes: [] } },
+              { model: User, as: 'availableUsers', attributes: lightUserAttrsOnMatch, through: { attributes: [] } },
+              { model: User, as: 'homeTeamUsers',  attributes: lightUserAttrsOnMatch, through: { attributes: [] } },
+              { model: User, as: 'awayTeamUsers',  attributes: lightUserAttrsOnMatch, through: { attributes: [] } },
+              { model: User, as: 'statistics',     attributes: lightUserAttrsOnMatch, through: { attributes: [] } },
             ],
           },
         ],
       },
-      { model: Match, as: 'homeTeamMatches', attributes: ['id', 'date', 'status'] },
-      { model: Match, as: 'awayTeamMatches', attributes: ['id', 'date', 'status'] },
-      { model: Match, as: 'availableMatches', attributes: ['id', 'date', 'status'] },
+      { model: Match, as: 'homeTeamMatches', attributes: ['id', 'date', 'status', 'updatedAt'] },
+      { model: Match, as: 'awayTeamMatches', attributes: ['id', 'date', 'status', 'updatedAt'] },
+      { model: Match, as: 'availableMatches', attributes: ['id', 'date', 'status', 'updatedAt'] },
     ],
   }) as any;
 
@@ -478,7 +457,7 @@ router.get("/auth/data", required, async (ctx: CustomContext) => {
     ctx.throw(404, "User not found");
   }
 
-  // Optional: testing merge (kept, but executes a narrower query)
+  // Optional merge (kept), but keep nested match users slim (ids only)
   const myUserEmail = "huzaifahj29@gmail.com";
   const extractFromUserEmail = "ru.uddin@hotmail.com";
   if (user.email === myUserEmail) {
@@ -488,7 +467,7 @@ router.get("/auth/data", required, async (ctx: CustomContext) => {
         {
           model: League,
           as: 'leagues',
-          attributes: ['id', 'name', 'inviteCode', 'createdAt'],
+          attributes: ['id', 'name', 'inviteCode', 'createdAt', 'maxGames', 'showPoints', 'active'],
           through: { attributes: [] },
           include: [
             {
@@ -500,12 +479,12 @@ router.get("/auth/data", required, async (ctx: CustomContext) => {
             {
               model: Match,
               as: 'matches',
-              attributes: ['id', 'date', 'status', 'homeTeamGoals', 'awayTeamGoals', 'notes', 'leagueId', 'start', 'homeCaptainId', 'awayCaptainId', 'createdAt'],
+              attributes: ['id', 'date', 'status', 'homeTeamGoals', 'awayTeamGoals', 'notes', 'leagueId', 'start', 'homeCaptainId', 'awayCaptainId', 'createdAt', 'archived'],
               include: [
-                { model: User, as: 'availableUsers', attributes: ['id'], through: { attributes: [] } },
-                { model: User, as: 'homeTeamUsers', attributes: ['id'], through: { attributes: [] } },
-                { model: User, as: 'awayTeamUsers', attributes: ['id'], through: { attributes: [] } },
-                { model: User, as: 'statistics', attributes: ['id'], through: { attributes: [] } },
+                { model: User, as: 'availableUsers', attributes: lightUserAttrsOnMatch, through: { attributes: [] } },
+                { model: User, as: 'homeTeamUsers', attributes: lightUserAttrsOnMatch, through: { attributes: [] } },
+                { model: User, as: 'awayTeamUsers', attributes: lightUserAttrsOnMatch, through: { attributes: [] } },
+                { model: User, as: 'statistics',   attributes: lightUserAttrsOnMatch, through: { attributes: [] } },
               ],
             },
           ],
@@ -519,12 +498,29 @@ router.get("/auth/data", required, async (ctx: CustomContext) => {
     }
   }
 
-  // Ensure password is not present
   delete (user as any)["password"];
 
   const payload = { success: true, user };
-  cache.set(cacheKey, payload, 300); // 5 min
-  ctx.set('X-Cache', 'MISS');
+
+  // Refresh server cache with short TTL (unless explicitly no-store requested)
+  if (!forceRefresh) {
+    cache.set(cacheKey, payload, AUTH_CACHE_TTL_SEC);
+  } else {
+    // Even on refresh, you can also re-seed the cache:
+    cache.set(cacheKey, payload, AUTH_CACHE_TTL_SEC);
+  }
+
+  const etag = crypto.createHash('sha1').update(JSON.stringify(payload)).digest('hex');
+  ctx.set('ETag', etag);
+  ctx.set('Cache-Control', forceRefresh ? 'no-store, no-cache, must-revalidate' : `private, max-age=${AUTH_CLIENT_MAX_AGE_SEC}`);
+  ctx.set('X-Cache', forceRefresh ? 'BYPASS' : 'MISS');
+
+  if (!forceRefresh && ctx.get('If-None-Match') === etag) {
+    ctx.status = 304;
+    return;
+  }
+
+  ctx.set('X-Gen-Time', String(Date.now() - t0));
   ctx.body = payload;
 });
 
