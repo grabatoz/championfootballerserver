@@ -1,4 +1,6 @@
-import Router from '@koa/router';
+import Router from 'koa-router';
+import { leagueStatusService } from '../modules/leagues/leagueStatus.service';
+import db from '../models';
 import { required } from '../modules/auth';
 import models from '../models';
 import { MatchAvailability } from '../models/MatchAvailability';
@@ -697,7 +699,6 @@ router.get("/:id", required, async (ctx) => {
   const leagueId = ctx.params.id;
 
   try {
-    // Automatically update status of matches that have ended
     await Match.update(
       { status: 'RESULT_PUBLISHED' },
       {
@@ -1011,7 +1012,7 @@ router.patch("/:id", required, async (ctx) => {
 });
 
 // Delete a league
-router.del("/:id", required, async (ctx) => {
+router.delete("/:id", required, async (ctx) => {
   await verifyLeagueAdmin(ctx, ctx.params.id);
 
   const league = await League.findByPk(ctx.params.id);
@@ -3285,6 +3286,40 @@ router.get('/:leagueId/player/:playerId/quick-view', required, async (ctx) => {
     xpRecentTotal,
     skills
   };
+});
+
+router.get('/:id/status', required, async (ctx) => {
+  const { id } = ctx.params;
+  const status = await leagueStatusService.compute(id);
+
+  // derive "locked" from inviteCode being null
+  const leagueRow = await League.findByPk(id, { attributes: ['inviteCode'] });
+  const locked = !leagueRow?.get('inviteCode');
+
+  ctx.body = { success: true, status: { ...status, locked } };
+});
+
+// REPLACE the previous lock route that used requireLeagueAdmin and isLocked
+router.post('/:id/lock', required, async (ctx) => {
+  const { id } = ctx.params;
+
+  // ensure admin via helper
+  await verifyLeagueAdmin(ctx, id);
+
+  const status = await leagueStatusService.compute(id);
+  if (!status.isComplete) {
+    ctx.status = 400;
+    ctx.body = { success: false, message: 'League is not complete yet' };
+    return;
+  }
+
+  // "Lock" by clearing inviteCode so it can’t be used anymore
+  await League.update(
+    { inviteCode: '' },
+    { where: { id } }
+  );
+
+  ctx.body = { success: true, locked: true };
 });
 
 export default router;
