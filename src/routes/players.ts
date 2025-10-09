@@ -678,6 +678,231 @@ router.get('/:id/xp', required, async (ctx) => {
   }
 });
 
+// Accumulative trophies for a player (normalized titles), optional league/year filters
+// GET /players/:id/trophies?leagueId=...&year=...
+router.get('/:id/trophies', required, async (ctx) => {
+  try {
+    const { id: playerId } = ctx.params as { id: string };
+    const { leagueId, year } = ctx.query as { leagueId?: string; year?: string };
+
+    const cacheKey = `player_trophies_${playerId}_${leagueId || 'all'}_${year || 'all'}`;
+    const cached = cache.get(cacheKey);
+    if (cached) {
+      ctx.body = cached;
+      return;
+    }
+
+    // Load leagues the player has ever joined, including members and matches with teams
+    const playerWithLeagues = await models.User.findByPk(playerId, {
+      include: [
+        {
+          model: LeagueModel,
+          as: 'leagues',
+          include: [
+            { model: models.User, as: 'members', attributes: ['id', 'firstName', 'lastName', 'position', 'positionType'] },
+            {
+              model: MatchModel,
+              as: 'matches',
+              include: [
+                { model: models.User, as: 'homeTeamUsers', attributes: ['id', 'firstName', 'lastName', 'position', 'positionType'] },
+                { model: models.User, as: 'awayTeamUsers', attributes: ['id', 'firstName', 'lastName', 'position', 'positionType'] },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+
+    const allLeagues: any[] = (playerWithLeagues as any)?.leagues || [];
+    if (!allLeagues.length) {
+      const payload = { success: true, data: { trophies: {}, counts: {} as Record<string, number> } };
+      cache.set(cacheKey, payload, 300);
+      ctx.body = payload;
+      return;
+    }
+
+    // Normalizers (borrowed from leagues trophy-room)
+    const normalizeStatus = (s?: string) => {
+      const v = String(s ?? '').toLowerCase();
+      if (['result_published', 'result_uploaded', 'uploaded', 'complete', 'finished', 'ended', 'done'].includes(v)) return 'RESULT_PUBLISHED';
+      if (['ongoing', 'inprogress', 'in_progress', 'live', 'playing'].includes(v)) return 'ONGOING';
+      return 'SCHEDULED';
+    };
+
+    type PlayerStats = { played: number; wins: number; draws: number; losses: number; goals: number; assists: number; motmVotes: number; teamGoalsConceded: number };
+
+    const calcStats = (league: any): Record<string, PlayerStats> => {
+      const stats: Record<string, PlayerStats> = {};
+      const ensure = (pid: string) => {
+        if (!stats[pid]) stats[pid] = { played: 0, wins: 0, draws: 0, losses: 0, goals: 0, assists: 0, motmVotes: 0, teamGoalsConceded: 0 };
+      };
+      const members = (league.members || []);
+      members.forEach((p: any) => ensure(String(p.id)));
+      const matches = (league.matches || []);
+      matches.forEach((m: any) => {
+        (m.homeTeamUsers || []).forEach((p: any) => ensure(String(p.id)));
+        (m.awayTeamUsers || []).forEach((p: any) => ensure(String(p.id)));
+      });
+      matches
+        .filter((m: any) => normalizeStatus(m.status) === 'RESULT_PUBLISHED')
+        .forEach((m: any) => {
+          const home: string[] = (m.homeTeamUsers || []).map((p: any) => String(p.id));
+          const away: string[] = (m.awayTeamUsers || []).map((p: any) => String(p.id));
+          [...home, ...away].forEach((pid: string) => { if (stats[pid]) stats[pid].played += 1; });
+          // Aggregate simple goals/assists if present on m.playerStats
+          const ps = (m.playerStats || {}) as Record<string, { goals?: number; assists?: number }>;
+          Object.entries(ps).forEach(([pid, s]) => {
+            if (!stats[pid]) return;
+            stats[pid].goals += Number(s?.goals || 0);
+            stats[pid].assists += Number(s?.assists || 0);
+          });
+          // MOTM votes if present (best-effort)
+          const motmVals = Object.values((m as any).manOfTheMatchVotes || {}) as Array<string | number>;
+          motmVals.forEach((pid) => { const id = String(pid); if (stats[id]) stats[id].motmVotes += 1; });
+          const hg = Number(m.homeTeamGoals || 0), ag = Number(m.awayTeamGoals || 0);
+          const homeWon = hg > ag; const draw = hg === ag;
+          home.forEach((pid: string) => { if (!stats[pid]) return; if (homeWon) stats[pid].wins++; else if (draw) stats[pid].draws++; else stats[pid].losses++; stats[pid].teamGoalsConceded += ag; });
+          away.forEach((pid: string) => { if (!stats[pid]) return; if (!homeWon && !draw) stats[pid].wins++; else if (draw) stats[pid].draws++; else stats[pid].losses++; stats[pid].teamGoalsConceded += hg; });
+        });
+      return stats;
+    };
+
+    const calcWinners = (league: any, statsMap: Record<string, PlayerStats>) => {
+      const ids: string[] = Object.keys(statsMap);
+      if (!ids.length) return [] as Array<{ title: string; winnerId: string | null; leagueId: string; leagueName: string }>;
+      const eligible: string[] = ids.filter((id: string) => (statsMap[id]?.played || 0) > 0);
+      const byPoints = (a: string, b: string) => (statsMap[b].wins * 3 + statsMap[b].draws) - (statsMap[a].wins * 3 + statsMap[a].draws);
+      const table: string[] = [...eligible].sort(byPoints);
+      const gkIds: string[] = (league.members || [])
+        .filter((p: any) => String(p.positionType || p.position || '').toLowerCase().includes('goalkeeper'))
+        .map((p: any) => String(p.id));
+      // Compute clean sheets for GKs
+      const cleanSheets: Record<string, number> = {}; gkIds.forEach((id: string) => (cleanSheets[id] = 0));
+      (league.matches || [])
+        .filter((m: any) => normalizeStatus(m.status) === 'RESULT_PUBLISHED')
+        .forEach((m: any) => {
+          const homeGk: string[] = (m.homeTeamUsers || []).filter((u: any) => gkIds.includes(String(u.id))).map((u: any) => String(u.id));
+          const awayGk: string[] = (m.awayTeamUsers || []).filter((u: any) => gkIds.includes(String(u.id))).map((u: any) => String(u.id));
+          if (Number(m.awayTeamGoals || 0) === 0) homeGk.forEach((id: string) => (cleanSheets[id] = (cleanSheets[id] || 0) + 1));
+          if (Number(m.homeTeamGoals || 0) === 0) awayGk.forEach((id: string) => (cleanSheets[id] = (cleanSheets[id] || 0) + 1));
+        });
+
+      const pickByMax = (arr: string[], metric: (id: string) => number, min: number) => {
+        if (!arr.length) return null;
+        const sorted = [...arr].sort((a, b) => metric(b) - metric(a));
+        const top = sorted[0];
+        return metric(top) > min ? top : null;
+      };
+
+      const champion = table.length >= 1 ? table[0] : null;
+      const runnerUp = table.length >= 2 ? table[1] : null;
+      const goldenBoot = pickByMax(eligible, (id) => statsMap[id].goals, 0);
+      const playmaker = pickByMax(eligible, (id) => statsMap[id].assists, 0);
+      const ballonDor = pickByMax(eligible, (id) => statsMap[id].motmVotes, 0);
+      const goat = (() => {
+        if (!eligible.length) return null;
+        const sorted = [...eligible].sort((a, b) => {
+          const ra = statsMap[a].played ? statsMap[a].wins / statsMap[a].played : 0;
+          const rb = statsMap[b].played ? statsMap[b].wins / statsMap[b].played : 0;
+          return (rb - ra) || (statsMap[b].motmVotes - statsMap[a].motmVotes);
+        });
+        const top = sorted[0];
+        const ratio = statsMap[top].played ? statsMap[top].wins / statsMap[top].played : 0;
+        return ratio > 0 ? top : null;
+      })();
+      const shield = (() => {
+        const defOrGk = (league.members || [])
+          .filter((p: any) => ['defender', 'goalkeeper'].includes(String(p.positionType || p.position || '').toLowerCase()))
+          .map((p: any) => String(p.id))
+          .filter((id: string) => (statsMap[id]?.played || 0) > 0);
+        if (!defOrGk.length) return null;
+        const sorted = defOrGk.sort((a: string, b: string) => {
+          const aa = statsMap[a].teamGoalsConceded / statsMap[a].played;
+          const bb = statsMap[b].teamGoalsConceded / statsMap[b].played;
+          return aa - bb;
+        });
+        const top = sorted[0];
+        const avg = statsMap[top].teamGoalsConceded / statsMap[top].played;
+        return Number.isFinite(avg) ? top : null;
+      })();
+      const darkHorse = (() => {
+        if (table.length <= 3) return null;
+        const outsideTop3 = table.slice(3);
+        const sorted = outsideTop3.sort((a: string, b: string) => statsMap[b].motmVotes - statsMap[a].motmVotes);
+        const top = sorted[0];
+        return top && statsMap[top].motmVotes > 0 ? top : null;
+      })();
+      const starKeeper = (() => {
+        const eligibleGk = gkIds.filter((id: string) => (statsMap[id]?.played || 0) > 0);
+        if (!eligibleGk.length) return null;
+        const sorted = eligibleGk.sort((a: string, b: string) => {
+          const csA = cleanSheets[a] || 0, csB = cleanSheets[b] || 0;
+          if (csB !== csA) return csB - csA;
+          const gaA = statsMap[a]?.teamGoalsConceded ?? Number.POSITIVE_INFINITY;
+          const gaB = statsMap[b]?.teamGoalsConceded ?? Number.POSITIVE_INFINITY;
+          return gaA - gaB;
+        });
+        const top = sorted[0];
+        return (cleanSheets[top] || 0) > 0 ? top : null;
+      })();
+
+      const awards: Array<{ title: string; id: string | null }> = [
+        { title: 'League Champion', id: champion },
+        { title: 'Runner-Up', id: runnerUp },
+        { title: "Ballon D'or", id: ballonDor },
+        { title: 'GOAT', id: goat },
+        { title: 'Golden Boot', id: goldenBoot },
+        { title: 'King Playmaker', id: playmaker },
+        { title: 'Legendary Shield', id: shield },
+        { title: 'The Dark Horse', id: darkHorse },
+        { title: 'Star Keeper', id: starKeeper },
+      ];
+
+      return awards.map(({ title, id }) => ({
+        title,
+        winnerId: id,
+        leagueId: String(league.id),
+        leagueName: league.name,
+      }));
+    };
+
+    // Apply filters and compute winners per league
+    const selectedYear = year && year !== 'all' ? Number(year) : null;
+    const leagues = allLeagues
+      .filter((l: any) => !leagueId || leagueId === 'all' || String(l.id) === String(leagueId))
+      .map((l: any) => {
+        const matches = (l.matches || []).filter((m: any) => !selectedYear || new Date(m.date).getFullYear() === selectedYear);
+        return {
+          id: l.id,
+          name: l.name,
+          members: (l.members || []),
+          matches,
+        };
+      });
+
+    // Aggregate trophies for this player
+    const trophyMap: Record<string, { leagueId: string; leagueName: string }[]> = {};
+    leagues.forEach((lg: any) => {
+      const stats = calcStats(lg);
+      const winners = calcWinners(lg, stats);
+      winners.forEach((w) => {
+        if (w.winnerId && String(w.winnerId) === String(playerId)) {
+          if (!trophyMap[w.title]) trophyMap[w.title] = [];
+          trophyMap[w.title].push({ leagueId: w.leagueId, leagueName: w.leagueName });
+        }
+      });
+    });
+
+    const counts: Record<string, number> = Object.fromEntries(Object.entries(trophyMap).map(([k, v]) => [k, v.length]));
+    const payload = { success: true, data: { trophies: trophyMap, counts } };
+    cache.set(cacheKey, payload, 300);
+    ctx.body = payload;
+  } catch (err) {
+    console.error('Error computing player trophies:', err);
+    ctx.throw(500, 'Failed to compute trophies');
+  }
+});
+
 interface SimplePairingAgg {
   playerId: string;
   name: string;
