@@ -6,7 +6,7 @@ import { xpPointsTable } from '../utils/xpPointsTable';
 import cache from '../utils/cache';
 import { sendCaptainConfirmations, notifyCaptainConfirmed, notifyCaptainRevision } from '../modules/notifications';
 import models from '../models';
-import { QueryTypes, Op } from 'sequelize';
+import { QueryTypes, Op, fn, col } from 'sequelize';
 import { v4 as uuidv4 } from 'uuid';
 const { Match, Vote, User, MatchStatistics, League, Notification } = models;
 
@@ -1517,6 +1517,182 @@ router.post('/:matchId/captain-picks', required, async (ctx) => {
     message: `Captain pick saved (${team} ${category}). ${bonus} XP awarded to selected player.`,
     picks
   };
+});
+
+// Helper: compute league match index (0-based), ordered by date/start/createdAt
+async function getLeagueMatchIndex(leagueId: string, matchId: string) {
+  const list = await Match.findAll({
+    where: { leagueId },
+    attributes: ['id', 'date', 'start', 'createdAt'],
+    order: [['date', 'ASC'], ['start', 'ASC'], ['createdAt', 'ASC']],
+  });
+  const ids = list.map((m: any) => String(m.id));
+  const idx = ids.indexOf(String(matchId));
+  return { idx, total: list.length };
+}
+
+// GET /matches/:matchId/prediction
+// Uses average xpAwarded per player (over their past matches) for selected players in each team.
+// If first league match and no selected player has any stats, prediction is not generated.
+router.get('/:matchId/prediction', required, async (ctx) => {
+  try {
+    const { matchId } = ctx.params;
+
+    const cacheKey = `match_prediction_${matchId}`;
+    const cached = cache.get(cacheKey);
+    if (cached) {
+      ctx.set('X-Cache', 'HIT');
+      ctx.body = cached;
+      return;
+    }
+
+    const match = await Match.findByPk(matchId, {
+      attributes: ['id', 'leagueId', 'homeTeamName', 'awayTeamName', 'date', 'start', 'createdAt'],
+      include: [
+        { model: User, as: 'homeTeamUsers', attributes: ['id'] },
+        { model: User, as: 'awayTeamUsers', attributes: ['id'] },
+      ],
+    });
+
+    if (!match) {
+      ctx.status = 404;
+      ctx.body = { success: false, message: 'Match not found' };
+      return;
+    }
+
+    const leagueId = String(match.leagueId);
+    const { idx: matchIndex, total: totalMatches } = await getLeagueMatchIndex(leagueId, String(matchId));
+
+    const homeIds: string[] = (((match as any).homeTeamUsers || []) as any[]).map(u => String(u.id));
+    const awayIds: string[] = (((match as any).awayTeamUsers || []) as any[]).map(u => String(u.id));
+    const allIds = Array.from(new Set([...homeIds, ...awayIds]));
+
+    // If no players selected, nothing to predict
+    if (allIds.length === 0) {
+      const result = {
+        success: true,
+        available: false,
+        reason: 'NO_SELECTED_PLAYERS',
+        leagueId,
+        matchId: String(matchId),
+        matchNumber: matchIndex >= 0 ? matchIndex + 1 : null,
+        totalMatches,
+      };
+      cache.set(cacheKey, result, 120);
+      ctx.body = result;
+      return;
+    }
+
+    // Any historical stats for selected players?
+    const anyStatsCount = await MatchStatistics.count({
+      where: {
+        user_id: { [Op.in]: allIds },
+        [Op.or]: [
+          { xpAwarded: { [Op.gt]: 0 } },
+          { goals: { [Op.gt]: 0 } },
+          { assists: { [Op.gt]: 0 } },
+          { cleanSheets: { [Op.gt]: 0 } },
+          { penalties: { [Op.gt]: 0 } },
+          { freeKicks: { [Op.gt]: 0 } },
+          { defence: { [Op.gt]: 0 } },
+          { impact: { [Op.gt]: 0 } },
+        ],
+      },
+    });
+
+    // Rule: if first league match AND no player stats exist, suppress prediction
+    if ((matchIndex === 0 || matchIndex === -1) && anyStatsCount === 0) {
+      const result = {
+        success: true,
+        available: false,
+        reason: 'FIRST_MATCH_NO_STATS',
+        leagueId,
+        matchId: String(matchId),
+        matchNumber: matchIndex >= 0 ? matchIndex + 1 : null,
+        totalMatches,
+      };
+      cache.set(cacheKey, result, 120);
+      ctx.body = result;
+      return;
+    }
+
+    // Get average xpAwarded per player for selected users
+    const rows = await MatchStatistics.findAll({
+      attributes: [
+        'user_id',
+        // use snake_case DB column
+        [sequelize.fn('AVG', sequelize.fn('COALESCE', sequelize.col('MatchStatistics.xp_awarded'), 0)), 'avgXP'],
+        [sequelize.fn('COUNT', sequelize.col('MatchStatistics.match_id')), 'games'],
+      ],
+      where: { user_id: { [Op.in]: allIds } },
+      group: ['user_id'],
+      raw: true,
+    }) as unknown as Array<{ user_id: string; avgXP: string | number; games: string | number }>;
+
+    const avgMap = new Map<string, number>();
+    rows.forEach(r => {
+      const uid = String(r.user_id);
+      const avg = Number(r.avgXP ?? 0);
+      avgMap.set(uid, Number.isFinite(avg) ? avg : 0);
+    });
+
+    const avgOf = (ids: string[]) => {
+      if (!ids.length) return 0;
+      const sum = ids.reduce((acc, id) => acc + (avgMap.get(String(id)) || 0), 0);
+      return sum / ids.length;
+    };
+
+    const homeAvg = avgOf(homeIds);
+    const awayAvg = avgOf(awayIds);
+
+    const totalAvg = homeAvg + awayAvg;
+    let matchupPct: number | null = null;
+    let predicted: 'home' | 'away' | 'draw' | null = null;
+    let predictedScore: string | null = null;
+
+    if (totalAvg > 0) {
+      matchupPct = Math.round((homeAvg / totalAvg) * 100);
+
+      if (matchupPct > 54) predicted = 'home';
+      else if (matchupPct < 46) predicted = 'away';
+      else predicted = 'draw';
+
+      const clampGoals = (n: number) => Math.max(0, Math.min(5, Math.round(n)));
+
+      // Scale averages to a 0-5 goals band
+      const hGoalsBase = Math.max(0.5, (homeAvg / (totalAvg / 2)));
+      const aGoalsBase = Math.max(0.5, (awayAvg / (totalAvg / 2)));
+      const hGoals = clampGoals(predicted === 'home' ? hGoalsBase : hGoalsBase * 0.9);
+      const aGoals = clampGoals(predicted === 'away' ? aGoalsBase : aGoalsBase * 0.9);
+
+      predictedScore = predicted === 'draw'
+        ? `${Math.min(hGoals, aGoals)}-${Math.min(hGoals, aGoals)}`
+        : `${hGoals}-${aGoals}`;
+    }
+
+    const result = {
+      success: true,
+      available: totalAvg > 0,
+      reason: totalAvg > 0 ? 'OK' : 'NO_SIGNAL',
+      leagueId,
+      matchId: String(matchId),
+      matchNumber: matchIndex >= 0 ? matchIndex + 1 : null,
+      totalMatches,
+      home: { average: Number(homeAvg.toFixed(2)), players: homeIds.length },
+      away: { average: Number(awayAvg.toFixed(2)), players: awayIds.length },
+      matchupPct,
+      predicted,
+      predictedScore,
+    };
+
+    cache.set(cacheKey, result, 120); // 2 min
+    ctx.set('X-Cache', 'MISS');
+    ctx.body = result;
+  } catch (e) {
+    console.error('GET /matches/:matchId/prediction error', e);
+    ctx.status = 500;
+    ctx.body = { success: false, message: 'Failed to compute prediction' };
+  }
 });
 
 
