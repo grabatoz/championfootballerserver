@@ -605,6 +605,79 @@ router.get('/:playerId/leagues/:leagueId/teammates', required, async (ctx) => {
   }
 });
 
+// XP summary for a player with optional league/year filters
+// GET /players/:id/xp?leagueId=...&year=...
+router.get('/:id/xp', required, async (ctx) => {
+  try {
+    const { id: playerId } = ctx.params as { id: string };
+    const { leagueId, year } = ctx.query as { leagueId?: string; year?: string };
+
+    const cacheKey = `player_xp_${playerId}_${leagueId || 'all'}_${year || 'all'}`;
+    const cached = cache.get(cacheKey);
+    if (cached) {
+      ctx.body = cached;
+      return;
+    }
+
+    // Validate player exists (lightweight)
+    const player = await models.User.findByPk(playerId, { attributes: ['id'] });
+    if (!player) {
+      ctx.throw(404, 'Player not found');
+      return;
+    }
+
+    // Build include filter on Match for league/year
+    const include: any[] = [
+      {
+        model: MatchModel,
+        as: 'match',
+        required: true,
+        attributes: ['id', 'date', 'leagueId'],
+        where: {} as any,
+      },
+    ];
+
+    if (leagueId && leagueId !== 'all') {
+      (include[0].where as any).leagueId = leagueId;
+    }
+    if (year && year !== 'all') {
+      const y = Number(year);
+      if (!Number.isNaN(y)) {
+        const start = new Date(y, 0, 1);
+        const end = new Date(y + 1, 0, 1);
+        (include[0].where as any).date = { [Op.gte]: start, [Op.lt]: end };
+      }
+    }
+
+    // Fetch all stats rows for this player with filters
+    const rows = await MatchStatistics.findAll({
+      where: { user_id: playerId },
+      include,
+      attributes: ['xpAwarded'],
+    });
+
+    const totalXP = rows.reduce((sum: number, r: any) => sum + (Number(r.get('xpAwarded')) || 0), 0);
+    const matches = rows.length;
+    const avgXP = matches > 0 ? totalXP / matches : 0;
+
+    const payload = {
+      success: true,
+      data: {
+        playerId,
+        filters: { leagueId: leagueId || 'all', year: year || 'all' },
+        totalXP,
+        matches,
+        avgXP,
+      },
+    };
+    cache.set(cacheKey, payload, 300); // 5 min
+    ctx.body = payload;
+  } catch (err) {
+    console.error('Error computing filtered XP:', err);
+    ctx.throw(500, 'Failed to compute XP');
+  }
+});
+
 interface SimplePairingAgg {
   playerId: string;
   name: string;
