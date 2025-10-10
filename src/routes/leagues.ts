@@ -1975,14 +1975,12 @@ router.get('/:leagueId/xp', async (ctx) => {
 router.get('/:leagueId/xp-breakdown/:userId', required, async (ctx) => {
   const { leagueId, userId } = ctx.params;
   const league = await League.findByPk(leagueId);
-  if (!league) {
-    ctx.throw(404, 'League not found');
-    return;
-  }
-  // Get all completed matches in this league
+  if (!league) { ctx.throw(404, 'League not found'); return; }
+
+  // Load all completed matches in chronological order
   const matches = await Match.findAll({
     where: { leagueId, status: 'RESULT_PUBLISHED' },
-    order: [['date', 'ASC']],
+    order: [['date', 'ASC'], ['start', 'ASC'], ['createdAt', 'ASC']],
     include: [
       { model: User, as: 'homeTeamUsers' },
       { model: User, as: 'awayTeamUsers' },
@@ -1991,57 +1989,153 @@ router.get('/:leagueId/xp-breakdown/:userId', required, async (ctx) => {
   const matchIds = matches.map(m => m.id);
   const allStats = await MatchStatistics.findAll({ where: { match_id: matchIds, user_id: userId } });
   const allVotes = await Vote.findAll({ where: { matchId: matchIds } });
+
+  // Helper: team result for the user on a match
+  const resultFor = (match: any): 'win' | 'draw' | 'lose' => {
+    const homeUsers = (match.homeTeamUsers || []);
+    const awayUsers = (match.awayTeamUsers || []);
+    const isHome = homeUsers.some((u: any) => String(u.id) === String(userId));
+    const isAway = awayUsers.some((u: any) => String(u.id) === String(userId));
+    const hg = Number(match.homeTeamGoals ?? 0);
+    const ag = Number(match.awayTeamGoals ?? 0);
+    if (hg === ag) return 'draw';
+    if (isHome && hg > ag) return 'win';
+    if (isAway && ag > hg) return 'win';
+    return 'lose';
+  };
+
+  // Helper: captain bonus by context (mirrors matches.ts)
+  const captainBonusByContext = (res: 'win' | 'draw' | 'lose', category: 'defence' | 'influence') => {
+    const loseOrDraw: any = { defence: 10, influence: 5 };
+    const win: any = { defence: 15, influence: 10 };
+    return (res === 'win' ? win : loseOrDraw)[category];
+  };
+
+  // Pre-compute thresholds for participation streaks
+  const total = matches.length;
+  const need25 = Math.max(1, Math.ceil(total * 0.25));
+  const need50 = Math.max(1, Math.ceil(total * 0.50));
+  const need75 = Math.max(1, Math.ceil(total * 0.75));
+  let participated = 0;
+  let consec = 0;
+  let awarded50 = false;
+  let awarded75 = false;
+
   const breakdown: any[] = [];
-  let runningTotal = 0;
+  let runningTotalComputed = 0;
+  let runningTotalSaved = 0;
+
   for (const match of matches) {
     const homeTeamUsers = ((match as any).homeTeamUsers || []);
     const awayTeamUsers = ((match as any).awayTeamUsers || []);
-    const isOnTeam = [...homeTeamUsers, ...awayTeamUsers].some((u: any) => u.id === userId);
-    if (!isOnTeam) continue;
-    const homeGoals = match.homeTeamGoals ?? 0;
-    const awayGoals = match.awayTeamGoals ?? 0;
-    let teamResult: 'win' | 'draw' | 'lose' = 'lose';
-    const isHome = homeTeamUsers.some((u: any) => u.id === userId);
-    const isAway = awayTeamUsers.some((u: any) => u.id === userId);
-    if (isHome && homeGoals > awayGoals) teamResult = 'win';
-    else if (isAway && awayGoals > homeGoals) teamResult = 'win';
-    else if (homeGoals === awayGoals) teamResult = 'draw';
-    let matchXP = 0;
-    const details: any[] = [];
-    if (teamResult === 'win') { matchXP += xpPointsTable.winningTeam; details.push({ type: 'Win', points: xpPointsTable.winningTeam }); }
-    else if (teamResult === 'draw') { matchXP += xpPointsTable.draw; details.push({ type: 'Draw', points: xpPointsTable.draw }); }
-    else { matchXP += xpPointsTable.losingTeam; details.push({ type: 'Loss', points: xpPointsTable.losingTeam }); }
-    const stat = allStats.find(s => s.match_id === match.id);
-    if (stat) {
-      if (stat.goals) { const pts = (teamResult === 'win' ? xpPointsTable.goal.win : xpPointsTable.goal.lose) * stat.goals; matchXP += pts; details.push({ type: 'Goals', count: stat.goals, points: pts }); }
-      if (stat.assists) { const pts = (teamResult === 'win' ? xpPointsTable.assist.win : xpPointsTable.assist.lose) * stat.assists; matchXP += pts; details.push({ type: 'Assists', count: stat.assists, points: pts }); }
-      if (stat.cleanSheets) { const pts = xpPointsTable.cleanSheet * stat.cleanSheets; matchXP += pts; details.push({ type: 'Clean Sheets', count: stat.cleanSheets, points: pts }); }
+    const isOnTeam = [...homeTeamUsers, ...awayTeamUsers].some((u: any) => String(u.id) === String(userId));
+    const stat = allStats.find(s => String(s.match_id) === String(match.id));
+    const savedXP = stat?.xpAwarded || 0;
+
+    if (!isOnTeam) {
+      // Keep saved vs computed alignment in running totals even when user not on team
+      runningTotalSaved += 0;
+      breakdown.push({ matchId: match.id, matchDate: match.date, details: [], matchXP: 0, savedXP, delta: savedXP - 0, runningTotalComputed, runningTotalSaved });
+      continue;
     }
-    const votes = allVotes.filter(v => v.matchId === match.id);
+
+    // Base XP components
+    const res = resultFor(match);
+    let computedXP = 0;
+    const details: any[] = [];
+    if (res === 'win') { computedXP += xpPointsTable.winningTeam; details.push({ type: 'Win', points: xpPointsTable.winningTeam }); }
+    else if (res === 'draw') { computedXP += xpPointsTable.draw; details.push({ type: 'Draw', points: xpPointsTable.draw }); }
+    else { computedXP += xpPointsTable.losingTeam; details.push({ type: 'Loss', points: xpPointsTable.losingTeam }); }
+
+    if (stat) {
+      if (stat.goals) { const pts = (res === 'win' ? xpPointsTable.goal.win : xpPointsTable.goal.lose) * stat.goals; computedXP += pts; details.push({ type: 'Goals', count: stat.goals, points: pts }); }
+      if (stat.assists) { const pts = (res === 'win' ? xpPointsTable.assist.win : xpPointsTable.assist.lose) * stat.assists; computedXP += pts; details.push({ type: 'Assists', count: stat.assists, points: pts }); }
+      if (stat.cleanSheets) { const pts = xpPointsTable.cleanSheet * stat.cleanSheets; computedXP += pts; details.push({ type: 'Clean Sheets', count: stat.cleanSheets, points: pts }); }
+    }
+
+    // MOTM and votes
+    const votes = allVotes.filter(v => String(v.matchId) === String(match.id));
     const voteCounts: Record<string, number> = {};
-    votes.forEach(vote => {
-      const id = String(vote.votedForId);
-      voteCounts[id] = (voteCounts[id] || 0) + 1;
-    });
-    let motmId: string | null = null;
-    let maxVotes = 0;
-    Object.entries(voteCounts).forEach(([id, count]: [string, number]) => {
-      if (count > maxVotes) {
-        motmId = id;
-        maxVotes = count;
+    votes.forEach(vote => { const id = String(vote.votedForId); voteCounts[id] = (voteCounts[id] || 0) + 1; });
+    let motmId: string | null = null; let maxVotes = 0;
+    Object.entries(voteCounts).forEach(([id, count]) => { if ((count as number) > maxVotes) { motmId = id; maxVotes = count as number; } });
+    if (motmId === String(userId)) { const pts = (res === 'win' ? xpPointsTable.motm.win : xpPointsTable.motm.lose); computedXP += pts; details.push({ type: 'MOTM', points: pts }); }
+    if (voteCounts[String(userId)]) { const pts = (res === 'win' ? xpPointsTable.motmVote.win : xpPointsTable.motmVote.lose) * voteCounts[String(userId)]; computedXP += pts; details.push({ type: 'MOTM Votes', count: voteCounts[String(userId)], points: pts }); }
+
+    // Streak bonuses:
+    // - 25% consecutive participation; 50%/75% overall participation
+    // Update counters for this match
+    consec = isOnTeam ? (consec + 1) : 0;
+    const consecPrev = consec - 1;
+    participated += 1; // only counting matches user played (since we continue if !isOnTeam)
+
+    // 75% milestone (overall)
+    if (!awarded75 && (participated - 1) < need75 && participated >= need75) {
+      computedXP += xpPointsTable.streak75; details.push({ type: 'Streak 75%', points: xpPointsTable.streak75 }); awarded75 = true;
+    }
+    // 50% milestone (overall)
+    else if (!awarded50 && (participated - 1) < need50 && participated >= need50) {
+      computedXP += xpPointsTable.streak50; details.push({ type: 'Streak 50%', points: xpPointsTable.streak50 }); awarded50 = true;
+    }
+    // 25% milestone (consecutive)
+    else if (consecPrev < need25 && consec >= need25) {
+      computedXP += xpPointsTable.streak25; details.push({ type: 'Streak 25% (consecutive)', points: xpPointsTable.streak25 });
+    }
+
+    // Captain picks bonus if cached
+    try {
+      const key = `captain_picks_${match.id}`;
+      const picks: any = cache.get(key);
+      if (picks) {
+        const homeIds = homeTeamUsers.map((u: any) => String(u.id));
+        const awayIds = awayTeamUsers.map((u: any) => String(u.id));
+        const uid = String(userId);
+        // If user is selected for defence or influence, award corresponding bonus
+        const isHome = homeIds.includes(uid);
+        const teamRes = res;
+        if (isHome) {
+          if (picks.home?.defence && String(picks.home.defence) === uid) {
+            const pts = captainBonusByContext(teamRes, 'defence');
+            computedXP += pts; details.push({ type: 'Captain Pick (defence)', points: pts });
+          }
+          if (picks.home?.influence && String(picks.home.influence) === uid) {
+            const pts = captainBonusByContext(teamRes, 'influence');
+            computedXP += pts; details.push({ type: 'Captain Pick (influence)', points: pts });
+          }
+        } else {
+          if (picks.away?.defence && String(picks.away.defence) === uid) {
+            const pts = captainBonusByContext(teamRes, 'defence');
+            computedXP += pts; details.push({ type: 'Captain Pick (defence)', points: pts });
+          }
+          if (picks.away?.influence && String(picks.away.influence) === uid) {
+            const pts = captainBonusByContext(teamRes, 'influence');
+            computedXP += pts; details.push({ type: 'Captain Pick (influence)', points: pts });
+          }
+        }
       }
-    });
-    if (motmId === userId) { const pts = (teamResult === 'win' ? xpPointsTable.motm.win : xpPointsTable.motm.lose); matchXP += pts; details.push({ type: 'MOTM', points: pts }); }
-    if (voteCounts[userId]) { const pts = (teamResult === 'win' ? xpPointsTable.motmVote.win : xpPointsTable.motmVote.lose) * voteCounts[userId]; matchXP += pts; details.push({ type: 'MOTM Votes', count: voteCounts[userId], points: pts }); }
-    runningTotal += matchXP;
+    } catch {}
+
+    // Reconcile with saved xpAwarded (authoritative)
+    runningTotalComputed += computedXP;
+    runningTotalSaved += savedXP;
+
+    const delta = savedXP - computedXP;
+    if (Math.abs(delta) > 0) {
+      details.push({ type: 'Other Bonuses / Adjustments', points: delta });
+    }
+
     breakdown.push({
       matchId: match.id,
       matchDate: match.date,
       details,
-      matchXP,
-      runningTotal
+      matchXP: computedXP,
+      savedXP,
+      delta,
+      runningTotalComputed,
+      runningTotalSaved
     });
   }
+
   ctx.body = { userId, leagueId, breakdown };
 });
 

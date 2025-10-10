@@ -218,6 +218,73 @@ function validateStatsAgainstTotal(input: StatsPayload, totalGoals: number): { o
 }
 // --- end helpers ---
 
+// --- Streak Bonus helper (league participation milestones) ---
+// Awards a one-time bonus on the match where the player crosses the milestone.
+// Milestones (percent of total league matches):
+//   - 25% in a row (consecutive participation) -> 15 XP
+//   - 50% total participation (at least)        -> 50 XP
+//   - 75% total participation (at least)        -> 100 XP
+// Uses xpPointsTable.streak25/50/75 for the values.
+async function computeLeagueParticipationBonus(match: any, userId: string): Promise<number> {
+  try {
+    const leagueId = String(match.leagueId);
+    if (!leagueId) return 0;
+
+    // Load all matches in this league (any status) and check player participation
+    const leagueMatches = await Match.findAll({
+      where: { leagueId },
+      attributes: ['id', 'leagueId', 'date', 'start', 'createdAt'],
+      include: [
+        { model: User, as: 'homeTeamUsers', attributes: ['id'] },
+        { model: User, as: 'awayTeamUsers', attributes: ['id'] },
+      ],
+      order: [['date', 'ASC'], ['start', 'ASC'], ['createdAt', 'ASC']],
+    });
+
+    const total = leagueMatches.length;
+    if (total === 0) return 0;
+
+    const isInMatch = (m: any) => (
+      ((m as any).homeTeamUsers || []).some((u: any) => String(u.id) === String(userId)) ||
+      ((m as any).awayTeamUsers || []).some((u: any) => String(u.id) === String(userId))
+    );
+
+    const participated = leagueMatches.filter(isInMatch).length;
+
+    // If player isn't in this match at all, no streak bonus
+    if (!isInMatch(match)) return 0;
+
+    // Determine current match index in chronological order
+    const ids = leagueMatches.map((m: any) => String(m.id));
+    const currIdx = ids.indexOf(String(match.id));
+
+    // Compute consecutive streak ending at current match (inclusive)
+    let currentStreak = 0;
+    for (let i = currIdx; i >= 0; i--) {
+      if (isInMatch(leagueMatches[i])) currentStreak++;
+      else break;
+    }
+    const prevStreak = Math.max(0, currentStreak - 1);
+
+    // Needed counts per threshold
+    const need25 = Math.max(1, Math.ceil(total * 0.25));
+    const need50 = Math.max(1, Math.ceil(total * 0.50));
+    const need75 = Math.max(1, Math.ceil(total * 0.75));
+
+    // Check thresholds (award highest single milestone crossed on this match)
+    // 75% and 50% use overall participation; 25% uses consecutive participation
+    if (participated - 1 < need75 && participated >= need75) return xpPointsTable.streak75 || 0;
+    if (participated - 1 < need50 && participated >= need50) return xpPointsTable.streak50 || 0;
+    if (prevStreak < need25 && currentStreak >= need25) return xpPointsTable.streak25 || 0;
+
+    return 0;
+  } catch (e) {
+    console.warn('computeLeagueParticipationBonus failed', e);
+    return 0;
+  }
+}
+// --- end streak helper ---
+
 // Helper to compute window info for a match
 async function computeStatsWindow(matchId: string, actingUserId?: string) {
   const match = await Match.findByPk(matchId, { attributes: ['id', 'leagueId', 'status', 'date', 'start', 'createdAt'] });
@@ -434,6 +501,12 @@ router.post('/:matchId/stats', required, async (ctx, next) => {
   // MOTM Votes
   if (voteCounts[String(userId)]) matchXP += (teamResult === 'win' ? xpPointsTable.motmVote.win : xpPointsTable.motmVote.lose) * voteCounts[String(userId)];
   // Save XP for this match
+  // Apply streak participation bonus (league milestones 25/50/75%)
+  try {
+    const bonus = await computeLeagueParticipationBonus(matchWithTeams, String(userId));
+    matchXP += Math.max(0, Number(bonus) || 0);
+  } catch {}
+
   stats.xpAwarded = matchXP;
   await stats.save();
   // Update user's total XP (sum of all xpAwarded)
@@ -610,6 +683,12 @@ router.post('/:matchId/stats', required, async (ctx) => {
         if (motmId === String(playerId)) matchXP += (teamResult === 'win' ? xpPointsTable.motm.win : xpPointsTable.motm.lose);
         // MOTM Votes
         if (voteCounts[String(playerId)]) matchXP += (teamResult === 'win' ? xpPointsTable.motmVote.win : xpPointsTable.motmVote.lose) * voteCounts[String(playerId)];
+
+        // Apply streak participation bonus (league milestones 25/50/75%)
+        try {
+          const bonus = await computeLeagueParticipationBonus(matchWithTeams, String(playerId));
+          matchXP += Math.max(0, Number(bonus) || 0);
+        } catch {}
 
         // Save XP for this match and adjust user's total XP
         stats.xpAwarded = matchXP;
