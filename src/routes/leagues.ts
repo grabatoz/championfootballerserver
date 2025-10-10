@@ -2384,7 +2384,7 @@ router.get("/:leagueId/matches/:matchId/team-view", required, async (ctx) => {
   const homeUsers = ((match as any).homeTeamUsers || []);
   const awayUsers = ((match as any).awayTeamUsers || []);
 
-  // per-match XP (existing logic)
+  // Per-match XP: prefer authoritative saved xpAwarded from MatchStatistics, fallback to computed
   const xpMap: Record<string, number> = {};
   if ((match as any).status === 'RESULT_PUBLISHED') {
     const homeGoals = Number((match as any).homeTeamGoals || 0);
@@ -2393,19 +2393,24 @@ router.get("/:leagueId/matches/:matchId/team-view", required, async (ctx) => {
     const allStats = await MatchStatistics.findAll({ where: { match_id: matchId } });
     const votes = await Vote.findAll({ where: { matchId } });
 
+    // Build quick lookup for saved xpAwarded
+    const xpAwardedByUser: Record<string, number | null | undefined> = {};
+    allStats.forEach((s: any) => {
+      xpAwardedByUser[String(s.user_id)] = typeof s.xpAwarded === 'number' ? s.xpAwarded : null;
+    });
+
+    // Prepare fallback computation ingredients
     const voteCounts: Record<string, number> = {};
     votes.forEach((v: any) => { const id = String(v.votedForId); voteCounts[id] = (voteCounts[id] || 0) + 1; });
     let motmId: string | null = null;
     let maxVotes = 0;
     Object.entries(voteCounts).forEach(([id, count]: [string, number]) => {
-      if (count > maxVotes) {
-        motmId = id;
-        maxVotes = count;
-      }
+      if (count > maxVotes) { motmId = id; maxVotes = count; }
     });
 
     const statFor = (userId: string) => allStats.find((s: any) => String(s.user_id) === userId);
-    const computeXp = (userId: string, isHome: boolean) => {
+    const computeXpFallback = (userId: string, isHome: boolean) => {
+      // Basic fallback mirrors the main algorithm; captain/streak bonuses can only be honored if already saved in xpAwarded
       let result: 'win' | 'draw' | 'lose' = 'lose';
       if (homeGoals === awayGoals) result = 'draw';
       else if ((isHome && homeGoals > awayGoals) || (!isHome && awayGoals > homeGoals)) result = 'win';
@@ -2421,8 +2426,15 @@ router.get("/:leagueId/matches/:matchId/team-view", required, async (ctx) => {
       if (voteCounts[userId]) xp += (result === 'win' ? xpPointsTable.motmVote.win : xpPointsTable.motmVote.lose) * voteCounts[userId];
       return xp;
     };
-    homeUsers.forEach((u: any) => { xpMap[String(u.id)] = computeXp(String(u.id), true); });
-    awayUsers.forEach((u: any) => { xpMap[String(u.id)] = computeXp(String(u.id), false); });
+
+    // Fill xpMap for all players in match
+    const ensureXp = (userId: string, isHome: boolean) => {
+      const saved = xpAwardedByUser[userId];
+      if (typeof saved === 'number') xpMap[userId] = saved;
+      else xpMap[userId] = computeXpFallback(userId, isHome);
+    };
+    homeUsers.forEach((u: any) => ensureXp(String(u.id), true));
+    awayUsers.forEach((u: any) => ensureXp(String(u.id), false));
   }
 
   // Fetch saved positions for this match (guard when model missing)

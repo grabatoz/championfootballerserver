@@ -449,6 +449,192 @@ router.post('/:matchId/stats', required, async (ctx, next) => {
   ctx.body = { success: true, message: 'Statistics and XP saved successfully.' };
 });
 
+// POST /matches/:matchId/stats - Save or update stats for a player in a match
+router.post('/:matchId/stats', required, async (ctx) => {
+    if (!ctx.state.user?.userId) {
+        ctx.throw(401, 'Unauthorized');
+        return;
+    }
+
+    const { matchId } = ctx.params;
+    const { playerId, goals, assists, cleanSheets, penalties, freeKicks, defence, impact } = ctx.request.body;
+
+    if (!playerId) {
+        ctx.throw(400, 'playerId is required');
+        return;
+    }
+
+    // NEW: admin check
+    const match = await Match.findByPk(matchId);
+    if (!match) {
+        ctx.throw(404, 'Match not found');
+        return;
+    }
+    const adminIds = await getLeagueAdminIdsRobust(String(match.leagueId));
+    const isAdmin = adminIds.includes(String(ctx.state.user.userId));
+    if (!isAdmin) {
+        ctx.status = 403;
+        ctx.body = { success: false, message: 'Only league administrators can update other players stats.' };
+        return;
+    }
+
+    // NEW: cap validation vs total goals
+    const totalGoals = totalMatchGoals(match);
+    const cap = validateStatsAgainstTotal({ goals, assists, cleanSheets }, totalGoals);
+    if (!cap.ok) {
+        ctx.status = 400;
+        ctx.body = { success: false, message: cap.message };
+        return;
+    }
+
+    try {
+        const existing = await MatchStatistics.findOne({ where: { match_id: matchId, user_id: playerId } });
+
+    // All zeros => delete placeholder row (if any) and recalc user's total XP
+        if (statsAllZero({ goals, assists, cleanSheets, penalties, freeKicks, defence, impact })) {
+            if (existing) await existing.destroy();
+            try { cache.del(`match_stats_${matchId}_${playerId}_ultra_fast`); } catch {}
+      // adjust user's total XP after clearing
+      try { await adjustUserTotalXP(String(playerId)); } catch {}
+      ctx.body = { success: true, message: 'Stats cleared (all zeros).' };
+            return;
+        }
+
+        // Find existing stats or create a new record (non-zero payload)
+        const [stats, created] = await models.MatchStatistics.findOrCreate({
+            where: { user_id: playerId, match_id: matchId },
+            defaults: {
+                user_id: playerId,
+                match_id: matchId,
+                goals, assists, cleanSheets, penalties, freeKicks, defence, impact,
+                yellowCards: 0, redCards: 0, minutesPlayed: 0, rating: 0, xpAwarded: 0,
+            }
+        });
+
+        if (!created) {
+            stats.goals = goals;
+            stats.assists = assists;
+            stats.cleanSheets = cleanSheets;
+            stats.penalties = penalties;
+            stats.freeKicks = freeKicks;
+            stats.defence = defence;
+            stats.impact = impact;
+            await stats.save();
+        }
+
+        // Update cache with new stats
+        const updatedMatchData = {
+            id: matchId,
+            homeTeamGoals: match.homeTeamGoals,
+            awayTeamGoals: match.awayTeamGoals,
+            status: match.status,
+            date: match.date,
+            leagueId: match.leagueId
+        };
+
+        // Update matches cache
+        cache.updateArray('matches_all', updatedMatchData);
+
+        // Bust per-player match stats cache so subsequent reads reflect latest values
+        try { cache.del(`match_stats_${matchId}_${playerId}_ultra_fast`); } catch { }
+
+    // Update leaderboard cache
+        const updatedStats = {
+            goals: stats.goals,
+            assists: stats.assists,
+            cleanSheets: stats.cleanSheets,
+            penalties: stats.penalties,
+            freeKicks: stats.freeKicks,
+            defence: stats.defence,
+            impact: stats.impact,
+        };
+
+        // Update cache for each stat
+        Object.entries(updatedStats).forEach(([metric, value]) => {
+            if (typeof value === 'number' && value > 0) {
+                const cacheKey = `leaderboard_${metric}_${match.leagueId}_all`;
+                cache.updateLeaderboard(cacheKey, {
+                    playerId: playerId,
+                    value: value
+                });
+            }
+        });
+
+        // --- XP awarding (mirror player self-submit route) ---
+        // Get teams and votes for XP logic
+        const matchWithTeams = await Match.findByPk(matchId, {
+            include: [
+              { model: User, as: 'homeTeamUsers', attributes: { exclude: ['providerId'] } },
+              { model: User, as: 'awayTeamUsers', attributes: { exclude: ['providerId'] } }
+            ]
+        });
+
+        const homeTeamUsers = ((matchWithTeams as any)?.homeTeamUsers || []);
+        const awayTeamUsers = ((matchWithTeams as any)?.awayTeamUsers || []);
+        const isHome = homeTeamUsers.some((u: any) => String(u.id) === String(playerId));
+        const isAway = awayTeamUsers.some((u: any) => String(u.id) === String(playerId));
+        const homeGoals = (matchWithTeams as any)?.homeTeamGoals ?? 0;
+        const awayGoals = (matchWithTeams as any)?.awayTeamGoals ?? 0;
+
+        let teamResult: 'win' | 'draw' | 'lose' = 'lose';
+        if (isHome && homeGoals > awayGoals) teamResult = 'win';
+        else if (isAway && awayGoals > homeGoals) teamResult = 'win';
+        else if (homeGoals === awayGoals) teamResult = 'draw';
+
+        let matchXP = 0;
+        if (teamResult === 'win') matchXP += xpPointsTable.winningTeam;
+        else if (teamResult === 'draw') matchXP += xpPointsTable.draw;
+        else matchXP += xpPointsTable.losingTeam;
+
+        // Get votes for this match
+        const votes = await Vote.findAll({ where: { matchId } });
+        const voteCounts: Record<string, number> = {};
+        votes.forEach(vote => {
+          const id = String((vote as any).votedForId);
+          voteCounts[id] = (voteCounts[id] || 0) + 1;
+        });
+        let motmId: string | null = null;
+        let maxVotes = 0;
+        Object.entries(voteCounts).forEach(([id, count]) => {
+          if (count > maxVotes) {
+            motmId = id;
+            maxVotes = count;
+          }
+        });
+
+        // XP from stats
+        if (stats.goals) matchXP += (teamResult === 'win' ? xpPointsTable.goal.win : xpPointsTable.goal.lose) * (stats.goals || 0);
+        if (stats.assists) matchXP += (teamResult === 'win' ? xpPointsTable.assist.win : xpPointsTable.assist.lose) * (stats.assists || 0);
+        if (stats.cleanSheets) matchXP += xpPointsTable.cleanSheet * (stats.cleanSheets || 0);
+        // MOTM
+        if (motmId === String(playerId)) matchXP += (teamResult === 'win' ? xpPointsTable.motm.win : xpPointsTable.motm.lose);
+        // MOTM Votes
+        if (voteCounts[String(playerId)]) matchXP += (teamResult === 'win' ? xpPointsTable.motmVote.win : xpPointsTable.motmVote.lose) * voteCounts[String(playerId)];
+
+        // Save XP for this match and adjust user's total XP
+        stats.xpAwarded = matchXP;
+        await stats.save();
+        try { await adjustUserTotalXP(String(playerId)); } catch {}
+
+        ctx.body = {
+            success: true,
+            message: 'Stats saved successfully',
+            playerId: playerId,
+            updatedStats: {
+                goals: stats.goals,
+                assists: stats.assists,
+                cleanSheets: stats.cleanSheets,
+                penalties: stats.penalties,
+                freeKicks: stats.freeKicks,
+                defence: stats.defence,
+                impact: stats.impact,
+            }
+        };
+    } catch (error) {
+        console.error('Error saving stats:', error);
+        ctx.throw(500, 'Failed to save stats');
+    }
+});
 // GET route to fetch votes for each player in a match
 router.get('/:id/votes', required, async (ctx) => {
     if (!ctx.state.user?.userId) {
@@ -681,134 +867,6 @@ router.get('/:matchId/stats', required, async (ctx) => {
     }
 });
 
-// POST /matches/:matchId/stats - Save or update stats for a player in a match
-router.post('/:matchId/stats', required, async (ctx) => {
-    if (!ctx.state.user?.userId) {
-        ctx.throw(401, 'Unauthorized');
-        return;
-    }
-
-    const { matchId } = ctx.params;
-    const { playerId, goals, assists, cleanSheets, penalties, freeKicks, defence, impact } = ctx.request.body;
-
-    if (!playerId) {
-        ctx.throw(400, 'playerId is required');
-        return;
-    }
-
-    // NEW: admin check
-    const match = await Match.findByPk(matchId);
-    if (!match) {
-        ctx.throw(404, 'Match not found');
-        return;
-    }
-    const adminIds = await getLeagueAdminIdsRobust(String(match.leagueId));
-    const isAdmin = adminIds.includes(String(ctx.state.user.userId));
-    if (!isAdmin) {
-        ctx.status = 403;
-        ctx.body = { success: false, message: 'Only league administrators can update other players stats.' };
-        return;
-    }
-
-    // NEW: cap validation vs total goals
-    const totalGoals = totalMatchGoals(match);
-    const cap = validateStatsAgainstTotal({ goals, assists, cleanSheets }, totalGoals);
-    if (!cap.ok) {
-        ctx.status = 400;
-        ctx.body = { success: false, message: cap.message };
-        return;
-    }
-
-    try {
-        const existing = await MatchStatistics.findOne({ where: { match_id: matchId, user_id: playerId } });
-
-        // All zeros => delete placeholder row (if any)
-        if (statsAllZero({ goals, assists, cleanSheets, penalties, freeKicks, defence, impact })) {
-            if (existing) await existing.destroy();
-            try { cache.del(`match_stats_${matchId}_${playerId}_ultra_fast`); } catch {}
-            ctx.body = { success: true, message: 'Stats cleared (all zeros).' };
-            return;
-        }
-
-        // Find existing stats or create a new record (non-zero payload)
-        const [stats, created] = await models.MatchStatistics.findOrCreate({
-            where: { user_id: playerId, match_id: matchId },
-            defaults: {
-                user_id: playerId,
-                match_id: matchId,
-                goals, assists, cleanSheets, penalties, freeKicks, defence, impact,
-                yellowCards: 0, redCards: 0, minutesPlayed: 0, rating: 0, xpAwarded: 0,
-            }
-        });
-
-        if (!created) {
-            stats.goals = goals;
-            stats.assists = assists;
-            stats.cleanSheets = cleanSheets;
-            stats.penalties = penalties;
-            stats.freeKicks = freeKicks;
-            stats.defence = defence;
-            stats.impact = impact;
-            await stats.save();
-        }
-
-        // Update cache with new stats
-        const updatedMatchData = {
-            id: matchId,
-            homeTeamGoals: match.homeTeamGoals,
-            awayTeamGoals: match.awayTeamGoals,
-            status: match.status,
-            date: match.date,
-            leagueId: match.leagueId
-        };
-
-        // Update matches cache
-        cache.updateArray('matches_all', updatedMatchData);
-
-        // Bust per-player match stats cache so subsequent reads reflect latest values
-        try { cache.del(`match_stats_${matchId}_${playerId}_ultra_fast`); } catch { }
-
-        // Update leaderboard cache
-        const updatedStats = {
-            goals: stats.goals,
-            assists: stats.assists,
-            cleanSheets: stats.cleanSheets,
-            penalties: stats.penalties,
-            freeKicks: stats.freeKicks,
-            defence: stats.defence,
-            impact: stats.impact,
-        };
-
-        // Update cache for each stat
-        Object.entries(updatedStats).forEach(([metric, value]) => {
-            if (typeof value === 'number' && value > 0) {
-                const cacheKey = `leaderboard_${metric}_${match.leagueId}_all`;
-                cache.updateLeaderboard(cacheKey, {
-                    playerId: playerId,
-                    value: value
-                });
-            }
-        });
-
-        ctx.body = {
-            success: true,
-            message: 'Stats saved successfully',
-            playerId: playerId,
-            updatedStats: {
-                goals: stats.goals,
-                assists: stats.assists,
-                cleanSheets: stats.cleanSheets,
-                penalties: stats.penalties,
-                freeKicks: stats.freeKicks,
-                defence: stats.defence,
-                impact: stats.impact,
-            }
-        };
-    } catch (error) {
-        console.error('Error saving stats:', error);
-        ctx.throw(500, 'Failed to save stats');
-    }
-});
 
 // GET /matches/:matchId/votes - Get votes for a match - ULTRA FAST
 router.get('/:matchId/votes', required, async (ctx) => {
