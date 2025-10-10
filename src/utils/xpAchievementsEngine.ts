@@ -11,11 +11,17 @@ import { xpPointsTable } from './xpPointsTable';
 async function getUserLeagueStats(userId: string, leagueId: string) {
   const stats = await MatchStatistics.findAll({
     where: { user_id: userId },
-    include: [{
-      model: Match,
-      as: 'match',
-      where: { leagueId, status: 'completed' }
-    }]
+    include: [
+      {
+        model: Match,
+        as: 'match',
+        where: { leagueId, status: 'RESULT_PUBLISHED' },
+        include: [
+          { model: User as any, as: 'homeTeamUsers', attributes: ['id'] },
+          { model: User as any, as: 'awayTeamUsers', attributes: ['id'] },
+        ],
+      },
+    ],
   });
 
   // Calculate stats for achievements
@@ -30,7 +36,12 @@ async function getUserLeagueStats(userId: string, leagueId: string) {
   let consecutiveWins = 0;
 
   // For consecutive stats, sort by match date
-  const sortedStats = stats.sort((a, b) => (a.match?.date || 0) - (b.match?.date || 0));
+  const getTime = (m: any) => {
+    const d = (m?.date ?? m?.start ?? m?.createdAt ?? 0);
+    const t = new Date(d).getTime();
+    return Number.isFinite(t) ? t : 0;
+  };
+  const sortedStats = stats.sort((a, b) => getTime(a.match) - getTime(b.match));
 
   // Example logic (customize as per your actual data):
   let assistStreak = 0, goalStreak = 0, motmStreak = 0, winStreak = 0, cleanSheetWinStreak = 0;
@@ -70,7 +81,7 @@ async function getUserLeagueStats(userId: string, leagueId: string) {
   const captainMatches = await Match.findAll({
     where: {
       leagueId,
-      status: 'completed',
+      status: 'RESULT_PUBLISHED',
       [Op.or]: [{ homeCaptainId: userId }, { awayCaptainId: userId }]
     }
   });
@@ -93,7 +104,7 @@ async function getUserLeagueStats(userId: string, leagueId: string) {
     include: [{
       model: Match,
       as: 'votedMatch',
-      where: { leagueId, status: 'completed' }
+      where: { leagueId, status: 'RESULT_PUBLISHED' }
     }]
   });
   // You need to process votes to determine if user was MOTM for each match, and count streaks
@@ -255,7 +266,7 @@ export async function calculateAndAwardXPAchievements(userId: string, leagueId?:
   if (leagueId) {
     // Find all completed matches for this user in this league
     const matches = await Match.findAll({
-      where: { leagueId, status: 'completed' },
+      where: { leagueId, status: 'RESULT_PUBLISHED' },
       include: [
         { model: User, as: 'homeTeamUsers' },
         { model: User, as: 'awayTeamUsers' },

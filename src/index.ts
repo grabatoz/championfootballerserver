@@ -207,6 +207,21 @@ initializeDatabase().then(() => {
     console.log('🔗 Social routes:');
     console.log(`   Google: http://localhost:${PORT}/auth/google`);
     console.log(`   Facebook: http://localhost:${PORT}/auth/facebook`);
+
+    // Schedule a safe background XP/Achievements recalculation shortly after boot
+    try {
+      setTimeout(async () => {
+        try {
+          console.log('⏱️ Scheduling initial XP/Achievements recalculation...');
+          await triggerImmediateXPCalculation();
+          console.log('✅ Initial XP/Achievements recalculation completed');
+        } catch (calcErr) {
+          console.error('❌ Initial XP/Achievements recalculation failed:', calcErr);
+        }
+      }, 5000);
+    } catch (scheduleErr) {
+      console.error('Failed to schedule initial XP calculation:', scheduleErr);
+    }
   });
 }).catch((error) => {
   console.error('❌ Failed to initialize database:', error);

@@ -42,7 +42,7 @@ router.get('/', required, async (ctx) => {
           include: [{
             model: Match,
             as: 'match',
-            where: { status: 'completed', leagueId }
+            where: { status: 'RESULT_PUBLISHED', leagueId }
           }]
         },
         {

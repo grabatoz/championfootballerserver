@@ -1289,7 +1289,19 @@ const unifiedConfirmHandler = async (ctx: any) => {
         created_at: new Date(),
       });
       try {
-        await calculateAndAwardXPAchievements(String(match.id));
+        // Recalculate achievements/XP for all participants in this match (authoritative status: RESULT_PUBLISHED)
+        const reloaded = await Match.findByPk(match.id, {
+          include: [
+            { model: User, as: 'homeTeamUsers', attributes: ['id'] },
+            { model: User, as: 'awayTeamUsers', attributes: ['id'] },
+          ],
+        });
+        const homeIds = ((reloaded as any)?.homeTeamUsers || []).map((u: any) => String(u.id));
+        const awayIds = ((reloaded as any)?.awayTeamUsers || []).map((u: any) => String(u.id));
+        const participantIds = Array.from(new Set([...homeIds, ...awayIds]));
+        await Promise.all(
+          participantIds.map((uid) => calculateAndAwardXPAchievements(uid, String(match.leagueId)))
+        );
       } catch (e) {
         console.error('XP recalc failed', e);
       }

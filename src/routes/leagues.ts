@@ -3425,6 +3425,15 @@ router.post('/:id/lock', required, async (ctx) => {
     { where: { id } }
   );
 
+  // On lock, run final XP/Achievement calculation for all members
+  try {
+    const league = await League.findByPk(id, { include: [{ model: User, as: 'members', attributes: ['id'] }] });
+    const memberIds: string[] = ((league as any)?.members || []).map((m: any) => String(m.id));
+    await Promise.all(memberIds.map((uid) => calculateAndAwardXPAchievements(uid, String(id))));
+  } catch (err) {
+    console.error('Final XP calc on lock failed:', err);
+  }
+
   ctx.body = { success: true, locked: true };
 });
 
