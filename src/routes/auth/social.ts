@@ -1,168 +1,403 @@
-import Router from '@koa/router';
-import jwt from 'jsonwebtoken';
-import passport from 'koa-passport';
+import Router from "@koa/router"
+import jwt from "jsonwebtoken"
+import passport from "koa-passport"
 
-const router = new Router({ prefix: '/auth' });
+const router = new Router({ prefix: "/auth" })
 
-const CLIENT_URL = process.env.CLIENT_URL || process.env.FRONTEND_URL || 'http://localhost:3000';
-const JWT_SECRET = process.env.JWT_SECRET || 'catsay\'s hello';
+const CLIENT_URL = process.env.CLIENT_URL || process.env.FRONTEND_URL || "http://localhost:3000"
+const JWT_SECRET = process.env.JWT_SECRET || "catsay's hello"
 
-console.log('[SOCIAL] CLIENT_URL:', CLIENT_URL);
-console.log('[SOCIAL] JWT_SECRET exists:', !!JWT_SECRET);
-console.log('[SOCIAL] Routes being registered...');
+const GOOGLE_ENABLED = Boolean(
+  process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET && process.env.GOOGLE_CALLBACK_URL,
+)
+const FACEBOOK_ENABLED = Boolean(
+  process.env.FACEBOOK_APP_ID && process.env.FACEBOOK_APP_SECRET && process.env.FACEBOOK_CALLBACK_URL,
+)
 
-function redirectWithToken(ctx: any, user: any, nextPath = '/home') {
-  console.log('[SOCIAL] redirectWithToken called with user:', user.id, user.email);
-  
+console.log("[SOCIAL] CLIENT_URL:", CLIENT_URL)
+console.log("[SOCIAL] JWT_SECRET exists:", !!JWT_SECRET)
+console.log("[SOCIAL] Providers enabled:", {
+  google: GOOGLE_ENABLED,
+  facebook: FACEBOOK_ENABLED,
+})
+console.log("[SOCIAL] Routes being registered...")
+
+function redirectWithToken(ctx: any, user: any, nextPath = "/home") {
+  console.log("[SOCIAL] redirectWithToken called with user:", user.id, user.email)
+
   const token = jwt.sign(
-    { 
-      userId: user.id, 
+    {
+      userId: user.id,
       email: user.email,
       firstName: user.firstName,
       lastName: user.lastName,
-      picture: user.profilePicture 
-    }, 
-    JWT_SECRET, 
-    { expiresIn: '7d' }
-  );
-  console.log('[SOCIAL] Generated token:', token.substring(0, 20) + '...');
-  
+      picture: user.profilePicture,
+    },
+    JWT_SECRET,
+    { expiresIn: "7d" },
+  )
+  console.log("[SOCIAL] Generated token:", token.substring(0, 20) + "...")
+
   // Set cookies on API domain
-  const secure = process.env.NODE_ENV === 'production';
+  const secure = process.env.NODE_ENV === "production"
   // Set both names for compatibility with existing middleware/clients
-  ctx.cookies.set('auth_token', token, { 
-    path: '/', 
-    sameSite: 'lax', 
-    secure, 
-    httpOnly: false, 
-    maxAge: 604800000 
-  });
-  ctx.cookies.set('token', token, {
-    path: '/',
-    sameSite: 'lax',
+  ctx.cookies.set("auth_token", token, {
+    path: "/",
+    sameSite: "lax",
     secure,
     httpOnly: false,
     maxAge: 604800000,
-  });
-  
-  const redirectUrl = `${CLIENT_URL}/auth/callback?token=${encodeURIComponent(token)}&next=${encodeURIComponent(nextPath)}`;
-  console.log('[SOCIAL] Redirecting to:', redirectUrl);
-  
-  ctx.redirect(redirectUrl);
+  })
+  ctx.cookies.set("token", token, {
+    path: "/",
+    sameSite: "lax",
+    secure,
+    httpOnly: false,
+    maxAge: 604800000,
+  })
+
+  const redirectUrl = `${CLIENT_URL}/auth/callback?token=${encodeURIComponent(token)}&next=${encodeURIComponent(nextPath)}`
+  console.log("[SOCIAL] Redirecting to:", redirectUrl)
+
+  ctx.redirect(redirectUrl)
 }
 
 // Test route to verify auth routes are working
-router.get('/test', (ctx) => {
-  console.log('[SOCIAL] Test route hit');
-  ctx.body = { message: 'Auth routes are working', timestamp: new Date().toISOString() };
-});
+router.get("/test", (ctx) => {
+  console.log("[SOCIAL] Test route hit")
+  ctx.body = { message: "Auth routes are working", timestamp: new Date().toISOString() }
+})
 
 // Google OAuth
-router.get('/google', async (ctx, next) => {
-  console.log('[SOCIAL] /google route hit');
-  console.log('[SOCIAL] Query params:', ctx.query);
-  
-  try {
-    return await (passport.authenticate('google', {
-      session: false,
-      scope: ['profile', 'email'],
-      state: JSON.stringify({ next: String(ctx.query.next || '/home') }),
-    }) as any)(ctx, next);
-  } catch (error) {
-    console.error('[SOCIAL] Error in /google route:', error);
-    ctx.redirect(`${CLIENT_URL}/auth/callback?error=google_route_error`);
-  }
-});
+router.get("/google", async (ctx, next) => {
+  console.log("[SOCIAL] /google route hit")
+  console.log("[SOCIAL] Query params:", ctx.query)
 
-router.get('/google/callback', async (ctx, next) => {
-  console.log('[SOCIAL] /google/callback route hit');
-  console.log('[SOCIAL] Callback query params:', ctx.query);
-  
-  try {
-    return await (passport.authenticate('google', { session: false }, (err, user) => {
-      console.log('[SOCIAL] Google auth result:', { err: !!err, user: !!user });
-      
-      if (err) {
-        console.error('[SOCIAL] Google auth error:', err);
-        return ctx.redirect(`${CLIENT_URL}/auth/callback?error=google_failed`);
-      }
-      
-      if (!user) {
-        console.error('[SOCIAL] No user returned from Google');
-        return ctx.redirect(`${CLIENT_URL}/auth/callback?error=no_user`);
-      }
-      
-      let nextPath = '/home';
-      try {
-        if (ctx.query.state) {
-          const s = JSON.parse(String(ctx.query.state));
-          if (s?.next && typeof s.next === 'string') nextPath = s.next;
-        }
-      } catch (e) {
-        console.warn('[SOCIAL] Failed to parse state:', e);
-      }
-      
-      console.log('[SOCIAL] Proceeding with user:', user.email, 'nextPath:', nextPath);
-      redirectWithToken(ctx, user, nextPath);
-    }) as any)(ctx, next);
-  } catch (error) {
-    console.error('[SOCIAL] Error in /google/callback route:', error);
-    ctx.redirect(`${CLIENT_URL}/auth/callback?error=callback_error`);
+  if (!GOOGLE_ENABLED) {
+    console.warn("[SOCIAL] Google not configured in environment")
+    const redirectUrl = `${CLIENT_URL}/auth/callback?error=google_not_configured`
+    ctx.status = 302
+    ctx.redirect(redirectUrl)
+    return
   }
-});
+
+  try {
+    return await (
+      passport.authenticate("google", {
+        session: false,
+        scope: ["profile", "email"],
+        state: JSON.stringify({ next: String(ctx.query.next || "/home") }),
+      }) as any
+    )(ctx, next)
+  } catch (error) {
+    console.error("[SOCIAL] Error in /google route:", error)
+    ctx.redirect(`${CLIENT_URL}/auth/callback?error=google_route_error`)
+  }
+})
+
+router.get("/google/callback", async (ctx, next) => {
+  console.log("[SOCIAL] /google/callback route hit")
+  console.log("[SOCIAL] Callback query params:", ctx.query)
+
+  if (!GOOGLE_ENABLED) {
+    console.warn("[SOCIAL] Google not configured in environment (callback)")
+    ctx.redirect(`${CLIENT_URL}/auth/callback?error=google_not_configured`)
+    return
+  }
+
+  try {
+    return await (
+      passport.authenticate("google", { session: false }, (err, user) => {
+        console.log("[SOCIAL] Google auth result:", { err: !!err, user: !!user })
+
+        if (err) {
+          console.error("[SOCIAL] Google auth error:", err)
+          return ctx.redirect(`${CLIENT_URL}/auth/callback?error=google_failed`)
+        }
+
+        if (!user) {
+          console.error("[SOCIAL] No user returned from Google")
+          return ctx.redirect(`${CLIENT_URL}/auth/callback?error=no_user`)
+        }
+
+        let nextPath = "/home"
+        try {
+          if (ctx.query.state) {
+            const s = JSON.parse(String(ctx.query.state))
+            if (s?.next && typeof s.next === "string") nextPath = s.next
+          }
+        } catch (e) {
+          console.warn("[SOCIAL] Failed to parse state:", e)
+        }
+
+        console.log("[SOCIAL] Proceeding with user:", user.email, "nextPath:", nextPath)
+        redirectWithToken(ctx, user, nextPath)
+      }) as any
+    )(ctx, next)
+  } catch (error) {
+    console.error("[SOCIAL] Error in /google/callback route:", error)
+    ctx.redirect(`${CLIENT_URL}/auth/callback?error=callback_error`)
+  }
+})
 
 // Facebook OAuth
-router.get('/facebook', async (ctx, next) => {
-  console.log('[SOCIAL] /facebook route hit');
-  
-  try {
-    return await (passport.authenticate('facebook', {
-      session: false,
-      scope: ['email'],
-      state: JSON.stringify({ next: String(ctx.query.next || '/home') }),
-    }) as any)(ctx, next);
-  } catch (error) {
-    console.error('[SOCIAL] Error in /facebook route:', error);
-    ctx.redirect(`${CLIENT_URL}/auth/callback?error=facebook_route_error`);
-  }
-});
+router.get("/facebook", async (ctx, next) => {
+  console.log("[SOCIAL] /facebook route hit")
 
-router.get('/facebook/callback', async (ctx, next) => {
-  console.log('[SOCIAL] /facebook/callback route hit');
-  
-  try {
-    return await (passport.authenticate('facebook', { session: false }, (err, user) => {
-      console.log('[SOCIAL] Facebook auth result:', { err: !!err, user: !!user });
-      
-      if (err || !user) {
-        console.error('[SOCIAL] Facebook auth error:', err);
-        return ctx.redirect(`${CLIENT_URL}/auth/callback?error=facebook_failed`);
-      }
-      
-      let nextPath = '/home';
-      try {
-        if (ctx.query.state) {
-          const s = JSON.parse(String(ctx.query.state));
-          if (s?.next && typeof s.next === 'string') nextPath = s.next;
-        }
-      } catch (e) {
-        console.warn('[SOCIAL] Failed to parse state:', e);
-      }
-      
-      redirectWithToken(ctx, user, nextPath);
-    }) as any)(ctx, next);
-  } catch (error) {
-    console.error('[SOCIAL] Error in /facebook/callback route:', error);
-    ctx.redirect(`${CLIENT_URL}/auth/callback?error=callback_error`);
+  if (!FACEBOOK_ENABLED) {
+    console.warn("[SOCIAL] Facebook not configured in environment")
+    ctx.redirect(`${CLIENT_URL}/auth/callback?error=facebook_not_configured`)
+    return
   }
-});
+
+  try {
+    return await (
+      passport.authenticate("facebook", {
+        session: false,
+        scope: ["email"],
+        state: JSON.stringify({ next: String(ctx.query.next || "/home") }),
+      }) as any
+    )(ctx, next)
+  } catch (error) {
+    console.error("[SOCIAL] Error in /facebook route:", error)
+    ctx.redirect(`${CLIENT_URL}/auth/callback?error=facebook_route_error`)
+  }
+})
+
+router.get("/facebook/callback", async (ctx, next) => {
+  console.log("[SOCIAL] /facebook/callback route hit")
+
+  if (!FACEBOOK_ENABLED) {
+    console.warn("[SOCIAL] Facebook not configured in environment (callback)")
+    ctx.redirect(`${CLIENT_URL}/auth/callback?error=facebook_not_configured`)
+    return
+  }
+
+  try {
+    return await (
+      passport.authenticate("facebook", { session: false }, (err, user) => {
+        console.log("[SOCIAL] Facebook auth result:", { err: !!err, user: !!user })
+
+        if (err || !user) {
+          console.error("[SOCIAL] Facebook auth error:", err)
+          return ctx.redirect(`${CLIENT_URL}/auth/callback?error=facebook_failed`)
+        }
+
+        let nextPath = "/home"
+        try {
+          if (ctx.query.state) {
+            const s = JSON.parse(String(ctx.query.state))
+            if (s?.next && typeof s.next === "string") nextPath = s.next
+          }
+        } catch (e) {
+          console.warn("[SOCIAL] Failed to parse state:", e)
+        }
+
+        console.log("[SOCIAL] Proceeding with user:", user.email, "nextPath:", nextPath)
+        redirectWithToken(ctx, user, nextPath)
+      }) as any
+    )(ctx, next)
+  } catch (error) {
+    console.error("[SOCIAL] Error in /facebook/callback route:", error)
+    ctx.redirect(`${CLIENT_URL}/auth/callback?error=callback_error`)
+  }
+})
+
+// Provider status route to help diagnose production quickly
+router.get("/providers", (ctx) => {
+  ctx.body = {
+    google: GOOGLE_ENABLED,
+    facebook: FACEBOOK_ENABLED,
+    clientUrl: CLIENT_URL,
+    timestamp: new Date().toISOString(),
+  }
+})
 
 // Log all registered routes
-console.log('[SOCIAL] Registered routes:');
-console.log('- GET /auth/test');
-console.log('- GET /auth/google');
-console.log('- GET /auth/google/callback');
-console.log('- GET /auth/facebook');
-console.log('- GET /auth/facebook/callback');
+console.log("[SOCIAL] Registered routes:")
+console.log("- GET /auth/test")
+console.log("- GET /auth/google")
+console.log("- GET /auth/google/callback")
+console.log("- GET /auth/facebook")
+console.log("- GET /auth/facebook/callback")
+console.log("- GET /auth/providers")
 
-export default router;
+export default router
+
+
+
+
+
+
+
+
+
+
+// import Router from '@koa/router';
+// import jwt from 'jsonwebtoken';
+// import passport from 'koa-passport';
+
+// const router = new Router({ prefix: '/auth' });
+
+// const CLIENT_URL = process.env.CLIENT_URL || process.env.FRONTEND_URL || 'http://localhost:3000';
+// const JWT_SECRET = process.env.JWT_SECRET || 'catsay\'s hello';
+
+// console.log('[SOCIAL] CLIENT_URL:', CLIENT_URL);
+// console.log('[SOCIAL] JWT_SECRET exists:', !!JWT_SECRET);
+// console.log('[SOCIAL] Routes being registered...');
+
+// function redirectWithToken(ctx: any, user: any, nextPath = '/home') {
+//   console.log('[SOCIAL] redirectWithToken called with user:', user.id, user.email);
+  
+//   const token = jwt.sign(
+//     { 
+//       userId: user.id, 
+//       email: user.email,
+//       firstName: user.firstName,
+//       lastName: user.lastName,
+//       picture: user.profilePicture 
+//     }, 
+//     JWT_SECRET, 
+//     { expiresIn: '7d' }
+//   );
+//   console.log('[SOCIAL] Generated token:', token.substring(0, 20) + '...');
+  
+//   // Set cookies on API domain
+//   const secure = process.env.NODE_ENV === 'production';
+//   // Set both names for compatibility with existing middleware/clients
+//   ctx.cookies.set('auth_token', token, { 
+//     path: '/', 
+//     sameSite: 'lax', 
+//     secure, 
+//     httpOnly: false, 
+//     maxAge: 604800000 
+//   });
+//   ctx.cookies.set('token', token, {
+//     path: '/',
+//     sameSite: 'lax',
+//     secure,
+//     httpOnly: false,
+//     maxAge: 604800000,
+//   });
+  
+//   const redirectUrl = `${CLIENT_URL}/auth/callback?token=${encodeURIComponent(token)}&next=${encodeURIComponent(nextPath)}`;
+//   console.log('[SOCIAL] Redirecting to:', redirectUrl);
+  
+//   ctx.redirect(redirectUrl);
+// }
+
+// // Test route to verify auth routes are working
+// router.get('/test', (ctx) => {
+//   console.log('[SOCIAL] Test route hit');
+//   ctx.body = { message: 'Auth routes are working', timestamp: new Date().toISOString() };
+// });
+
+// // Google OAuth
+// router.get('/google', async (ctx, next) => {
+//   console.log('[SOCIAL] /google route hit');
+//   console.log('[SOCIAL] Query params:', ctx.query);
+  
+//   try {
+//     return await (passport.authenticate('google', {
+//       session: false,
+//       scope: ['profile', 'email'],
+//       state: JSON.stringify({ next: String(ctx.query.next || '/home') }),
+//     }) as any)(ctx, next);
+//   } catch (error) {
+//     console.error('[SOCIAL] Error in /google route:', error);
+//     ctx.redirect(`${CLIENT_URL}/auth/callback?error=google_route_error`);
+//   }
+// });
+
+// router.get('/google/callback', async (ctx, next) => {
+//   console.log('[SOCIAL] /google/callback route hit');
+//   console.log('[SOCIAL] Callback query params:', ctx.query);
+  
+//   try {
+//     return await (passport.authenticate('google', { session: false }, (err, user) => {
+//       console.log('[SOCIAL] Google auth result:', { err: !!err, user: !!user });
+      
+//       if (err) {
+//         console.error('[SOCIAL] Google auth error:', err);
+//         return ctx.redirect(`${CLIENT_URL}/auth/callback?error=google_failed`);
+//       }
+      
+//       if (!user) {
+//         console.error('[SOCIAL] No user returned from Google');
+//         return ctx.redirect(`${CLIENT_URL}/auth/callback?error=no_user`);
+//       }
+      
+//       let nextPath = '/home';
+//       try {
+//         if (ctx.query.state) {
+//           const s = JSON.parse(String(ctx.query.state));
+//           if (s?.next && typeof s.next === 'string') nextPath = s.next;
+//         }
+//       } catch (e) {
+//         console.warn('[SOCIAL] Failed to parse state:', e);
+//       }
+      
+//       console.log('[SOCIAL] Proceeding with user:', user.email, 'nextPath:', nextPath);
+//       redirectWithToken(ctx, user, nextPath);
+//     }) as any)(ctx, next);
+//   } catch (error) {
+//     console.error('[SOCIAL] Error in /google/callback route:', error);
+//     ctx.redirect(`${CLIENT_URL}/auth/callback?error=callback_error`);
+//   }
+// });
+
+// // Facebook OAuth
+// router.get('/facebook', async (ctx, next) => {
+//   console.log('[SOCIAL] /facebook route hit');
+  
+//   try {
+//     return await (passport.authenticate('facebook', {
+//       session: false,
+//       scope: ['email'],
+//       state: JSON.stringify({ next: String(ctx.query.next || '/home') }),
+//     }) as any)(ctx, next);
+//   } catch (error) {
+//     console.error('[SOCIAL] Error in /facebook route:', error);
+//     ctx.redirect(`${CLIENT_URL}/auth/callback?error=facebook_route_error`);
+//   }
+// });
+
+// router.get('/facebook/callback', async (ctx, next) => {
+//   console.log('[SOCIAL] /facebook/callback route hit');
+  
+//   try {
+//     return await (passport.authenticate('facebook', { session: false }, (err, user) => {
+//       console.log('[SOCIAL] Facebook auth result:', { err: !!err, user: !!user });
+      
+//       if (err || !user) {
+//         console.error('[SOCIAL] Facebook auth error:', err);
+//         return ctx.redirect(`${CLIENT_URL}/auth/callback?error=facebook_failed`);
+//       }
+      
+//       let nextPath = '/home';
+//       try {
+//         if (ctx.query.state) {
+//           const s = JSON.parse(String(ctx.query.state));
+//           if (s?.next && typeof s.next === 'string') nextPath = s.next;
+//         }
+//       } catch (e) {
+//         console.warn('[SOCIAL] Failed to parse state:', e);
+//       }
+      
+//       redirectWithToken(ctx, user, nextPath);
+//     }) as any)(ctx, next);
+//   } catch (error) {
+//     console.error('[SOCIAL] Error in /facebook/callback route:', error);
+//     ctx.redirect(`${CLIENT_URL}/auth/callback?error=callback_error`);
+//   }
+// });
+
+// // Log all registered routes
+// console.log('[SOCIAL] Registered routes:');
+// console.log('- GET /auth/test');
+// console.log('- GET /auth/google');
+// console.log('- GET /auth/google/callback');
+// console.log('- GET /auth/facebook');
+// console.log('- GET /auth/facebook/callback');
+
+// export default router;
