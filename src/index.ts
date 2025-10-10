@@ -171,6 +171,15 @@ const apiRouter = new Router({ prefix: '/api' });
 apiRouter.use(socialAuthRouter.routes(), socialAuthRouter.allowedMethods());
 app.use(apiRouter.routes()).use(apiRouter.allowedMethods());
 
+// Mount under /v1 and /api/v1 for reverse proxies that enforce versioning
+const v1Router = new Router({ prefix: '/v1' });
+v1Router.use(socialAuthRouter.routes(), socialAuthRouter.allowedMethods());
+app.use(v1Router.routes()).use(v1Router.allowedMethods());
+
+const apiV1Router = new Router({ prefix: '/api/v1' });
+apiV1Router.use(socialAuthRouter.routes(), socialAuthRouter.allowedMethods());
+app.use(apiV1Router.routes()).use(apiV1Router.allowedMethods());
+
 console.log('[SERVER] Social routes mounted successfully');
 
 // Mount other routes

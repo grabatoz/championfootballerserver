@@ -4,7 +4,7 @@ import passport from 'koa-passport';
 
 const router = new Router({ prefix: '/auth' });
 
-const CLIENT_URL = process.env.CLIENT_URL || 'http://localhost:3000';
+const CLIENT_URL = process.env.CLIENT_URL || process.env.FRONTEND_URL || 'http://localhost:3000';
 const JWT_SECRET = process.env.JWT_SECRET || 'catsay\'s hello';
 
 console.log('[SOCIAL] CLIENT_URL:', CLIENT_URL);
@@ -29,12 +29,20 @@ function redirectWithToken(ctx: any, user: any, nextPath = '/home') {
   
   // Set cookies on API domain
   const secure = process.env.NODE_ENV === 'production';
+  // Set both names for compatibility with existing middleware/clients
   ctx.cookies.set('auth_token', token, { 
     path: '/', 
     sameSite: 'lax', 
     secure, 
     httpOnly: false, 
     maxAge: 604800000 
+  });
+  ctx.cookies.set('token', token, {
+    path: '/',
+    sameSite: 'lax',
+    secure,
+    httpOnly: false,
+    maxAge: 604800000,
   });
   
   const redirectUrl = `${CLIENT_URL}/auth/callback?token=${encodeURIComponent(token)}&next=${encodeURIComponent(nextPath)}`;
