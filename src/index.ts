@@ -162,6 +162,28 @@ console.log('[SERVER] Setting up middleware...');
 app.use(bodyParser());
 app.use(passport.initialize());
 
+// Lightweight diagnostic test endpoints to validate proxy forwarding
+app.use(async (ctx, next) => {
+  const p = ctx.path;
+  const isTestPath = (
+    p === '/auth/test' ||
+    p === '/api/auth/test' ||
+    p === '/v1/auth/test' ||
+    p === '/api/v1/auth/test'
+  );
+  if (isTestPath && ctx.method === 'GET') {
+    ctx.status = 200;
+    ctx.body = {
+      ok: true,
+      message: 'Auth routes are working',
+      path: p,
+      timestamp: new Date().toISOString(),
+    };
+    return;
+  }
+  await next();
+});
+
 console.log('[SERVER] Mounting social auth routes...');
 // Mount social auth routes at root level (/auth/*)
 app.use(socialAuthRouter.routes()).use(socialAuthRouter.allowedMethods());
