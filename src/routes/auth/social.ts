@@ -205,12 +205,16 @@ router.get("/facebook/callback", async (ctx, next) => {
 
 // Provider status route to help diagnose production quickly
 router.get("/providers", (ctx) => {
+  const gcid = process.env.GOOGLE_CLIENT_ID || "";
+  const gidMasked = gcid ? `${gcid.slice(0, 4)}...${gcid.slice(-6)}` : null;
   ctx.body = {
     google: GOOGLE_ENABLED,
     facebook: FACEBOOK_ENABLED,
     clientUrl: CLIENT_URL,
     googleCallbackUrl: process.env.GOOGLE_CALLBACK_URL || null,
     facebookCallbackUrl: process.env.FACEBOOK_CALLBACK_URL || null,
+    googleClientIdHint: gidMasked,
+    hasGoogleSecret: Boolean(process.env.GOOGLE_CLIENT_SECRET || null),
     timestamp: new Date().toISOString(),
   }
 })
