@@ -213,6 +213,9 @@ router.get("/providers", (ctx) => {
   }
 })
 
+
+
+
 // Log all registered routes
 console.log("[SOCIAL] Registered routes:")
 console.log("- GET /auth/test")
