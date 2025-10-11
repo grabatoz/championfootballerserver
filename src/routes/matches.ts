@@ -509,13 +509,16 @@ router.post('/:matchId/stats', required, async (ctx, next) => {
 
   stats.xpAwarded = matchXP;
   await stats.save();
-  // Update user's total XP (sum of all xpAwarded)
-  const allStats = await models.MatchStatistics.findAll({ where: { user_id: userId } });
-  const totalXP = allStats.reduce((sum, s) => sum + (s.xpAwarded || 0), 0);
-  const user = await models.User.findByPk(userId);
-  if (user) {
-      user.xp = totalXP;
-      await user.save();
+  // Update user's total XP including achievements XP
+  try {
+    const { recalcUserTotalXP } = await import('../utils/xpRecalc');
+    await recalcUserTotalXP(String(userId));
+  } catch {
+    // fallback to legacy behavior
+    const allStats = await models.MatchStatistics.findAll({ where: { user_id: userId } });
+    const totalXP = allStats.reduce((sum, s) => sum + (s.xpAwarded || 0), 0);
+    const user = await models.User.findByPk(userId);
+    if (user) { user.xp = totalXP; await user.save(); }
   }
 
   ctx.status = 200;
@@ -1500,12 +1503,14 @@ const statsAllZero = (p: any) => {
 
 
 async function adjustUserTotalXP(userId: string) {
-  const allStats = await MatchStatistics.findAll({ where: { user_id: userId } });
-  const totalXP = allStats.reduce((sum, s) => sum + (s.xpAwarded || 0), 0);
-  const user = await models.User.findByPk(userId);
-  if (user) {
-    user.xp = totalXP;
-    await user.save();
+  try {
+    const { recalcUserTotalXP } = await import('../utils/xpRecalc');
+    await recalcUserTotalXP(String(userId));
+  } catch {
+    const allStats = await MatchStatistics.findAll({ where: { user_id: userId } });
+    const totalXP = allStats.reduce((sum, s) => sum + (s.xpAwarded || 0), 0);
+    const user = await models.User.findByPk(userId);
+    if (user) { user.xp = totalXP; await user.save(); }
   }
 }
 

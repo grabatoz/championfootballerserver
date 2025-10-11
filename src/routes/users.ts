@@ -7,6 +7,7 @@ import sequelize from '../config/database';
 import { Op } from 'sequelize';
 import Match from '../models/Match';
 import Vote from '../models/Vote';
+import { calculateAndAwardXPAchievements } from '../utils/xpAchievementsEngine';
 const { User, League } = models
 
 const router = new Router({ prefix: '/users' });
@@ -299,5 +300,49 @@ router.get('/me/achievements', required, async (ctx) => {
     console.error('GET /users/me/achievements failed', e);
     ctx.status = 500;
     ctx.body = { success: false, message: 'Failed to compute achievements' };
+  }
+});
+
+// POST /users/me/achievements/award - persist achievements XP to the user's profile
+router.post('/me/achievements/award', required, async (ctx) => {
+  if (!ctx.state.user?.userId) {
+    ctx.status = 401;
+    ctx.body = { success: false, message: 'Unauthorized' };
+    return;
+  }
+
+  const userId = String(ctx.state.user.userId);
+  try {
+    // Compute and award any missing achievements across all leagues
+    await calculateAndAwardXPAchievements(userId);
+
+    // Return updated XP snapshot
+    // Recalculate total XP to include both match stats and achievements
+    try {
+      const { recalcUserTotalXP } = await import('../utils/xpRecalc');
+      await recalcUserTotalXP(userId);
+    } catch {}
+    const UserModel = (models as any).User;
+    const user = await UserModel.findByPk(userId, { attributes: ['id', 'xp', 'achievements'] });
+    if (!user) {
+      ctx.status = 404;
+      ctx.body = { success: false, message: 'User not found' };
+      return;
+    }
+
+    // Optionally clear any cached profile data
+    try { cache.clearPattern(`user_leagues_${userId}`); } catch {}
+
+    ctx.body = {
+      success: true,
+      message: 'Achievements XP persisted',
+      userId,
+      totalXP: Number(user.xp || 0),
+      achievements: Array.isArray(user.achievements) ? user.achievements : [],
+    };
+  } catch (e) {
+    console.error('POST /users/me/achievements/award failed', e);
+    ctx.status = 500;
+    ctx.body = { success: false, message: 'Failed to persist achievements' };
   }
 });

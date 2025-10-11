@@ -2136,7 +2136,31 @@ router.get('/:leagueId/xp-breakdown/:userId', required, async (ctx) => {
     });
   }
 
-  ctx.body = { userId, leagueId, breakdown };
+  // --- Achievements section: list user's awarded achievements and total XP from achievements ---
+  // Note: achievements are stored globally on the user (not per-league). We include all awarded achievements here.
+  try {
+    const user = await User.findByPk(userId, { attributes: ['id', 'achievements'] });
+    const { xpAchievements } = await import('../utils/xpAchievements');
+    const achIds: string[] = Array.isArray((user as any)?.achievements) ? ((user as any).achievements as string[]) : [];
+    const achDefs = (xpAchievements as any[]).filter((a: any) => achIds.includes(a.id));
+    const achievements = achDefs.map((a: any) => ({ id: a.id, definition: a.definition, xp: a.xp }));
+    const achievementsTotalXP = achDefs.reduce((sum: number, a: any) => sum + (a.xp || 0), 0);
+
+    ctx.body = {
+      userId,
+      leagueId,
+      breakdown,
+      totals: {
+        matchSavedXP: runningTotalSaved,
+        achievementsXP: achievementsTotalXP,
+        combined: runningTotalSaved + achievementsTotalXP,
+      },
+      achievements,
+    };
+  } catch {
+    // Fallback if anything goes wrong while reading achievements
+    ctx.body = { userId, leagueId, breakdown, totals: { matchSavedXP: runningTotalSaved } };
+  }
 });
 
 // POST endpoint to reset all users' XP in a league to the correct value
@@ -2206,11 +2230,13 @@ router.post('/:id/reset-xp', required, async (ctx) => {
       if (motmId === member.id) userXP += (teamResult === 'win' ? xpPointsTable.motm.win : xpPointsTable.motm.lose);
       if (voteCounts[member.id]) userXP += (teamResult === 'win' ? xpPointsTable.motmVote.win : xpPointsTable.motmVote.lose) * voteCounts[member.id];
     }
-    // Update the user's XP in the database
-    const user = await User.findByPk(member.id);
-    if (user) {
-      user.xp = userXP;
-      await user.save();
+    // Update the user's XP in the database (recalculate total including achievements)
+    try {
+      const { recalcUserTotalXP } = await import('../utils/xpRecalc');
+      await recalcUserTotalXP(String(member.id));
+    } catch {
+      const user = await User.findByPk(member.id);
+      if (user) { user.xp = Number(userXP) || 0; await user.save(); }
     }
   }
   // Update cache for all users whose XP was reset
