@@ -209,6 +209,8 @@ router.get("/providers", (ctx) => {
     google: GOOGLE_ENABLED,
     facebook: FACEBOOK_ENABLED,
     clientUrl: CLIENT_URL,
+    googleCallbackUrl: process.env.GOOGLE_CALLBACK_URL || null,
+    facebookCallbackUrl: process.env.FACEBOOK_CALLBACK_URL || null,
     timestamp: new Date().toISOString(),
   }
 })
