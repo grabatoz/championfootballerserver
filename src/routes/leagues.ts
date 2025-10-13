@@ -376,85 +376,85 @@ function respondLeagueNotFound(ctx: any) {
 // router.get('/leagues/:leagueId', required, async (ctx) => { ... });
 
 // ✅ Keep the canonical league-by-id route and return JSON instead of throwing
-router.get("/:id", required, async (ctx) => {
-  if (!ctx.state.user || !ctx.state.user.userId) {
-    ctx.status = 401;
-    ctx.body = { success: false, message: "Unauthorized" };
-    return;
-  }
-  if (!isUuid(ctx.params.id)) {
-    ctx.status = 400;
-    ctx.body = { success: false, message: "Invalid league id" };
-    return;
-  }
+// router.get("/:id", required, async (ctx) => {
+//   if (!ctx.state.user || !ctx.state.user.userId) {
+//     ctx.status = 401;
+//     ctx.body = { success: false, message: "Unauthorized" };
+//     return;
+//   }
+//   if (!isUuid(ctx.params.id)) {
+//     ctx.status = 400;
+//     ctx.body = { success: false, message: "Invalid league id" };
+//     return;
+//   }
 
-  const leagueId = ctx.params.id;
+//   const leagueId = ctx.params.id;
 
-  try {
-    await Match.update(
-      { status: 'RESULT_PUBLISHED' },
-      {
-        where: {
-          leagueId: leagueId,
-          status: 'SCHEDULED',
-          end: { [Op.lt]: new Date() }
-        }
-      }
-    );
-  } catch (error) {
-    console.error('Error auto-updating match statuses:', error);
-  }
+//   try {
+//     await Match.update(
+//       { status: 'RESULT_PUBLISHED' },
+//       {
+//         where: {
+//           leagueId: leagueId,
+//           status: 'SCHEDULED',
+//           end: { [Op.lt]: new Date() }
+//         }
+//       }
+//     );
+//   } catch (error) {
+//     console.error('Error auto-updating match statuses:', error);
+//   }
 
-  const league = await League.findByPk(ctx.params.id, {
-    include: [
-      { model: User, as: 'members' },
-      { model: User, as: 'administeredLeagues' },
-      {
-        model: Match,
-        as: 'matches',
-        include: [
-          { model: User, as: 'homeTeamUsers' },
-          { model: User, as: 'awayTeamUsers' },
-          { model: User, as: 'homeCaptain' },
-          { model: User, as: 'awayCaptain' },
-          { model: MatchGuest, as: 'guestPlayers' },
-          { model: User, as: 'availableUsers' }
-        ]
-      }
-    ]
-  });
+//   const league = await League.findByPk(ctx.params.id, {
+//     include: [
+//       { model: User, as: 'members' },
+//       { model: User, as: 'administeredLeagues' },
+//       {
+//         model: Match,
+//         as: 'matches',
+//         include: [
+//           { model: User, as: 'homeTeamUsers' },
+//           { model: User, as: 'awayTeamUsers' },
+//           { model: User, as: 'homeCaptain' },
+//           { model: User, as: 'awayCaptain' },
+//           { model: MatchGuest, as: 'guestPlayers' },
+//           { model: User, as: 'availableUsers' }
+//         ]
+//       }
+//     ]
+//   });
 
-  if (!league) {
-    return respondLeagueNotFound(ctx);
-  }
+//   if (!league) {
+//     return respondLeagueNotFound(ctx);
+//   }
 
-  const isMember = (league as any).members?.some((member: any) => member.id === ctx.state.user!.userId);
-  const isAdmin = (league as any).administeredLeagues?.some((admin: any) => admin.id === ctx.state.user!.userId);
+//   const isMember = (league as any).members?.some((member: any) => member.id === ctx.state.user!.userId);
+//   const isAdmin = (league as any).administeredLeagues?.some((admin: any) => admin.id === ctx.state.user!.userId);
 
-  if (!isMember && !isAdmin) {
-    // Optional stricter access: keep as 403 JSON instead of throw
-    ctx.status = 403;
-    ctx.body = { success: false, message: "You don't have access to this league" };
-    return;
-  }
+//   if (!isMember && !isAdmin) {
+//     // Optional stricter access: keep as 403 JSON instead of throw
+//     ctx.status = 403;
+//     ctx.body = { success: false, message: "You don't have access to this league" };
+//     return;
+//   }
 
-  ctx.body = {
-    success: true,
-    league: {
-      id: league.id,
-      name: league.name,
-      inviteCode: league.inviteCode,
-      createdAt: league.createdAt,
-      members: (league as any).members || [],
-      administrators: (league as any).administeredLeagues || [],
-      matches: (league as any).matches || [],
-      active: league.active,
-      maxGames: league.maxGames,
-      showPoints: league.showPoints,
-      image: league.image
-    }
-  };
-});
+//   ctx.body = {
+//     success: true,
+//     league: {
+//       id: league.id,
+//       name: league.name,
+//       inviteCode: league.inviteCode,
+//       createdAt: league.createdAt,
+//       members: (league as any).members || [],
+//       administrators: (league as any).administeredLeagues || [],
+//       matches: (league as any).matches || [],
+//       active: league.active,
+//       maxGames: league.maxGames,
+//       showPoints: league.showPoints,
+//       image: league.image
+//     }
+//   };
+// });
 
 // ✅ ADD AVAILABILITY ROUTE HERE
 router.get('/:leagueId/matches/:matchId/availability', required, async (ctx) => {
@@ -537,57 +537,34 @@ router.get('/user', required, async (ctx) => {
   }
 
   try {
-    // Try to get user leagues with simple fallback
-    let results;
+    // ORM-only: use membership association to fetch ONLY the current user's leagues
+    const userLeagues = await League.findAll({
+      attributes: ['id', 'name', 'maxGames', 'image', 'createdAt'],
+      include: [
+        {
+          model: User,
+          as: 'members',
+          attributes: [],
+          through: { attributes: [] },
+          where: { id: userId },
+          required: true
+        }
+      ],
+      order: [['createdAt', 'DESC']],
+      limit: 15
+    });
 
-    try {
-      // First try with minimal fields that should exist
-      [results] = await User.sequelize?.query(`
-        SELECT l.id, l.name, l."maxGames", l.image, l."createdAt"
-        FROM "Leagues" l
-        INNER JOIN "LeagueMembers" lm ON l.id = lm."leagueId"
-        WHERE lm."userId" = :userId
-        ORDER BY l."createdAt" DESC
-        LIMIT 15
-      `, {
-        replacements: { userId },
-        type: QueryTypes.SELECT
-      }) || [];
+    const leagues = userLeagues.map((l: any) => ({
+      id: l.id,
+      name: l.name,
+      description: '',
+      type: 'standard',
+      maxGames: l.maxGames,
+      leagueImage: l.image || null,
+      createdAt: l.createdAt
+    }));
 
-      // Add missing fields that frontend expects
-      results = (results as any[]).map((league: any) => ({
-        ...league,
-        description: '', // Add empty description
-        type: 'standard', // Add default type
-        leagueImage: league.image || null // Map image to leagueImage
-      }));
-
-    } catch (queryError) {
-      console.log('Raw query failed, using fallback:', queryError);
-      // Fallback: get all leagues (not ideal but works)
-      const allLeagues = await League.findAll({
-        attributes: ['id', 'name', 'maxGames', 'image', 'createdAt'],
-        limit: 15
-      });
-
-      // Map to expected format
-      results = allLeagues.map((league: any) => ({
-        id: league.id,
-        name: league.name,
-        description: '', // Add empty description
-        type: 'standard', // Add default type
-        maxGames: league.maxGames,
-        leagueImage: league.image || null,
-        createdAt: league.createdAt
-      }));
-    }
-
-    const result = {
-      success: true,
-      leagues: results || []
-    };
-
-    console.log('User leagues result:', result);
+    const result = { success: true, leagues };
 
     cache.set(cacheKey, result, 1800); // 30 min cache
     ctx.set('X-Cache', 'MISS');
@@ -604,86 +581,86 @@ router.get('/user', required, async (ctx) => {
 });
 
 // Get all leagues for the current user - ULTRA FAST FIXED (keep this at "/")
-router.get("/", required, async (ctx) => {
-  if (!ctx.state.user || !ctx.state.user.userId) {
-    ctx.status = 401;
-    ctx.body = { success: false, message: "Unauthorized" };
-    return;
-  }
+// router.get("/", required, async (ctx) => {
+//   if (!ctx.state.user || !ctx.state.user.userId) {
+//     ctx.status = 401;
+//     ctx.body = { success: false, message: "Unauthorized" };
+//     return;
+//   }
 
-  const userId = ctx.state.user.userId;
-  const cacheKey = `leagues_main_${userId}_ultra_fast`;
-  const cached = cache.get(cacheKey);
-  if (cached) {
-    ctx.set('X-Cache', 'HIT');
-    ctx.body = cached;
-    return;
-  }
+//   const userId = ctx.state.user.userId;
+//   const cacheKey = `leagues_main_${userId}_ultra_fast`;
+//   const cached = cache.get(cacheKey);
+//   if (cached) {
+//     ctx.set('X-Cache', 'HIT');
+//     ctx.body = cached;
+//     return;
+//   }
 
-  try {
-    // Try to get user leagues with simple fallback
-    let results;
+//   try {
+//     // Try to get user leagues with simple fallback
+//     let results;
 
-    try {
-      // First try with minimal fields that should exist
-      [results] = await User.sequelize?.query(`
-        SELECT l.id, l.name, l."maxGames", l.image, l."createdAt"
-        FROM "Leagues" l
-        INNER JOIN "LeagueMembers" lm ON l.id = lm."leagueId"
-        WHERE lm."userId" = :userId
-        ORDER BY l."createdAt" DESC
-        LIMIT 10
-      `, {
-        replacements: { userId },
-        type: QueryTypes.SELECT
-      }) || [];
+//     try {
+//       // First try with minimal fields that should exist
+//       [results] = await User.sequelize?.query(`
+//         SELECT l.id, l.name, l."maxGames", l.image, l."createdAt"
+//         FROM "Leagues" l
+//         INNER JOIN "LeagueMembers" lm ON l.id = lm."leagueId"
+//         WHERE lm."userId" = :userId
+//         ORDER BY l."createdAt" DESC
+//         LIMIT 10
+//       `, {
+//         replacements: { userId },
+//         type: QueryTypes.SELECT
+//       }) || [];
 
-      // Add missing fields that frontend expects
-      results = (results as any[]).map((league: any) => ({
-        ...league,
-        description: '', // Add empty description
-        type: 'standard', // Add default type
-        leagueImage: league.image || null // Map image to leagueImage
-      }));
+//       // Add missing fields that frontend expects
+//       results = (results as any[]).map((league: any) => ({
+//         ...league,
+//         description: '', // Add empty description
+//         type: 'standard', // Add default type
+//         leagueImage: league.image || null // Map image to leagueImage
+//       }));
 
-    } catch (queryError) {
-      console.log('Raw query failed, using fallback:', queryError);
-      // Fallback: get all leagues (not ideal but works)
-      const allLeagues = await League.findAll({
-        attributes: ['id', 'name', 'maxGames', 'image', 'createdAt'],
-        limit: 10
-      });
+//     } catch (queryError) {
+//       console.log('Raw query failed, using fallback:', queryError);
+//       // Fallback: get all leagues (not ideal but works)
+//       const allLeagues = await League.findAll({
+//         attributes: ['id', 'name', 'maxGames', 'image', 'createdAt'],
+//         limit: 10
+//       });
 
-      // Map to expected format
-      results = allLeagues.map((league: any) => ({
-        id: league.id,
-        name: league.name,
-        description: '', // Add empty description
-        type: 'standard', // Add default type
-        maxGames: league.maxGames,
-        leagueImage: league.image || null,
-        createdAt: league.createdAt
-      }));
-    }
+//       // Map to expected format
+//       results = allLeagues.map((league: any) => ({
+//         id: league.id,
+//         name: league.name,
+//         description: '', // Add empty description
+//         type: 'standard', // Add default type
+//         maxGames: league.maxGames,
+//         leagueImage: league.image || null,
+//         createdAt: league.createdAt
+//       }));
+//     }
 
-    const result = {
-      success: true,
-      leagues: results || []
-    };
+//     const result = {
+//       success: true,
+//       leagues: results || []
+//     };
 
-    cache.set(cacheKey, result, 1800); // 30 min cache
-    ctx.set('X-Cache', 'MISS');
-    ctx.body = result;
-  } catch (error) {
-    console.error("Error fetching leagues for user:", error);
-    ctx.status = 500;
-    ctx.body = {
-      success: false,
-      message: "Failed to retrieve leagues.",
-      error: error instanceof Error ? error.message : 'Unknown error'
-    };
-  }
-});
+//     cache.set(cacheKey, result, 1800); // 30 min cache
+//     ctx.set('X-Cache', 'MISS');
+//     ctx.body = result;
+//   } catch (error) {
+//     console.error("Error fetching leagues for user:", error);
+//     ctx.status = 500;
+//     ctx.body = {
+//       success: false,
+//       message: "Failed to retrieve leagues.",
+//       error: error instanceof Error ? error.message : 'Unknown error'
+//     };
+//   }
+// });
 
 // Get league details by ID
 router.get("/:id", required, async (ctx) => {

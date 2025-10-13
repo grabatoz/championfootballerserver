@@ -8,20 +8,18 @@ const router = new Router({ prefix: '/dream-team' });
 
 // Get dream team - best players by position
 router.get('/', required, async (ctx) => {
-  const cacheKey = 'dreamteam_all';
-  const cached = cache.get(cacheKey);
-  if (cached) {
-    ctx.body = cached;
+  const leagueId = ctx.query.leagueId as string | undefined;
+  if (!leagueId) {
+    ctx.throw(400, 'leagueId is required');
     return;
   }
 
-  try {
-    const leagueId = ctx.query.leagueId as string | undefined;
-    if (!leagueId) {
-      ctx.throw(400, 'leagueId is required');
-      return;
-    }
+  // Cache per league to avoid cross-league results
+  const cacheKey = `dreamteam_${leagueId}`;
+  const cached = cache.get(cacheKey);
+  if (cached) { ctx.body = cached; return; }
 
+  try {
     // Get league and its members
     const league = await models.League.findByPk(leagueId, {
       include: [{ model: models.User, as: 'members' }]
@@ -42,12 +40,18 @@ router.get('/', required, async (ctx) => {
           include: [{
             model: Match,
             as: 'match',
-            where: { status: 'RESULT_PUBLISHED', leagueId }
+            where: { status: 'RESULT_PUBLISHED', leagueId },
+            // Include team users to calculate wins/points membership
+            include: [
+              { model: User, as: 'homeTeamUsers', attributes: ['id'] },
+              { model: User, as: 'awayTeamUsers', attributes: ['id'] }
+            ]
           }]
         },
         {
           model: Vote,
-          as: 'receivedVotes'
+          as: 'receivedVotes',
+          include: [{ model: Match, as: 'votedMatch', where: { leagueId }, attributes: ['id'] }]
         }
       ]
     });
@@ -103,10 +107,11 @@ router.get('/', required, async (ctx) => {
 
     // Categorize players by position
     const categorizePlayer = (position: string) => {
-      if (position?.includes('Goalkeeper')) return 'goalkeeper';
-      if (position?.includes('Back') || position?.includes('Wing-back')) return 'defenders';
-      if (position?.includes('Midfielder')) return 'midfielders';
-      if (position?.includes('Forward') || position?.includes('Striker') || position?.includes('Winger')) return 'forwards';
+      const pos = String(position || '').toLowerCase();
+      if (pos.includes('goal')) return 'goalkeeper';
+      if (pos.includes('back') || pos.includes('def')) return 'defenders';
+      if (pos.includes('mid')) return 'midfielders';
+      if (pos.includes('for') || pos.includes('str') || pos.includes('wing')) return 'forwards';
       return 'midfielders'; // default fallback
     };
 
