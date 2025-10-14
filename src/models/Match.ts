@@ -36,6 +36,8 @@ export interface MatchAttributes {
   suggestedAwayGoals?: number | null;
   suggestedByCaptainId?: string | null;
   removed?: { home: string[]; away: string[] }; // <-- added
+  homeWinPct?: number | null;
+  awayWinPct?: number | null;
 }
 
 interface MatchCreationAttributes extends Optional<MatchAttributes, 'id' | 'archived' | 'removed'> {} // <-- added 'removed'
@@ -71,6 +73,8 @@ class Match extends Model<MatchAttributes, MatchCreationAttributes> implements M
   public suggestedAwayGoals?: number | null;
   public suggestedByCaptainId?: string | null;
   public removed?: { home: string[]; away: string[] }; // <-- added
+  public homeWinPct?: number | null;
+  public awayWinPct?: number | null;
 
   // Static associate function
   public static associate(models: any) {
@@ -257,6 +261,8 @@ Match.init(
       allowNull: true,
       defaultValue: { home: [], away: [] }
     },
+    homeWinPct: { type: DataTypes.INTEGER, allowNull: true },
+    awayWinPct: { type: DataTypes.INTEGER, allowNull: true },
   },
   {
     sequelize,

@@ -1803,37 +1803,63 @@ router.get('/:matchId/prediction', required, async (ctx) => {
     let matchupPct: number | null = null;
     let predicted: 'home' | 'away' | 'draw' | null = null;
     let predictedScore: string | null = null;
+    let homeWinPct: number | null = null;
+    let awayWinPct: number | null = null;
 
-    if (totalAvg > 0) {
+    if (homeIds.length === 0 && awayIds.length === 0) {
+      // no teams
+      matchupPct = null;
+    } else if (homeIds.length === 0 && awayIds.length > 0) {
+      // Away auto 100%
+      homeWinPct = 0;
+      awayWinPct = 100;
+      predicted = 'away';
+    } else if (awayIds.length === 0 && homeIds.length > 0) {
+      // Home auto 100%
+      homeWinPct = 100;
+      awayWinPct = 0;
+      predicted = 'home';
+    } else if (totalAvg > 0) {
       matchupPct = Math.round((homeAvg / totalAvg) * 100);
+      homeWinPct = matchupPct;
+      awayWinPct = 100 - matchupPct;
 
       if (matchupPct > 54) predicted = 'home';
       else if (matchupPct < 46) predicted = 'away';
       else predicted = 'draw';
 
       const clampGoals = (n: number) => Math.max(0, Math.min(5, Math.round(n)));
-
-      // Scale averages to a 0-5 goals band
       const hGoalsBase = Math.max(0.5, (homeAvg / (totalAvg / 2)));
       const aGoalsBase = Math.max(0.5, (awayAvg / (totalAvg / 2)));
       const hGoals = clampGoals(predicted === 'home' ? hGoalsBase : hGoalsBase * 0.9);
       const aGoals = clampGoals(predicted === 'away' ? aGoalsBase : aGoalsBase * 0.9);
-
       predictedScore = predicted === 'draw'
         ? `${Math.min(hGoals, aGoals)}-${Math.min(hGoals, aGoals)}`
         : `${hGoals}-${aGoals}`;
     }
 
+    // Persist percentages on the match if computed
+    try {
+      const m = await Match.findByPk(matchId);
+      if (m) {
+        if (homeWinPct !== null && awayWinPct !== null) {
+          (m as any).homeWinPct = Math.max(0, Math.min(100, Math.round(homeWinPct)));
+          (m as any).awayWinPct = Math.max(0, Math.min(100, Math.round(awayWinPct)));
+          await m.save();
+        }
+      }
+    } catch {}
+
     const result = {
       success: true,
-      available: totalAvg > 0,
-      reason: totalAvg > 0 ? 'OK' : 'NO_SIGNAL',
+      available: (homeIds.length + awayIds.length) > 0 && (homeWinPct !== null || totalAvg > 0),
+      reason: (homeIds.length + awayIds.length) > 0 ? 'OK' : 'NO_SIGNAL',
       leagueId,
       matchId: String(matchId),
       matchNumber: matchIndex >= 0 ? matchIndex + 1 : null,
       totalMatches,
-      home: { average: Number(homeAvg.toFixed(2)), players: homeIds.length },
-      away: { average: Number(awayAvg.toFixed(2)), players: awayIds.length },
+      home: { average: Number(homeAvg.toFixed(2)), players: homeIds.length, winPct: homeWinPct },
+      away: { average: Number(awayAvg.toFixed(2)), players: awayIds.length, winPct: awayWinPct },
       matchupPct,
       predicted,
       predictedScore,
@@ -1844,6 +1870,105 @@ router.get('/:matchId/prediction', required, async (ctx) => {
     ctx.body = result;
   } catch (e) {
     console.error('GET /matches/:matchId/prediction error', e);
+    ctx.status = 500;
+    ctx.body = { success: false, message: 'Failed to compute prediction' };
+  }
+});
+
+// POST /matches/:matchId/prediction
+// Compute prediction based on provided team selections (ids and totals). Does not persist.
+router.post('/:matchId/prediction', required, async (ctx) => {
+  try {
+    const { matchId } = ctx.params;
+    const { homeIds = [], awayIds = [], homeTotal, awayTotal } = (ctx.request.body || {}) as {
+      homeIds?: string[];
+      awayIds?: string[];
+      homeTotal?: number;
+      awayTotal?: number;
+    };
+
+    const hIds: string[] = Array.isArray(homeIds) ? homeIds.map(String) : [];
+    const aIds: string[] = Array.isArray(awayIds) ? awayIds.map(String) : [];
+    const allIds = Array.from(new Set([...hIds, ...aIds]));
+
+    const countHome = Number.isFinite(Number(homeTotal)) ? Number(homeTotal) : hIds.length;
+    const countAway = Number.isFinite(Number(awayTotal)) ? Number(awayTotal) : aIds.length;
+
+    // 99% rule when one team has zero players (using provided totals including guests)
+    if (countHome === 0 && countAway > 0) {
+      ctx.body = {
+        success: true,
+        available: true,
+        home: { average: 0, players: countHome, winPct: 1 },
+        away: { average: 0, players: countAway, winPct: 99 },
+        matchupPct: 1,
+        predicted: 'away' as const,
+        predictedScore: null,
+      };
+      return;
+    }
+    if (countAway === 0 && countHome > 0) {
+      ctx.body = {
+        success: true,
+        available: true,
+        home: { average: 0, players: countHome, winPct: 99 },
+        away: { average: 0, players: countAway, winPct: 1 },
+        matchupPct: 99,
+        predicted: 'home' as const,
+        predictedScore: null,
+      };
+      return;
+    }
+
+    if (allIds.length === 0) {
+      ctx.body = { success: true, available: false, reason: 'NO_SELECTED_PLAYERS' };
+      return;
+    }
+
+    const rows = await MatchStatistics.findAll({
+      attributes: [
+        'user_id',
+        [sequelize.fn('AVG', sequelize.fn('COALESCE', sequelize.col('MatchStatistics.xp_awarded'), 0)), 'avgXP'],
+        [sequelize.fn('COUNT', sequelize.col('MatchStatistics.match_id')), 'games'],
+      ],
+      where: { user_id: { [Op.in]: allIds } },
+      group: ['user_id'],
+      raw: true,
+    }) as unknown as Array<{ user_id: string; avgXP: string | number; games: string | number }>;
+
+    const avgMap = new Map<string, number>();
+    rows.forEach(r => avgMap.set(String(r.user_id), Number(r.avgXP ?? 0) || 0));
+    const avgOf = (ids: string[]) => ids.length ? ids.reduce((s, id) => s + (avgMap.get(String(id)) || 0), 0) / ids.length : 0;
+
+    const homeAvg = avgOf(hIds);
+    const awayAvg = avgOf(aIds);
+    const totalAvg = homeAvg + awayAvg;
+    let matchupPct: number | null = null;
+    let predicted: 'home' | 'away' | 'draw' | null = null;
+    let predictedScore: string | null = null;
+    let homeWinPct: number | null = null;
+    let awayWinPct: number | null = null;
+
+    if (totalAvg > 0) {
+      matchupPct = Math.round((homeAvg / totalAvg) * 100);
+      homeWinPct = matchupPct;
+      awayWinPct = 100 - matchupPct;
+      if (matchupPct > 54) predicted = 'home';
+      else if (matchupPct < 46) predicted = 'away';
+      else predicted = 'draw';
+    }
+
+    ctx.body = {
+      success: true,
+      available: totalAvg > 0,
+      home: { average: Number(homeAvg.toFixed(2)), players: countHome, winPct: homeWinPct },
+      away: { average: Number(awayAvg.toFixed(2)), players: countAway, winPct: awayWinPct },
+      matchupPct,
+      predicted,
+      predictedScore,
+    };
+  } catch (e) {
+    console.error('POST /matches/:matchId/prediction error', e);
     ctx.status = 500;
     ctx.body = { success: false, message: 'Failed to compute prediction' };
   }

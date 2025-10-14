@@ -11,6 +11,7 @@
     "db:add-result-columns": "ts-node --transpile-only src/scripts/add-result-confirmation-columns.ts",
     "db:check-match-columns": "ts-node --transpile-only src/scripts/check-match-columns.ts",
     "db:add-match-columns": "ts-node --transpile-only src/scripts/add-removed-column-to-matches.ts",
+    "db:add-win-pct-columns": "ts-node --transpile-only src/scripts/add-win-pct-columns-to-matches.ts",
     "db:fix-users": "ts-node --transpile-only src/scripts/add-missing-user-columns.ts"
   },
   "keywords": [],
