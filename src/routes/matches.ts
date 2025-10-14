@@ -1828,14 +1828,39 @@ router.get('/:matchId/prediction', required, async (ctx) => {
       else if (matchupPct < 46) predicted = 'away';
       else predicted = 'draw';
 
-      const clampGoals = (n: number) => Math.max(0, Math.min(5, Math.round(n)));
-      const hGoalsBase = Math.max(0.5, (homeAvg / (totalAvg / 2)));
-      const aGoalsBase = Math.max(0.5, (awayAvg / (totalAvg / 2)));
-      const hGoals = clampGoals(predicted === 'home' ? hGoalsBase : hGoalsBase * 0.9);
-      const aGoals = clampGoals(predicted === 'away' ? aGoalsBase : aGoalsBase * 0.9);
-      predictedScore = predicted === 'draw'
-        ? `${Math.min(hGoals, aGoals)}-${Math.min(hGoals, aGoals)}`
-        : `${hGoals}-${aGoals}`;
+      // Compute expected goals using team share of strength and small home advantage.
+      const clamp = (n: number, lo = 0, hi = 6) => Math.max(lo, Math.min(hi, n));
+      const ratio = totalAvg > 0 ? homeAvg / totalAvg : 0.5;
+      // Scale total goals by combined strength (kept conservative for 5/7-a-side):
+      // sum ~ 30 => ~2.6 goals, sum ~ 60 => ~3.6
+      const expectedTotal = clamp(1.6 + (totalAvg / 30), 1.6, 4.0);
+      // Nudge towards the favored team by up to ~0.35 goals
+      const edge = ((homeWinPct ?? 50) - 50) / 50; // -1..1
+      const edgeShift = clamp(edge * 0.35, -0.35, 0.35);
+      const homeAdv = 0.15; // small home-advantage
+
+      let expHome = clamp(expectedTotal * ratio + homeAdv + edgeShift, 0, 5.5);
+      let expAway = clamp(expectedTotal - expHome, 0, 5.5);
+
+      let h = Math.round(expHome);
+      let a = Math.round(expAway);
+
+      // Ensure consistency with predicted outcome
+      if (predicted === 'home' && h <= a) h = a + 1;
+      if (predicted === 'away' && a <= h) a = h + 1;
+      if (predicted === 'draw') {
+        // For draws, base both sides on total intensity
+        const base = Math.max(0, Math.min(4, Math.round(expectedTotal / 2)));
+        h = base;
+        a = base;
+      }
+
+      // Avoid 0-0 in very lively games
+      if (h === 0 && a === 0 && expectedTotal >= 2.2) { h = 1; a = 1; }
+      // Cap to reasonable five-a-side style scores
+      h = Math.max(0, Math.min(5, h));
+      a = Math.max(0, Math.min(5, a));
+      predictedScore = `${h}-${a}`;
     }
 
     // Persist percentages on the match if computed
@@ -1956,6 +1981,28 @@ router.post('/:matchId/prediction', required, async (ctx) => {
       if (matchupPct > 54) predicted = 'home';
       else if (matchupPct < 46) predicted = 'away';
       else predicted = 'draw';
+
+      // Expected goals model (same as GET) for consistent predictedScore
+      const clamp = (n: number, lo = 0, hi = 6) => Math.max(lo, Math.min(hi, n));
+      const ratio = totalAvg > 0 ? homeAvg / totalAvg : 0.5;
+      const expectedTotal = clamp(1.6 + (totalAvg / 30), 1.6, 4.0);
+      const edge = ((homeWinPct ?? 50) - 50) / 50; // -1..1
+      const edgeShift = clamp(edge * 0.35, -0.35, 0.35);
+      const homeAdv = 0.15;
+      let expHome = clamp(expectedTotal * ratio + homeAdv + edgeShift, 0, 5.5);
+      let expAway = clamp(expectedTotal - expHome, 0, 5.5);
+      let h = Math.round(expHome);
+      let a = Math.round(expAway);
+      if (predicted === 'home' && h <= a) h = a + 1;
+      if (predicted === 'away' && a <= h) a = h + 1;
+      if (predicted === 'draw') {
+        const base = Math.max(0, Math.min(4, Math.round(expectedTotal / 2)));
+        h = base; a = base;
+      }
+      if (h === 0 && a === 0 && expectedTotal >= 2.2) { h = 1; a = 1; }
+      h = Math.max(0, Math.min(5, h));
+      a = Math.max(0, Math.min(5, a));
+      predictedScore = `${h}-${a}`;
     }
 
     ctx.body = {
