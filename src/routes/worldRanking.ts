@@ -1,7 +1,7 @@
 import Router from '@koa/router';
 import models from '../models';
 import cache from '../utils/cache';
-import { Op, literal } from 'sequelize';
+import { Op, literal, fn, col } from 'sequelize';
 
 // World Ranking: top 1000 players globally by XP + ability to jump to a specific player's row
 // Query params:
@@ -21,7 +21,11 @@ async function handleGetWorldRanking(ctx: any) {
   const playerId = ctx.query.playerId as string | undefined;
   const positionType = ctx.query.positionType as string | undefined;
   const year = ctx.query.year ? Number(ctx.query.year) : undefined;
-  const limit = Math.min(50, ctx.query.limit ? Number(ctx.query.limit) : 25); // ULTRA FAST: smaller limits
+  // Allow large lists: default to a high limit if not provided; cap for safety
+  const requestedLimit = ctx.query.limit ? Number(ctx.query.limit) : undefined;
+  const limit = requestedLimit && Number.isFinite(requestedLimit) && requestedLimit > 0
+    ? Math.min(requestedLimit, 100000)
+    : 100000;
 
   const cacheKey = `world_rank_${mode}_${positionType || 'all'}_${year || 'all'}_${limit}`;
   const cached = cache.get(cacheKey);
@@ -37,38 +41,38 @@ async function handleGetWorldRanking(ctx: any) {
   const userWhere: any = {};
   if (positionType) userWhere.positionType = positionType;
 
-  // Optimized: get TOP users with XP ordered, ultra small limit for SPEED
+  // Fetch all users (or filtered by positionType). Include even XP=0 so everyone appears.
   const users = await models.User.findAll({
     attributes: ['id','firstName','lastName','position','positionType','profilePicture','xp'],
     where: {
       ...(positionType ? { positionType } : {}),
-      xp: { [Op.gt]: 0 } // Only users with XP > 0
     },
-    order: [['xp', 'DESC']], // Pre-sort by total XP for fastest processing
-    limit: limit * 2 // Get 2x limit for buffer, but keep it small
+    // Order by total XP; final ranking may re-sort depending on mode
+    order: [['xp', 'DESC']],
   });
 
-  // Optimized: Only get match stats for the users we're considering
-  const userIds = users.map(u => (u as any).id);
+  // Aggregate match counts per user (fast GROUP BY). Filter by year if provided.
   const matchStats = await models.MatchStatistics.findAll({
-    attributes: ['user_id','match_id'],
-    where: {
-      user_id: userIds // Only fetch stats for top users by XP
-    },
+    attributes: [
+      'user_id',
+      [fn('COUNT', col('MatchStatistics.user_id')), 'matches']
+    ],
     include: [
       {
         model: models.Match,
         as: 'match',
-        attributes: ['date'],
+        attributes: [],
         required: true,
         ...(year ? { where: { date: { [Op.gte]: new Date(`${year}-01-01`), [Op.lt]: new Date(`${year + 1}-01-01`) } } } : {})
       }
-    ]
+    ],
+    group: ['MatchStatistics.user_id']
   });
   const matchCount: Record<string, number> = {};
   matchStats.forEach((ms: any) => {
     const uid = ms.user_id;
-    matchCount[uid] = (matchCount[uid] || 0) + 1;
+    const count = Number(ms.get ? ms.get('matches') : (ms as any).matches) || 0;
+    matchCount[uid] = count;
   });
 
   interface RankRow {
