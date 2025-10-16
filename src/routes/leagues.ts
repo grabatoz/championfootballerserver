@@ -1694,6 +1694,82 @@ router.patch(
       console.error('Notify (<6 players) error:', notifyErr);
     }
 
+    // NEW: Persist win percentage on save when enough players are selected
+    // Compute using average xpAwarded per selected registered user (same basis as POST /matches/:id/prediction)
+    try {
+      // Determine effective team ids (use sent arrays when present, else current DB)
+      const effectiveHomeIds: string[] = teamsWereSent ? homeTeamUsers : currHomeIds;
+      const effectiveAwayIds: string[] = teamsWereSent ? awayTeamUsers : currAwayIds;
+
+      const canPersistPct = totalWithGuests >= MIN_PLAYERS && (effectiveHomeIds.length + effectiveAwayIds.length) > 0;
+      if (canPersistPct) {
+        const allIds = Array.from(new Set([...(effectiveHomeIds || []), ...(effectiveAwayIds || [])]));
+        const rows = await MatchStatistics.findAll({
+          attributes: [
+            'user_id',
+            [fn('AVG', fn('COALESCE', col('MatchStatistics.xp_awarded'), 0)), 'avgXP'],
+          ],
+          where: { user_id: { [Op.in]: allIds } },
+          group: ['user_id'],
+          raw: true,
+        }) as unknown as Array<{ user_id: string; avgXP: string | number }>;
+
+        const avgMap = new Map<string, number>();
+        rows.forEach(r => avgMap.set(String(r.user_id), Number(r.avgXP ?? 0) || 0));
+        const avgOf = (ids: string[]) => ids.length ? ids.reduce((s, id) => s + (avgMap.get(String(id)) || 0), 0) / ids.length : 0;
+
+        const homeAvg = avgOf(effectiveHomeIds);
+        const awayAvg = avgOf(effectiveAwayIds);
+        const totalAvg = homeAvg + awayAvg;
+        let newHomeWinPct: number | null = null;
+        let newAwayWinPct: number | null = null;
+        if (totalAvg > 0) {
+          const pct = Math.round((homeAvg / totalAvg) * 100);
+          newHomeWinPct = Math.max(0, Math.min(100, pct));
+          newAwayWinPct = 100 - newHomeWinPct;
+        }
+
+        await match.update({ homeWinPct: newHomeWinPct, awayWinPct: newAwayWinPct });
+      }
+    } catch (persistPctErr) {
+      console.error('Persist winPct on save error:', persistPctErr);
+    }
+
+    // NEW: Manual captain update support even when teams did NOT change or < MIN_PLAYERS
+    // - If client sends homeCaptain/homeCaptainId or awayCaptain/awayCaptainId, and the user is on that team,
+    //   update just the captain fields. This lets admins set captains without forcing team changes.
+    try {
+      const wantHomeCaptain = body.homeCaptain ?? body.homeCaptainId;
+      const wantAwayCaptain = body.awayCaptain ?? body.awayCaptainId;
+
+      // Only run this "manual" path when we did not already assign captains above
+      const alreadySetWithTeams = (teamsChanged && totalWithGuests >= MIN_PLAYERS);
+      if (!alreadySetWithTeams) {
+        // Determine effective current teams: if arrays were sent and considered changed, use them; otherwise use DB snapshot
+        const effectiveHomeIds: string[] = teamsChanged ? homeTeamUsers : currHomeIds;
+        const effectiveAwayIds: string[] = teamsChanged ? awayTeamUsers : currAwayIds;
+
+        const updates: any = {};
+        if (wantHomeCaptain) {
+          const cid = String(wantHomeCaptain);
+          if (effectiveHomeIds.includes(cid)) {
+            updates.homeCaptainId = toNullableUUID(cid);
+          }
+        }
+        if (wantAwayCaptain) {
+          const cid = String(wantAwayCaptain);
+          if (effectiveAwayIds.includes(cid)) {
+            updates.awayCaptainId = toNullableUUID(cid);
+          }
+        }
+        if (Object.keys(updates).length) {
+          await match.update(updates);
+        }
+      }
+    } catch (manualCapErr) {
+      console.error('Manual captain update error:', manualCapErr);
+    }
+
     // Reload and respond using DB values (avoid undefined from request)
     const updatedMatch = await Match.findByPk(matchId, {
       include: [
@@ -1723,6 +1799,8 @@ router.patch(
       start: (updatedMatch as any).start,
       end: (updatedMatch as any).end,
       status: (updatedMatch as any).status,
+      homeWinPct: (updatedMatch as any).homeWinPct ?? null,
+      awayWinPct: (updatedMatch as any).awayWinPct ?? null,
       homeCaptainId: (updatedMatch as any).homeCaptainId,
       awayCaptainId: (updatedMatch as any).awayCaptainId,
       homeTeamImage: (updatedMatch as any).homeTeamImage,
