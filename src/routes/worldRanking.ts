@@ -9,7 +9,7 @@ import { Op, literal, fn, col } from 'sequelize';
 //   playerId=<uuid> (optional) - if provided and player outside top 1000, include that row appended
 //   limit=<number> (optional, default 1000, max 1000)
 //   positionType=<string> (optional filter)
-//   country=<string> (optional future filter placeholder, not yet stored)
+//   country=<string> (optional filter by user's country)
 //   year=<number> (optional year filter: matches finished in that calendar year for avg calc)
 //   weekEnding=<ISO date> (optional week ending filter for potential future expansions - currently ignored)
 
@@ -21,13 +21,14 @@ async function handleGetWorldRanking(ctx: any) {
   const playerId = ctx.query.playerId as string | undefined;
   const positionType = ctx.query.positionType as string | undefined;
   const year = ctx.query.year ? Number(ctx.query.year) : undefined;
+  const country = (ctx.query.country as string | undefined)?.trim();
   // Allow large lists: default to a high limit if not provided; cap for safety
   const requestedLimit = ctx.query.limit ? Number(ctx.query.limit) : undefined;
   const limit = requestedLimit && Number.isFinite(requestedLimit) && requestedLimit > 0
     ? Math.min(requestedLimit, 100000)
     : 100000;
 
-  const cacheKey = `world_rank_${mode}_${positionType || 'all'}_${year || 'all'}_${limit}`;
+  const cacheKey = `world_rank_${mode}_${positionType || 'all'}_${country || 'all'}_${year || 'all'}_${limit}`;
   const cached = cache.get(cacheKey);
   if (cached && !playerId) { // SPEED: always use cache when possible
     ctx.set('X-Cache', 'HIT');
@@ -40,13 +41,12 @@ async function handleGetWorldRanking(ctx: any) {
   // Build base where for user filter by positionType
   const userWhere: any = {};
   if (positionType) userWhere.positionType = positionType;
+  if (country) userWhere.country = country;
 
   // Fetch all users (or filtered by positionType). Include even XP=0 so everyone appears.
   const users = await models.User.findAll({
-    attributes: ['id','firstName','lastName','position','positionType','profilePicture','xp'],
-    where: {
-      ...(positionType ? { positionType } : {}),
-    },
+    attributes: ['id','firstName','lastName','position','positionType','profilePicture','xp','country'],
+    where: userWhere,
     // Order by total XP; final ranking may re-sort depending on mode
     order: [['xp', 'DESC']],
   });
@@ -76,7 +76,7 @@ async function handleGetWorldRanking(ctx: any) {
   });
 
   interface RankRow {
-    id: string; name: string; position: string; positionType: string; profilePicture: string; totalXP: number; avgXP: number; matches: number; rank?: number;
+    id: string; name: string; position: string; positionType: string; profilePicture: string; totalXP: number; avgXP: number; matches: number; rank?: number; country?: string | null;
   }
   const rows: RankRow[] = users.map(u => {
     const totalXP = (u as any).xp || 0;
@@ -88,6 +88,7 @@ async function handleGetWorldRanking(ctx: any) {
       position: (u as any).position || '',
       positionType: (u as any).positionType || '',
       profilePicture: (u as any).profilePicture || '',
+      country: (u as any).country || null,
       totalXP,
       avgXP: Number(avgXP.toFixed(2)),
       matches
@@ -119,6 +120,7 @@ async function handleGetWorldRanking(ctx: any) {
       position: r.position,
       positionType: r.positionType,
       profilePicture: r.profilePicture,
+      country: r.country || undefined,
       totalXP: r.totalXP,
       avgXP: r.avgXP,
       matches: r.matches,
