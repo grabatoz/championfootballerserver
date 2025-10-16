@@ -96,7 +96,10 @@ router.post("/auth/register", none, async (ctx: Context) => {
       firstName: userData.firstName,
       lastName: userData.lastName,
       age: userData.age,
-      gender: userData.gender
+      gender: userData.gender,
+      country: userData.country,
+      state: userData.state,
+      city: userData.city
     });
 
     // Create user with all required fields
@@ -107,6 +110,9 @@ router.post("/auth/register", none, async (ctx: Context) => {
       lastName: userData.lastName || '',
       age: userData.age ? parseInt(userData.age) : undefined,
       gender: userData.gender,
+      country: userData.country ?? null,
+      state: userData.state ?? null,
+      city: userData.city ?? null,
       position: userData.position || 'Goalkeeper (GK)',
       positionType: userData.positionType || 'Goalkeeper',
       style: userData.style || 'Axe',
@@ -209,6 +215,9 @@ router.post("/auth/register", none, async (ctx: Context) => {
         email: newUser.email,
         age: newUser.age,
         gender: newUser.gender,
+        country: newUser.country,
+        state: newUser.state,
+        city: newUser.city,
         position: newUser.position,
         positionType: newUser.positionType,
         style: newUser.style,
@@ -277,7 +286,7 @@ router.post("/auth/login", none, async (ctx: CustomContext) => {
   const userEmail = email.toLowerCase();
   const user = await User.findOne({
     where: { email },
-    attributes: ['id','firstName','lastName','email','password','age','gender','position','positionType','style','preferredFoot','shirtNumber','profilePicture','skills','xp','achievements','provider'] // removed providerId
+    attributes: ['id','firstName','lastName','email','password','age','gender','country','state','city','position','positionType','style','preferredFoot','shirtNumber','profilePicture','skills','xp','achievements','provider'] // removed providerId
   });
 
   console.log('first',email,user)
@@ -318,6 +327,9 @@ router.post("/auth/login", none, async (ctx: CustomContext) => {
       email: user.email,
       age: user.age,
       gender: user.gender,
+      country: (user as any).country,
+      state: (user as any).state,
+      city: (user as any).city,
       position: user.position,
       positionType: user.positionType,
       style: user.style,
@@ -383,6 +395,9 @@ router.get("/auth/data", required, async (ctx: CustomContext) => {
       'email',
       'age',
       'gender',
+      'country',
+      'state',
+      'city',
       'position',
       'positionType',
       'style',
@@ -585,6 +600,9 @@ router.get("/auth/status", required, async (ctx: CustomContext) => {
       email: user.email,
       age: user.age,
       gender: user.gender,
+      country: (user as any).country,
+      state: (user as any).state,
+      city: (user as any).city,
       position: user.position,
       positionType: user.positionType,
       style: user.style,

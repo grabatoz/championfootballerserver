@@ -39,6 +39,29 @@ async function ensureUserProviderColumn(): Promise<void> {
   }
 }
 
+async function ensureUserLocationColumns(): Promise<void> {
+  const qi = sequelize.getQueryInterface() as QueryInterface;
+  const table = await qi.describeTable('users');
+  if (!table.country) {
+    await qi.addColumn('users', 'country', {
+      type: DataTypes.STRING(255),
+      allowNull: true,
+    });
+  }
+  if (!table.state) {
+    await qi.addColumn('users', 'state', {
+      type: DataTypes.STRING(255),
+      allowNull: true,
+    });
+  }
+  if (!table.city) {
+    await qi.addColumn('users', 'city', {
+      type: DataTypes.STRING(255),
+      allowNull: true,
+    });
+  }
+}
+
 // Initialize database function
 export async function initializeDatabase() {
   try {
@@ -46,6 +69,7 @@ export async function initializeDatabase() {
     // If you use migrations, REMOVE sync({ alter: true }) and run migrations instead.
     await sequelize.sync(); // no alter to avoid repeated ALTER TABLE generation
     await ensureUserProviderColumn(); // idempotent
+    await ensureUserLocationColumns(); // idempotent
     console.log('DB ready');
   } catch (e) {
     console.error('Database initialization error:', e);
