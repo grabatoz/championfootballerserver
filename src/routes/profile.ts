@@ -65,6 +65,9 @@ router.get('/', required, async (ctx: CustomContext) => {
       email: user.email,
       age: user.age,
       gender: user.gender,
+      country: (user as any).country ?? null,
+      state: (user as any).state ?? null,
+      city: (user as any).city ?? null,
       position: user.position,
       positionType: user.positionType,
       style: user.style,
@@ -87,7 +90,7 @@ router.patch('/', required, async (ctx: CustomContext) => {
     ctx.throw(401, "User not authenticated");
   }
   console.log('Profile PATCH: userId', ctx.state.user.userId, 'update data', ctx.request.body);
-  const { firstName, lastName, email, age, gender, position, positionType, style, preferredFoot, shirtNumber, skills, password } = ctx.request.body;
+  const { firstName, lastName, email, age, gender, country, state, city, position, positionType, style, preferredFoot, shirtNumber, skills, password } = ctx.request.body;
   console.log('Extracted positionType:', positionType);
   const user = await User.findByPk(ctx.state.user.userId);
   console.log('Profile PATCH: found user', user ? user.id : null);
@@ -102,6 +105,9 @@ router.patch('/', required, async (ctx: CustomContext) => {
     ...(email !== undefined && { email: email.toLowerCase() }),
     ...(age !== undefined && { age }),
     ...(gender !== undefined && { gender }),
+    ...(country !== undefined && { country }),
+    ...(state !== undefined && { state }),
+    ...(city !== undefined && { city }),
     ...(position !== undefined && { position }),
     ...(positionType !== undefined && { positionType }),
     ...(style !== undefined && { style }),
@@ -169,6 +175,9 @@ router.patch('/', required, async (ctx: CustomContext) => {
       email: user.email,
       age: user.age,
       gender: user.gender,
+      country: (user as any).country ?? null,
+      state: (user as any).state ?? null,
+      city: (user as any).city ?? null,
       position: user.position,
       positionType: user.positionType,
       style: user.style,
