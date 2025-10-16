@@ -22,6 +22,8 @@ async function handleGetWorldRanking(ctx: any) {
   const positionType = ctx.query.positionType as string | undefined;
   const year = ctx.query.year ? Number(ctx.query.year) : undefined;
   const country = (ctx.query.country as string | undefined)?.trim();
+  const fresh = String(ctx.query.fresh || '').toLowerCase();
+  const bypassCache = fresh === '1' || fresh === 'true' || fresh === 'yes';
   // Allow large lists: default to a high limit if not provided; cap for safety
   const requestedLimit = ctx.query.limit ? Number(ctx.query.limit) : undefined;
   const limit = requestedLimit && Number.isFinite(requestedLimit) && requestedLimit > 0
@@ -30,7 +32,7 @@ async function handleGetWorldRanking(ctx: any) {
 
   const cacheKey = `world_rank_${mode}_${positionType || 'all'}_${country || 'all'}_${year || 'all'}_${limit}`;
   const cached = cache.get(cacheKey);
-  if (cached && !playerId) { // SPEED: always use cache when possible
+  if (!bypassCache && cached && !playerId) { // SPEED: use cache unless bypass requested
     ctx.set('X-Cache', 'HIT');
     ctx.body = cached;
     return;
@@ -132,7 +134,8 @@ async function handleGetWorldRanking(ctx: any) {
     playerRank: playerRow ? playerRow.rank : undefined
   };
 
-  if (!playerId) cache.set(cacheKey, result, 1800); // 30 min cache for MAXIMUM speed
+  // Only set cache when not bypassing and no specific player row appended
+  if (!bypassCache && !playerId) cache.set(cacheKey, result, 1800); // 30 min cache for MAXIMUM speed
 
   ctx.body = result;
 }
