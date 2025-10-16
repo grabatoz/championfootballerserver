@@ -58,6 +58,7 @@ router.get('/played-with', required, async (ctx) => {
       return;
     }
     const userId = ctx.state.user.userId;
+    const leagueIdQ = typeof ctx.request.query?.leagueId === 'string' ? ctx.request.query.leagueId.trim() : '';
 
     // Find all match IDs the user has played in, based on stats
     const userMatchStats = await MatchStatistics.findAll({
@@ -65,7 +66,16 @@ router.get('/played-with', required, async (ctx) => {
       attributes: ['match_id']
     });
 
-    const matchIds = userMatchStats.map(stat => stat.match_id);
+    let matchIds = userMatchStats.map(stat => stat.match_id);
+
+    // Optional: filter to a specific league's matches
+    if (leagueIdQ && leagueIdQ !== 'all') {
+      const leagueMatches = await MatchModel.findAll({
+        where: { id: { [Op.in]: matchIds }, leagueId: leagueIdQ },
+        attributes: ['id'],
+      });
+      matchIds = leagueMatches.map(m => m.id);
+    }
 
     if (matchIds.length === 0) {
       ctx.body = { success: true, players: [] };
