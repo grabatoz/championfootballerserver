@@ -50,6 +50,59 @@ router.get('/', async (ctx) => {
   }
 });
 
+// Get all players who are MEMBERS of a given league (even if they never played a match)
+router.get('/by-league', required, async (ctx) => {
+  try {
+    if (!ctx.state.user) {
+      ctx.throw(401, 'User not authenticated');
+      return;
+    }
+    const leagueId = typeof ctx.request.query?.leagueId === 'string' ? ctx.request.query.leagueId.trim() : '';
+    if (!leagueId) {
+      ctx.status = 400;
+      ctx.body = { success: false, message: 'leagueId is required' };
+      return;
+    }
+
+    // Fetch league with members; keep attributes minimal for speed
+    const league = await LeagueModel.findByPk(leagueId, {
+      include: [
+        { model: models.User, as: 'members', attributes: ['id', 'firstName', 'lastName', 'profilePicture', 'xp', 'shirtNumber'] },
+        { model: models.User, as: 'administeredLeagues', attributes: ['id'] },
+      ],
+      attributes: ['id', 'name'],
+    });
+    if (!league) {
+      ctx.status = 404;
+      ctx.body = { success: false, message: 'League not found' };
+      return;
+    }
+
+    const uid = ctx.state.user.userId;
+    const isMember = ((league as any).members || []).some((m: any) => String(m.id) === String(uid));
+    const isAdmin = ((league as any).administeredLeagues || []).some((a: any) => String(a.id) === String(uid));
+    if (!isMember && !isAdmin) {
+      ctx.status = 403;
+      ctx.body = { success: false, message: "You don't have access to this league" };
+      return;
+    }
+
+    const members = ((league as any).members || []) as Array<any>;
+    const players = members.map((p) => ({
+      id: p.id,
+      name: `${p.firstName || ''} ${p.lastName || ''}`.trim(),
+      profilePicture: p.profilePicture ?? null,
+      rating: Number(p.xp || 0),
+      shirtNumber: p.shirtNumber ?? null,
+    }));
+
+    ctx.body = { success: true, players };
+  } catch (error) {
+    console.error('Error fetching league members:', error);
+    ctx.throw(500, 'Failed to fetch league members.');
+  }
+});
+
 // Get all players the current user has played with or against
 router.get('/played-with', required, async (ctx) => {
   try {
