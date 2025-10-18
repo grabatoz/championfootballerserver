@@ -39,6 +39,41 @@ interface MatchWithLeague {
 const normalizeTeam = (t: any): 'home' | 'away' =>
   String(t).toLowerCase() === 'away' ? 'away' : 'home';
 
+// Resolve a provided id (could be a real user id or a MatchGuest id for this match)
+// into a real User.id suitable for MatchStatistics.user_id FK.
+async function resolveTargetUserIdForMatch(playerOrGuestId: string, matchId: string): Promise<string> {
+  // If it's an existing user id, use it
+  const existingUser = await User.findByPk(playerOrGuestId);
+  if (existingUser) return String(existingUser.id);
+
+  // Otherwise, if it's a guest for this match, map to or create a mirror user
+  const guest = await (models as any).MatchGuest.findOne({ where: { id: playerOrGuestId, matchId } });
+  if (!guest) {
+    // Not a user nor a guest id
+    throw new Error('Player not found');
+  }
+
+  // Reuse a mirror user if exists
+  const guestMirror = await User.findOne({ where: { provider: 'guest', providerId: String(guest.id) } });
+  if (guestMirror) return String(guestMirror.id);
+
+  // Create a minimal mirror user to satisfy FK
+  const email = `guest_${guest.id}@guest.local`;
+  const firstName = String((guest as any).firstName || 'Guest');
+  const lastName = String((guest as any).lastName || 'Player');
+  const created = await User.create({
+    email,
+    firstName,
+    lastName,
+    // Ensure NOT NULL password constraint is satisfied
+    // This is a placeholder since mirror users don't authenticate
+    password: `guest:${String(guest.id)}`,
+    provider: 'guest',
+    providerId: String(guest.id),
+  } as any);
+  return String(created.id);
+}
+
 router.post('/:id/votes', required, async (ctx) => {
     if (!ctx.state.user?.userId) {
         ctx.throw(401, 'Unauthorized');
@@ -532,8 +567,8 @@ router.post('/:matchId/stats', required, async (ctx) => {
         return;
     }
 
-    const { matchId } = ctx.params;
-    const { playerId, goals, assists, cleanSheets, penalties, freeKicks, defence, impact } = ctx.request.body;
+  const { matchId } = ctx.params;
+  const { playerId, goals, assists, cleanSheets, penalties, freeKicks, defence, impact } = ctx.request.body as any;
 
     if (!playerId) {
         ctx.throw(400, 'playerId is required');
@@ -563,24 +598,26 @@ router.post('/:matchId/stats', required, async (ctx) => {
         return;
     }
 
-    try {
-        const existing = await MatchStatistics.findOne({ where: { match_id: matchId, user_id: playerId } });
+  try {
+    // Map provided id to a valid User id (supports guest ids)
+    const targetUserId = await resolveTargetUserIdForMatch(String(playerId), String(matchId));
+    const existing = await MatchStatistics.findOne({ where: { match_id: matchId, user_id: targetUserId } });
 
     // All zeros => delete placeholder row (if any) and recalc user's total XP
         if (statsAllZero({ goals, assists, cleanSheets, penalties, freeKicks, defence, impact })) {
             if (existing) await existing.destroy();
-            try { cache.del(`match_stats_${matchId}_${playerId}_ultra_fast`); } catch {}
+    try { cache.del(`match_stats_${matchId}_${targetUserId}_ultra_fast`); } catch {}
       // adjust user's total XP after clearing
-      try { await adjustUserTotalXP(String(playerId)); } catch {}
+  try { await adjustUserTotalXP(String(targetUserId)); } catch {}
       ctx.body = { success: true, message: 'Stats cleared (all zeros).' };
             return;
         }
 
         // Find existing stats or create a new record (non-zero payload)
-        const [stats, created] = await models.MatchStatistics.findOrCreate({
-            where: { user_id: playerId, match_id: matchId },
+    const [stats, created] = await models.MatchStatistics.findOrCreate({
+      where: { user_id: targetUserId, match_id: matchId },
             defaults: {
-                user_id: playerId,
+        user_id: targetUserId,
                 match_id: matchId,
                 goals, assists, cleanSheets, penalties, freeKicks, defence, impact,
                 yellowCards: 0, redCards: 0, minutesPlayed: 0, rating: 0, xpAwarded: 0,
@@ -608,11 +645,14 @@ router.post('/:matchId/stats', required, async (ctx) => {
             leagueId: match.leagueId
         };
 
-        // Update matches cache
-        cache.updateArray('matches_all', updatedMatchData);
+    // Update matches cache
+    cache.updateArray('matches_all', updatedMatchData);
 
-        // Bust per-player match stats cache so subsequent reads reflect latest values
-        try { cache.del(`match_stats_${matchId}_${playerId}_ultra_fast`); } catch { }
+    // Bust per-player match stats cache so subsequent reads reflect latest values
+    // IMPORTANT: Invalidate both the resolved user cache key and the original playerId key (guest id),
+    // because GET caches by the provided playerId param before resolving to a mirror user.
+    try { cache.del(`match_stats_${matchId}_${targetUserId}_ultra_fast`); } catch {}
+    try { cache.del(`match_stats_${matchId}_${String(playerId)}_ultra_fast`); } catch {}
 
     // Update leaderboard cache
         const updatedStats = {
@@ -647,8 +687,8 @@ router.post('/:matchId/stats', required, async (ctx) => {
 
         const homeTeamUsers = ((matchWithTeams as any)?.homeTeamUsers || []);
         const awayTeamUsers = ((matchWithTeams as any)?.awayTeamUsers || []);
-        const isHome = homeTeamUsers.some((u: any) => String(u.id) === String(playerId));
-        const isAway = awayTeamUsers.some((u: any) => String(u.id) === String(playerId));
+  const isHome = homeTeamUsers.some((u: any) => String(u.id) === String(targetUserId));
+  const isAway = awayTeamUsers.some((u: any) => String(u.id) === String(targetUserId));
         const homeGoals = (matchWithTeams as any)?.homeTeamGoals ?? 0;
         const awayGoals = (matchWithTeams as any)?.awayTeamGoals ?? 0;
 
@@ -683,25 +723,25 @@ router.post('/:matchId/stats', required, async (ctx) => {
         if (stats.assists) matchXP += (teamResult === 'win' ? xpPointsTable.assist.win : xpPointsTable.assist.lose) * (stats.assists || 0);
         if (stats.cleanSheets) matchXP += xpPointsTable.cleanSheet * (stats.cleanSheets || 0);
         // MOTM
-        if (motmId === String(playerId)) matchXP += (teamResult === 'win' ? xpPointsTable.motm.win : xpPointsTable.motm.lose);
+  if (motmId === String(targetUserId)) matchXP += (teamResult === 'win' ? xpPointsTable.motm.win : xpPointsTable.motm.lose);
         // MOTM Votes
-        if (voteCounts[String(playerId)]) matchXP += (teamResult === 'win' ? xpPointsTable.motmVote.win : xpPointsTable.motmVote.lose) * voteCounts[String(playerId)];
+  if (voteCounts[String(targetUserId)]) matchXP += (teamResult === 'win' ? xpPointsTable.motmVote.win : xpPointsTable.motmVote.lose) * voteCounts[String(targetUserId)];
 
         // Apply streak participation bonus (league milestones 25/50/75%)
         try {
-          const bonus = await computeLeagueParticipationBonus(matchWithTeams, String(playerId));
+          const bonus = await computeLeagueParticipationBonus(matchWithTeams, String(targetUserId));
           matchXP += Math.max(0, Number(bonus) || 0);
         } catch {}
 
         // Save XP for this match and adjust user's total XP
         stats.xpAwarded = matchXP;
         await stats.save();
-        try { await adjustUserTotalXP(String(playerId)); } catch {}
+  try { await adjustUserTotalXP(String(targetUserId)); } catch {}
 
         ctx.body = {
             success: true,
             message: 'Stats saved successfully',
-            playerId: playerId,
+      playerId: targetUserId,
             updatedStats: {
                 goals: stats.goals,
                 assists: stats.assists,
@@ -894,8 +934,8 @@ router.get('/:matchId/stats', required, async (ctx) => {
         return;
     }
 
-    const { matchId } = ctx.params;
-    const { playerId } = ctx.query;
+  const { matchId } = ctx.params;
+  const { playerId } = ctx.query as { playerId?: string };
 
     if (!playerId) {
         ctx.throw(400, 'playerId is required');
@@ -910,35 +950,43 @@ router.get('/:matchId/stats', required, async (ctx) => {
         return;
     }
 
-    try {
-        const stats = await MatchStatistics.findOne({
-            where: {
-                match_id: matchId,
-                user_id: playerId
-            },
-            attributes: ['goals', 'assists', 'cleanSheets', 'penalties', 'freeKicks', 'defence', 'impact']
-        });
+  try {
+    // If playerId is not a real user id, attempt to resolve guest mirror user id
+    let resolvedId = String(playerId);
+    const directUser = await User.findByPk(resolvedId);
+    if (!directUser) {
+      try { resolvedId = await resolveTargetUserIdForMatch(resolvedId, String(matchId)); } catch {}
+    }
+    const stats = await MatchStatistics.findOne({
+      where: {
+        match_id: matchId,
+        user_id: resolvedId
+      },
+      attributes: ['goals', 'assists', 'cleanSheets', 'penalties', 'freeKicks', 'defence', 'impact', 'xpAwarded']
+    });
 
-        const result = {
-            success: true,
-            stats: stats ? {
-                goals: stats.goals || 0,
-                assists: stats.assists || 0,
-                cleanSheets: stats.cleanSheets || 0,
-                penalties: stats.penalties || 0,
-                freeKicks: stats.freeKicks || 0,
-                defence: stats.defence || 0,
-                impact: stats.impact || 0,
-            } : {
-                goals: 0,
-                assists: 0,
-                cleanSheets: 0,
-                penalties: 0,
-                freeKicks: 0,
-                defence: 0,
-                impact: 0,
-            }
-        };
+    const result = {
+      success: true,
+      stats: stats ? {
+        goals: stats.goals || 0,
+        assists: stats.assists || 0,
+        cleanSheets: stats.cleanSheets || 0,
+        penalties: stats.penalties || 0,
+        freeKicks: stats.freeKicks || 0,
+        defence: stats.defence || 0,
+        impact: stats.impact || 0,
+        xpAwarded: stats.xpAwarded || 0,
+      } : {
+        goals: 0,
+        assists: 0,
+        cleanSheets: 0,
+        penalties: 0,
+        freeKicks: 0,
+        defence: 0,
+        impact: 0,
+        xpAwarded: 0,
+      }
+    };
 
         cache.set(cacheKey, result, 600); // 10 min cache for stats
         ctx.set('X-Cache', 'MISS');
