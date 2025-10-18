@@ -62,6 +62,49 @@ const toUserBasic = (p: any) => ({
 
 const router = new Router({ prefix: '/leagues' });
 
+// List leagues available to the current user (member or admin)
+router.get('/', required, async (ctx) => {
+  if (!ctx.state.user || !ctx.state.user.userId) {
+    ctx.status = 401;
+    ctx.body = { success: false, message: 'Unauthorized' };
+    return;
+  }
+  const userId = String(ctx.state.user.userId);
+  try {
+    // Fetch leagues where user is a member
+    const memberLeagues = await League.findAll({
+      where: { '$members.id$': userId },
+      include: [
+        { model: User, as: 'members', attributes: ['id'] },
+      ],
+    });
+
+    // Fetch leagues where user is an admin
+    const adminLeagues = await League.findAll({
+      where: { '$administeredLeagues.id$': userId },
+      include: [
+        { model: User, as: 'administeredLeagues', attributes: ['id'] },
+      ],
+    });
+
+    // Merge and de-duplicate by id
+    const map: Record<string, any> = {};
+    [...memberLeagues, ...adminLeagues].forEach((l: any) => { map[String(l.id)] = l; });
+    const leagues = Object.values(map).map((l: any) => ({
+      id: String(l.id),
+      name: l.name,
+      active: Boolean(l.active),
+      image: (l as any).image ?? null,
+    }));
+
+    ctx.body = { success: true, leagues };
+  } catch (err) {
+    console.error('GET /leagues failed', err);
+    ctx.status = 500;
+    ctx.body = { success: false, message: 'Failed to fetch leagues' };
+  }
+});
+
 // IMPORTANT: define this BEFORE any "/:id" routes to avoid collisions
 router.get('/trophy-room', required, async (ctx) => {
   if (!ctx.state.user || !ctx.state.user.userId) {

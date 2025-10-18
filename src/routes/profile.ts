@@ -6,7 +6,7 @@ import { upload, uploadToCloudinary } from '../middleware/upload';
 import { hash } from 'bcrypt';
 import jwt from 'jsonwebtoken';
 import cache from '../utils/cache';
-const { User, Session } = models;
+const { User, Session, League, Match } = models;
 
 const router = new Router({ prefix: '/profile' });
 
@@ -17,29 +17,24 @@ router.get('/', required, async (ctx: CustomContext) => {
   }
   console.log('Profile GET: userId', ctx.state.user.userId);
   const user = await User.findByPk(ctx.state.user.userId, {
-    include: [{
-      model: User,
-      as: 'joinedLeagues',
-      include: [{
-        model: User,
-        as: 'administrators'
-      }, {
-        model: User,
-        as: 'members'
-      }]
-    }, {
-      model: User,
-      as: 'managedLeagues'
-    }, {
-      model: User,
-      as: 'homeTeamMatches'
-    }, {
-      model: User,
-      as: 'awayTeamMatches'
-    }, {
-      model: User,
-      as: 'availableMatches'
-    }]
+    include: [
+      {
+        model: League,
+        as: 'leagues',
+        include: [
+          { model: User, as: 'members', attributes: ['id', 'firstName', 'lastName', 'position', 'positionType'] },
+          { model: User, as: 'administeredLeagues', attributes: ['id'] },
+        ],
+      },
+      {
+        model: League,
+        as: 'administeredLeagues',
+        include: [{ model: User, as: 'members', attributes: ['id', 'firstName', 'lastName', 'position', 'positionType'] }],
+      },
+      { model: Match, as: 'homeTeamMatches' },
+      { model: Match, as: 'awayTeamMatches' },
+      { model: Match, as: 'availableMatches' },
+    ],
   });
   console.log('Profile GET: found user', user ? user.id : null);
   if (!user) {
@@ -75,8 +70,8 @@ router.get('/', required, async (ctx: CustomContext) => {
       shirtNumber: user.shirtNumber,
       profilePicture: user.profilePicture,
       skills: user.skills,
-      joinedLeagues: (user as any).joinedLeagues || [],
-      managedLeagues: (user as any).managedLeagues || [],
+      joinedLeagues: (user as any).leagues || [],
+      managedLeagues: (user as any).administeredLeagues || [],
       homeTeamMatches: (user as any).homeTeamMatches || [],
       awayTeamMatches: (user as any).awayTeamMatches || [],
       availableMatches: (user as any).availableMatches || []
@@ -196,13 +191,10 @@ router.get('/statistics', required, async (ctx: CustomContext) => {
   }
 
   const user = await User.findByPk(ctx.state.user.userId, {
-    include: [{
-      model: User,
-      as: 'homeTeamMatches'
-    }, {
-      model: User,
-      as: 'awayTeamMatches'
-    }]
+    include: [
+      { model: Match, as: 'homeTeamMatches' },
+      { model: Match, as: 'awayTeamMatches' },
+    ],
   });
 
   if (!user) {
@@ -234,20 +226,17 @@ router.get('/leagues', required, async (ctx: CustomContext) => {
   }
 
   const user = await User.findByPk(ctx.state.user.userId, {
-    include: [{
-      model: User,
-      as: 'joinedLeagues',
-      include: [{
-        model: User,
-        as: 'administrators'
-      }, {
-        model: User,
-        as: 'members'
-      }]
-    }, {
-      model: User,
-      as: 'managedLeagues'
-    }]
+    include: [
+      {
+        model: League,
+        as: 'leagues',
+        include: [
+          { model: User, as: 'members', attributes: ['id', 'firstName', 'lastName', 'position', 'positionType'] },
+          { model: User, as: 'administeredLeagues', attributes: ['id'] },
+        ],
+      },
+      { model: League, as: 'administeredLeagues' },
+    ],
   });
 
   if (!user) {
@@ -255,8 +244,8 @@ router.get('/leagues', required, async (ctx: CustomContext) => {
   }
 
   const leagues = {
-    joined: (user as any).joinedLeagues || [],
-    managed: (user as any).managedLeagues || []
+    joined: (user as any).leagues || [],
+    managed: (user as any).administeredLeagues || [],
   };
 
   ctx.body = { 
@@ -272,16 +261,11 @@ router.get('/matches', required, async (ctx: CustomContext) => {
   }
 
   const user = await User.findByPk(ctx.state.user.userId, {
-    include: [{
-      model: User,
-      as: 'homeTeamMatches'
-    }, {
-      model: User,
-      as: 'awayTeamMatches'
-    }, {
-      model: User,
-      as: 'availableMatches'
-    }]
+    include: [
+      { model: Match, as: 'homeTeamMatches' },
+      { model: Match, as: 'awayTeamMatches' },
+      { model: Match, as: 'availableMatches' },
+    ],
   });
 
   if (!user) {
