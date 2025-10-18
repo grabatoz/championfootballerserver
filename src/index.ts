@@ -20,6 +20,7 @@ import matchRoutes from './routes/matches';
 import leagueRoutes from './routes/leagues';
 import notificationRoutes from './routes/notifications';
 import userRoutes from './routes/users';
+import playersRoutes from './routes/players';
 import Router from '@koa/router';
 import { setupPassport } from './config/passport';
 import passport from 'koa-passport';
@@ -196,6 +197,7 @@ apiRouter.use(socialAuthRouter.routes(), socialAuthRouter.allowedMethods());
 // Mount core routers under /api for reverse proxy compatibility
 apiRouter.use(matchRoutes.routes(), matchRoutes.allowedMethods());
 apiRouter.use(leagueRoutes.routes(), leagueRoutes.allowedMethods());
+apiRouter.use(playersRoutes.routes(), playersRoutes.allowedMethods());
 // ////////////////////////////////////////////////////////////////////
 app.use(apiRouter.routes()).use(apiRouter.allowedMethods());
 
@@ -206,6 +208,7 @@ v1Router.use(socialAuthRouter.routes(), socialAuthRouter.allowedMethods());
 // Mount core routers under /v1 as well
 v1Router.use(matchRoutes.routes(), matchRoutes.allowedMethods());
 v1Router.use(leagueRoutes.routes(), leagueRoutes.allowedMethods());
+v1Router.use(playersRoutes.routes(), playersRoutes.allowedMethods());
 //////////////////////////////////////////////////////////////////////
 app.use(v1Router.routes()).use(v1Router.allowedMethods());
 
@@ -215,6 +218,7 @@ apiV1Router.use(socialAuthRouter.routes(), socialAuthRouter.allowedMethods());
 // Mount core routers under /api/v1
 apiV1Router.use(matchRoutes.routes(), matchRoutes.allowedMethods());
 apiV1Router.use(leagueRoutes.routes(), leagueRoutes.allowedMethods());
+apiV1Router.use(playersRoutes.routes(), playersRoutes.allowedMethods());
 // //////////////////////////////////////////////////////////////////////
 app.use(apiV1Router.routes()).use(apiV1Router.allowedMethods());
 
