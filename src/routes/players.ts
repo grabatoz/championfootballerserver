@@ -67,7 +67,7 @@ router.get('/by-league', required, async (ctx) => {
     // Fetch league with members; keep attributes minimal for speed
     const league = await LeagueModel.findByPk(leagueId, {
       include: [
-        { model: models.User, as: 'members', attributes: ['id', 'firstName', 'lastName', 'profilePicture', 'xp', 'shirtNumber'] },
+        { model: models.User, as: 'members', attributes: ['id', 'firstName', 'lastName', 'profilePicture', 'xp', 'shirtNumber', 'email'] },
         { model: models.User, as: 'administeredLeagues', attributes: ['id'] },
       ],
       attributes: ['id', 'name'],
@@ -88,7 +88,15 @@ router.get('/by-league', required, async (ctx) => {
     }
 
     const members = ((league as any).members || []) as Array<any>;
-    const players = members.map((p) => ({
+    
+    // Filter out guest players (those without proper user accounts)
+    // Real players have email and are properly registered users
+    const realPlayers = members.filter((p) => {
+      // Exclude if it's a guest player or doesn't have a valid email
+      return p.email && p.email.trim() !== '' && !p.email.includes('guest');
+    });
+    
+    const players = realPlayers.map((p) => ({
       id: p.id,
       name: `${p.firstName || ''} ${p.lastName || ''}`.trim(),
       profilePicture: p.profilePicture ?? null,
@@ -157,12 +165,17 @@ router.get('/played-with', required, async (ctx) => {
           [Op.in]: Array.from(playerIds)
         }
       },
-      attributes: ['id', 'firstName', 'lastName', 'profilePicture', 'xp','shirtNumber']
+      attributes: ['id', 'firstName', 'lastName', 'profilePicture', 'xp','shirtNumber', 'email']
     });
+
+    // Filter out guest players - only include real registered players
+    const realPlayers = players.filter(p => 
+      p.email && p.email.trim() !== '' && !p.email.includes('guest')
+    );
 
     ctx.body = {
       success: true,
-      players: players.map(p => ({
+      players: realPlayers.map(p => ({
         id: p.id,
         name: `${p.firstName} ${p.lastName}`,
         profilePicture: p.profilePicture,
