@@ -44,6 +44,14 @@ async function handleGetWorldRanking(ctx: any) {
   const userWhere: any = {};
   if (positionType) userWhere.positionType = positionType;
   if (country) userWhere.country = country;
+  // Exclude guest players - those with 'guest' in their email or empty/null email
+  userWhere.email = {
+    [Op.and]: [
+      { [Op.ne]: null },
+      { [Op.ne]: '' },
+      { [Op.notLike]: '%guest%' }
+    ]
+  };
 
   // Fetch all users (or filtered by positionType). Include even XP=0 so everyone appears.
   const users = await models.User.findAll({
