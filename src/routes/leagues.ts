@@ -2040,7 +2040,9 @@ router.patch('/:id/end', required, async (ctx) => {
   ctx.body = { success: true, message: "League ended and final XP calculated" };
 });
 
-// GET /leagues/:leagueId/xp - Return XP for each member in the league (sum of xpAwarded for completed matches in this league)
+// GET /leagues/:leagueId/xp - Return XP aggregates per member in this league
+// Response shape:
+// { success: true, xp: { [userId]: total }, avg: { [userId]: averagePerMatch }, games: { [userId]: matchesCount } }
 router.get('/:leagueId/xp', async (ctx) => {
   const { leagueId } = ctx.params;
   const league = await models.League.findByPk(leagueId, {
@@ -2051,10 +2053,14 @@ router.get('/:leagueId/xp', async (ctx) => {
     ctx.body = { success: false, message: 'League not found' };
     return;
   }
-  // Fix type for members
+  // Ensure member list
   //@ts-ignore
   const members = (league.members || []) as any[];
   const xp: Record<string, number> = {};
+  const avg: Record<string, number> = {};
+  const games: Record<string, number> = {};
+
+  // For each member, sum xpAwarded on RESULT_PUBLISHED matches in this league
   for (const member of members) {
     const stats = await models.MatchStatistics.findAll({
       where: { user_id: member.id },
@@ -2064,9 +2070,14 @@ router.get('/:leagueId/xp', async (ctx) => {
         where: { leagueId, status: 'RESULT_PUBLISHED' }
       }]
     });
-    xp[member.id] = stats.reduce((sum, s) => sum + (s.xpAwarded || 0), 0);
+    const total = stats.reduce((sum: number, s: any) => sum + (s.xpAwarded || 0), 0);
+    const count = stats.length;
+    xp[String(member.id)] = total;
+    games[String(member.id)] = count;
+    avg[String(member.id)] = count > 0 ? Number((total / count).toFixed(2)) : 0;
   }
-  ctx.body = { success: true, xp };
+
+  ctx.body = { success: true, xp, avg, games };
 });
 
 // Debug endpoint: Get XP breakdown for a user in a league
