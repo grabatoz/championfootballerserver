@@ -8,7 +8,7 @@ import { sendCaptainConfirmations, notifyCaptainConfirmed, notifyCaptainRevision
 import models from '../models';
 import { QueryTypes, Op, fn, col } from 'sequelize';
 import { v4 as uuidv4 } from 'uuid';
-const { Match, Vote, User, MatchStatistics, League, Notification } = models;
+const { Match, Vote, User, MatchStatistics, League, Notification, MatchGuest } = models;
 
 const router = new Router({ prefix: '/matches' });
 
@@ -575,19 +575,46 @@ router.post('/:matchId/stats', required, async (ctx) => {
         return;
     }
 
-    // NEW: admin check
-    const match = await Match.findByPk(matchId);
+  // Load match with team users and guests for authorization checks
+  const match = await Match.findByPk(matchId, {
+    include: [
+      { model: User, as: 'homeTeamUsers', attributes: ['id'] },
+      { model: User, as: 'awayTeamUsers', attributes: ['id'] },
+      // guests by team so captains can edit their own guests too
+      { model: (models as any).MatchGuest || MatchGuest, as: 'guestPlayers', attributes: ['id', 'team'] }
+    ]
+  });
     if (!match) {
         ctx.throw(404, 'Match not found');
         return;
     }
-    const adminIds = await getLeagueAdminIdsRobust(String(match.leagueId));
-    const isAdmin = adminIds.includes(String(ctx.state.user.userId));
-    if (!isAdmin) {
-        ctx.status = 403;
-        ctx.body = { success: false, message: 'Only league administrators can update other players stats.' };
-        return;
+  const adminIds = await getLeagueAdminIdsRobust(String(match.leagueId));
+  const isAdmin = adminIds.includes(String(ctx.state.user.userId));
+
+  // If not admin, allow captains to edit ONLY their own team (including guests)
+  let isCaptainAllowed = false;
+  let captainTeam: 'home' | 'away' | null = null;
+  if (!isAdmin) {
+    const callerId = String(ctx.state.user.userId);
+    const homeCap = match?.homeCaptainId != null ? String(match.homeCaptainId) : '';
+    const awayCap = match?.awayCaptainId != null ? String(match.awayCaptainId) : '';
+    if (callerId === homeCap) captainTeam = 'home';
+    else if (callerId === awayCap) captainTeam = 'away';
+
+    if (!captainTeam) {
+      ctx.status = 403;
+      ctx.body = { success: false, message: 'Only league administrators or match captains can update player stats.' };
+      return;
     }
+
+    // For captains, ensure results have been uploaded/published before editing others
+    const status = String((match as any).status || '');
+    if (!MATCH_RESULTS_STATES.has(status)) {
+      ctx.status = 400;
+      ctx.body = { success: false, message: 'Captains can add stats only after result upload.' };
+      return;
+    }
+  }
 
     // NEW: cap validation vs total goals
     const totalGoals = totalMatchGoals(match);
@@ -601,6 +628,25 @@ router.post('/:matchId/stats', required, async (ctx) => {
   try {
     // Map provided id to a valid User id (supports guest ids)
     const targetUserId = await resolveTargetUserIdForMatch(String(playerId), String(matchId));
+
+    // If captain, verify the target belongs to captain's team (users or guests)
+    if (!isAdmin) {
+      const team = captainTeam!; // ensured above
+      const homeIds = new Set([ ...(((match as any).homeTeamUsers || []).map((u: any) => String(u.id))), ...(((match as any).guestPlayers || []).filter((g: any) => g.team === 'home').map((g: any) => String(g.id))) ]);
+      const awayIds = new Set([ ...(((match as any).awayTeamUsers || []).map((u: any) => String(u.id))), ...(((match as any).guestPlayers || []).filter((g: any) => g.team === 'away').map((g: any) => String(g.id))) ]);
+
+      // Note: guests are referenced by guest id in request, but resolved to mirror user for targetUserId.
+      // Allow if either the resolved user is in the user's team users list OR the original guest id is in that team's guests list.
+      const originalId = String(playerId);
+      const inHome = homeIds.has(String(targetUserId)) || homeIds.has(originalId);
+      const inAway = awayIds.has(String(targetUserId)) || awayIds.has(originalId);
+      const ok = team === 'home' ? inHome : inAway;
+      if (!ok) {
+        ctx.status = 403;
+        ctx.body = { success: false, message: "Captains can only update stats for their own team's players." };
+        return;
+      }
+    }
     const existing = await MatchStatistics.findOne({ where: { match_id: matchId, user_id: targetUserId } });
 
     // All zeros => delete placeholder row (if any) and recalc user's total XP
@@ -738,9 +784,9 @@ router.post('/:matchId/stats', required, async (ctx) => {
         await stats.save();
   try { await adjustUserTotalXP(String(targetUserId)); } catch {}
 
-        ctx.body = {
-            success: true,
-            message: 'Stats saved successfully',
+    ctx.body = {
+      success: true,
+      message: 'Stats saved successfully',
       playerId: targetUserId,
             updatedStats: {
                 goals: stats.goals,
