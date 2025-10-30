@@ -2149,8 +2149,24 @@ async function getLightAuthStatus(ctx: CustomContext, userId: string, forceRefre
   // SUPER LIGHT query - only essential fields
   const user = await User.findByPk(userId, {
     attributes: [
-      'id', 'firstName', 'lastName', 'email', 'profilePicture', 
-      'xp', 'updatedAt', 'position', 'positionType'
+     'id',
+      'firstName',
+      'lastName',
+      'email',
+      'age',
+      'gender',
+      'country',
+      'state',
+      'city',
+      'position',
+      'positionType',
+      'style',
+      'preferredFoot',
+      'shirtNumber',
+      'profilePicture',
+      'skills',
+      'xp',
+      'updatedAt',
     ],
     include: [
       {
@@ -2184,6 +2200,11 @@ async function getLightAuthStatus(ctx: CustomContext, userId: string, forceRefre
       xp: user.xp || 0,
       position: user.position,
       positionType: user.positionType,
+      style: user.style,
+      preferredFoot: user.preferredFoot,
+      shirtNumber: user.shirtNumber,
+      skills: user.skills,
+      age: user.age,
       leagues: user.leagues || [],
       adminLeagues: user.administeredLeagues || [],
       lastUpdated: user.updatedAt
@@ -2216,10 +2237,24 @@ async function getFullAuthData(ctx: CustomContext, userId: string, forceRefresh:
   // STEP 1: Get basic user data with SIMPLE includes only
   const user = await User.findByPk(userId, {
     attributes: [
-      'id', 'firstName', 'lastName', 'email', 'age', 'gender',
-      'country', 'state', 'city', 'position', 'positionType',
-      'style', 'preferredFoot', 'shirtNumber', 'profilePicture',
-      'skills', 'xp', 'updatedAt'
+     'id',
+      'firstName',
+      'lastName',
+      'email',
+      'age',
+      'gender',
+      'country',
+      'state',
+      'city',
+      'position',
+      'positionType',
+      'style',
+      'preferredFoot',
+      'shirtNumber',
+      'profilePicture',
+      'skills',
+      'xp',
+      'updatedAt',
     ],
     include: [
       {
