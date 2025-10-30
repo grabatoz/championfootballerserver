@@ -11,6 +11,7 @@ import path from 'path';
 import mount from 'koa-mount';
 import { triggerImmediateXPCalculation } from './utils/xpAchievementsEngine';
 import bodyParser from 'koa-bodyparser';
+import zlib from 'zlib';
 import { initializeDatabase } from './config/database'; // Import sequelize too
 import './models'; // Initialize models and associations
 
@@ -44,6 +45,39 @@ app.use(cors({
   credentials: true,
   allowMethods: ['GET','POST','PUT','PATCH','DELETE','OPTIONS'],
 }));
+
+// Inline gzip middleware using Node's zlib to avoid adding external dependency
+// Compresses JSON/text responses over 1KB when the client accepts gzip
+app.use(async (ctx, next) => {
+  await next();
+  try {
+    const acceptEncoding = String(ctx.request.get('Accept-Encoding') || '');
+    if (!acceptEncoding.includes('gzip')) return;
+
+    const contentType = (ctx.response.type || '').toLowerCase();
+    if (!ctx.body) return;
+    if (!contentType.includes('application/json') && !contentType.includes('text/')) return;
+    if (ctx.response.get('Content-Encoding')) return; // already encoded
+
+    let raw: Buffer;
+    if (Buffer.isBuffer(ctx.body)) {
+      raw = ctx.body as Buffer;
+    } else if (typeof ctx.body === 'string') {
+      raw = Buffer.from(ctx.body);
+    } else {
+      raw = Buffer.from(JSON.stringify(ctx.body));
+    }
+
+    if (raw.length < 1024) return; // only compress payloads >1KB
+
+    const gz = zlib.gzipSync(raw, { level: 6 });
+    ctx.set('Content-Encoding', 'gzip');
+    ctx.set('Content-Length', String(gz.length));
+    ctx.body = gz;
+  } catch (e) {
+    console.error('Compression middleware error:', e);
+  }
+});
 
 // Root route for health check and CORS
 app.use(async (ctx, next) => {
@@ -111,6 +145,12 @@ app.use(async (ctx, next) => {
     // Add cache headers for static content
     if (ctx.path.includes('/uploads/') || ctx.path.includes('.css') || ctx.path.includes('.js')) {
       ctx.set('Cache-Control', 'public, max-age=31536000'); // 1 year for static assets
+    }
+    // Lightweight caching for safe GET JSON requests to reduce repeated DB load
+    if (ctx.method === 'GET' && ctx.path.startsWith('/api') && ctx.response.type === 'application/json') {
+      // Short default TTL for GET JSON (can be overridden on per-endpoint basis)
+      const shortTtl = Number(process.env.API_GET_JSON_TTL_SEC ?? 10);
+      ctx.set('Cache-Control', `private, max-age=${shortTtl}`);
     }
   } catch (error: any) {
     console.error('Request error:', error);
