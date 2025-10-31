@@ -1027,6 +1027,19 @@ router.patch("/:id", required, async (ctx) => {
     cache.updateArray(`user_leagues_${memberId}`, updatedLeagueData);
   });
 
+  // Invalidate auth caches for all members (admin change or settings update should reflect immediately)
+  try {
+    const idsToInvalidate = new Set<string>(memberIds.map(String));
+    if (Array.isArray((ctx.request.body as any)?.admins) && (ctx.request.body as any).admins[0]) {
+      idsToInvalidate.add(String((ctx.request.body as any).admins[0]));
+    }
+    idsToInvalidate.forEach((uid) => {
+      cache.del(`auth_status_${uid}_fast`);
+      cache.del(`auth_data_${uid}_ultra_fast`);
+      cache.del(`auth_data_${uid}_fast`); // legacy key compatibility
+    });
+  } catch {}
+
   ctx.status = 200;
   ctx.body = { success: true, message: "League updated successfully." };
 });
@@ -1988,11 +2001,22 @@ router.post("/:id/leave", required, async (ctx) => {
 
   await (league as any).removeMember(ctx.state.user.userId);
 
+  // Also remove admin role if the user was an admin of this league
+  try { if ((league as any).removeAdministeredLeague) { await (league as any).removeAdministeredLeague(ctx.state.user.userId); } } catch {}
+
   // Remove league from user's cache
   cache.removeFromArray(`user_leagues_${ctx.state.user.userId}`, league.id);
 
   // Clear any general leagues cache to ensure fresh data
   cache.clearPattern('leagues_all');
+
+  // Invalidate auth caches so /auth/status and /auth/data reflect changes immediately
+  try {
+    const uid = String(ctx.state.user.userId);
+    cache.del(`auth_status_${uid}_fast`);
+    cache.del(`auth_data_${uid}_ultra_fast`);
+    cache.del(`auth_data_${uid}_fast`); // legacy key compatibility
+  } catch {}
 
   ctx.response.status = 200;
 });
@@ -2007,6 +2031,20 @@ router.delete("/:id/users/:userId", required, async (ctx) => {
   }
 
   await (league as any).removeMember(ctx.params.userId);
+  
+  // Also remove admin role if the removed user was an admin
+  try { if ((league as any).removeAdministeredLeague) { await (league as any).removeAdministeredLeague(ctx.params.userId); } } catch {}
+
+  // Remove league from removed user's cache
+  cache.removeFromArray(`user_leagues_${ctx.params.userId}`, ctx.params.id);
+
+  // Invalidate removed user's auth caches
+  try {
+    const rid = String(ctx.params.userId);
+    cache.del(`auth_status_${rid}_fast`);
+    cache.del(`auth_data_${rid}_ultra_fast`);
+    cache.del(`auth_data_${rid}_fast`); // legacy key compatibility
+  } catch {}
 
   ctx.response.status = 200;
 });

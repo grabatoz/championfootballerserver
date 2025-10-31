@@ -673,9 +673,22 @@ router.get("/auth/data", required, async (ctx: CustomContext) => {
           ],
         }) as unknown as { id: string; email: string; leagues: typeof League[] };
 
-        if (extractFromUser) {
-          const userWithLeagues = user as unknown as { leagues: typeof League[] };
-          userWithLeagues.leagues = [...userWithLeagues.leagues, ...extractFromUser.leagues];
+        // NOTE: Previously we merged leagues from another account for a specific email.
+        // That could surface leagues the user is not actually a member of. Removed per requirement
+        // to only show leagues the user currently belongs to.
+      }
+
+      // Ensure administeredLeagues are only shown if the user is also a current member
+      // (protects against stale admin rows after leaving a league)
+      if ((user as any).leagues && (user as any).administeredLeagues) {
+        const memberLeagueIds = new Set<string>((user as any).leagues.map((l: any) => String(l.id)));
+        const filteredAdmin = (user as any).administeredLeagues.filter((l: any) => memberLeagueIds.has(String(l.id)));
+        (user as any).administeredLeagues = filteredAdmin;
+        // Also expose a consistent alias used by /auth/status
+        if (typeof (user as any).setDataValue === 'function') {
+          (user as any).setDataValue('adminLeagues', filteredAdmin);
+        } else {
+          (user as any).adminLeagues = filteredAdmin;
         }
       }
 
@@ -856,6 +869,10 @@ router.get("/auth/status", required, async (ctx: CustomContext) => {
       const awayTeamMatches = awayTeamMatchIds.map(id => matchesById[id]).filter(Boolean);
       const availableMatches = availableMatchIds.map(id => (id ? matchesById[id] : undefined)).filter(Boolean);
 
+      // Filter administeredLeagues to those where the user is still a member
+      const memberLeagueIds = new Set<string>((user.leagues || []).map((l: any) => String(l.id)));
+      const filteredAdminLeagues = (user.administeredLeagues || []).filter((l: any) => memberLeagueIds.has(String(l.id)));
+
       const payload = {
         success: true,
         user: {
@@ -877,7 +894,7 @@ router.get("/auth/status", required, async (ctx: CustomContext) => {
           skills: user.skills,
           xp: user.xp || 0,
           leagues: user.leagues || [],
-          adminLeagues: user.administeredLeagues || [],
+          adminLeagues: filteredAdminLeagues || [],
           homeTeamMatches,
           awayTeamMatches,
           availableMatches,
