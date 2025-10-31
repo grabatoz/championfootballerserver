@@ -8,6 +8,7 @@
     "start": "node dist/index.js",
     "dev": "ts-node-dev --respawn --transpile-only src/index.ts",
     "check-models": "ts-node check-models.ts",
+    "db:apply-indexes": "ts-node --transpile-only src/scripts/apply-performance-indexes.ts",
     "db:add-result-columns": "ts-node --transpile-only src/scripts/add-result-confirmation-columns.ts",
     "db:check-match-columns": "ts-node --transpile-only src/scripts/check-match-columns.ts",
     "db:add-match-columns": "ts-node --transpile-only src/scripts/add-removed-column-to-matches.ts",

@@ -12,7 +12,7 @@ import mount from 'koa-mount';
 import { triggerImmediateXPCalculation } from './utils/xpAchievementsEngine';
 import bodyParser from 'koa-bodyparser';
 import zlib from 'zlib';
-import { initializeDatabase } from './config/database'; // Import sequelize too
+import sequelize, { initializeDatabase } from './config/database'; // Import sequelize too
 import './models'; // Initialize models and associations
 
 // Import additional routes
@@ -285,11 +285,38 @@ app.on("error", async (error) => {
   // Only log the error and let the connection pool handle reconnection
 });
 
+async function applyPerformanceIndexesIfEnabled() {
+  try {
+    if (process.env.APPLY_PERF_INDEXES !== '1') return;
+    console.log('[DB] APPLY_PERF_INDEXES=1 detected. Ensuring performance indexes...');
+    const q = (sql: string) => sequelize.query(sql);
+    await q('CREATE INDEX IF NOT EXISTS idx_matches_leagueid ON "Matches"("leagueId");');
+    await q('CREATE INDEX IF NOT EXISTS idx_matches_leagueid_date ON "Matches"("leagueId", "date" DESC);');
+  // Match availability uses explicit snake_case table name
+  await q('CREATE INDEX IF NOT EXISTS idx_match_availability_match_id ON match_availabilities(match_id);');
+  await q('CREATE INDEX IF NOT EXISTS idx_match_availability_user_match ON match_availabilities(user_id, match_id);');
+    await q('CREATE INDEX IF NOT EXISTS idx_userhomematches_matchid ON "UserHomeMatches"("matchId");');
+    await q('CREATE INDEX IF NOT EXISTS idx_userhomematches_user_match ON "UserHomeMatches"("userId", "matchId");');
+    await q('CREATE INDEX IF NOT EXISTS idx_userawaymatches_matchid ON "UserAwayMatches"("matchId");');
+    await q('CREATE INDEX IF NOT EXISTS idx_userawaymatches_user_match ON "UserAwayMatches"("userId", "matchId");');
+  await q('CREATE INDEX IF NOT EXISTS idx_leaguemember_leagueid ON "LeagueMember"("leagueId");');
+  await q('CREATE INDEX IF NOT EXISTS idx_leaguemember_user_league ON "LeagueMember"("userId", "leagueId");');
+  await q('CREATE INDEX IF NOT EXISTS idx_leagueadmin_leagueid ON "LeagueAdmin"("leagueId");');
+  await q('CREATE INDEX IF NOT EXISTS idx_leagueadmin_user_league ON "LeagueAdmin"("userId", "leagueId");');
+    console.log('[DB] Performance indexes ensured.');
+  } catch (e) {
+    console.error('[DB] Failed to apply performance indexes:', e);
+  }
+}
+
+// Removed duplicate, incomplete startup block left from earlier version
+
 // Start app - SINGLE LISTEN CALL
 const PORT = process.env.PORT || 5000;
 
 // Initialize database and start server (ONLY ONCE)
-initializeDatabase().then(() => {
+initializeDatabase().then(async () => {
+  await applyPerformanceIndexesIfEnabled();
   app.listen(PORT, () => {
     console.log(`🚀 Server is running on http://localhost:${PORT}`);
     console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
@@ -324,6 +351,7 @@ initializeDatabase().then(() => {
     console.log(`   Facebook: http://localhost:${PORT}/auth/facebook`);
   });
 });
+
 
 
 
@@ -816,41 +844,31 @@ initializeDatabase().then(() => {
 // // Initialize database and start server (ONLY ONCE)
 // initializeDatabase()
 //   .then(() => {
-//     app.listen(PORT, () => {
-//       console.log(`🚀 Server is running on http://localhost:${PORT}`)
-//       console.log(`🌍 Environment: ${process.env.NODE_ENV || "development"}`)
-//       console.log(`🔗 Allowed origins: ${allowedOrigins.join(", ")}`)
-//       console.log(`📱 Client URL: ${process.env.CLIENT_URL}`)
-//       console.log("🔗 Social routes:")
-//       console.log(`   Google: http://localhost:${PORT}/auth/google`)
-//       console.log(`   Facebook: http://localhost:${PORT}/auth/facebook`)
+// async function applyPerformanceIndexesIfEnabled() {
+//   try {
+//     if (process.env.APPLY_PERF_INDEXES !== '1') return;
+//     console.log('[DB] APPLY_PERF_INDEXES=1 detected. Ensuring performance indexes...');
+//     const q = (sql: string) => sequelize.query(sql);
+//     await q('CREATE INDEX IF NOT EXISTS idx_matches_leagueid ON "Matches"("leagueId");');
+//     await q('CREATE INDEX IF NOT EXISTS idx_matches_leagueid_date ON "Matches"("leagueId", "date" DESC);');
+//   // Match availability uses explicit snake_case table name
+//   await q('CREATE INDEX IF NOT EXISTS idx_match_availability_match_id ON match_availabilities(match_id);');
+//   await q('CREATE INDEX IF NOT EXISTS idx_match_availability_user_match ON match_availabilities(user_id, match_id);');
+//     await q('CREATE INDEX IF NOT EXISTS idx_userhomematches_matchid ON "UserHomeMatches"("matchId");');
+//     await q('CREATE INDEX IF NOT EXISTS idx_userhomematches_user_match ON "UserHomeMatches"("userId", "matchId");');
+//     await q('CREATE INDEX IF NOT EXISTS idx_userawaymatches_matchid ON "UserAwayMatches"("matchId");');
+//     await q('CREATE INDEX IF NOT EXISTS idx_userawaymatches_user_match ON "UserAwayMatches"("userId", "matchId");');
+//   await q('CREATE INDEX IF NOT EXISTS idx_leaguemember_leagueid ON "LeagueMember"("leagueId");');
+//   await q('CREATE INDEX IF NOT EXISTS idx_leaguemember_user_league ON "LeagueMember"("userId", "leagueId");');
+//   await q('CREATE INDEX IF NOT EXISTS idx_leagueadmin_leagueid ON "LeagueAdmin"("leagueId");');
+//   await q('CREATE INDEX IF NOT EXISTS idx_leagueadmin_user_league ON "LeagueAdmin"("userId", "leagueId");');
+//     console.log('[DB] Performance indexes ensured.');
+//   } catch (e) {
+//     console.error('[DB] Failed to apply performance indexes:', e);
+//   }
+// }
 
-//       // Schedule a safe background XP/Achievements recalculation shortly after boot
-//       try {
-//         setTimeout(async () => {
-//           try {
-//             console.log("⏱️ Scheduling initial XP/Achievements recalculation...")
-//             await triggerImmediateXPCalculation()
-//             console.log("✅ Initial XP/Achievements recalculation completed")
-//           } catch (calcErr) {
-//             console.error("❌ Initial XP/Achievements recalculation failed:", calcErr)
-//           }
-//         }, 5000)
-//       } catch (scheduleErr) {
-//         console.error("Failed to schedule initial XP calculation:", scheduleErr)
-//       }
-//     })
-//   })
-//   .catch((error) => {
-//     console.error("❌ Failed to initialize database:", error)
-//     // Start server anyway for testing
-//     app.listen(PORT, () => {
-//       console.log(`🚀 Server is running on http://localhost:${PORT} (without database)`)
-//       console.log("🔗 Social routes:")
-//       console.log(`   Google: http://localhost:${PORT}/auth/google`)
-//       console.log(`   Facebook: http://localhost:${PORT}/auth/facebook`)
-//     })
-//   })
+// // Removed duplicate, incomplete startup block left from earlier version
 
 
 
