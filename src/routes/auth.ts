@@ -549,14 +549,26 @@ router.get("/auth/data", required, async (ctx: CustomContext) => {
 
           if (UserHomeMatches) {
             try {
+              // Fetch join rows with just ids to avoid association requirement
               const homeRows = await UserHomeMatches.findAll({
                 where: { matchId: matchIds },
-                include: [{ model: User, attributes: ['id','firstName','lastName'] }]
-              });
-              for (const row of homeRows) {
-                const mid = String(row.matchId);
-                if (!homeUsersByMatch[mid]) homeUsersByMatch[mid] = [];
-                if (row.User) homeUsersByMatch[mid].push(row.User);
+                attributes: ['matchId', 'userId'],
+                raw: true,
+              }) as Array<{ matchId: string | number; userId: string | number }>;
+
+              const homeUserIds = Array.from(new Set(homeRows.map(r => String(r.userId))));
+              if (homeUserIds.length) {
+                const users = await User.findAll({
+                  where: { id: homeUserIds },
+                  attributes: ['id','firstName','lastName'],
+                }) as any[];
+                const userMap = new Map<string, any>(users.map(u => [String(u.id), u]));
+                for (const row of homeRows) {
+                  const mid = String(row.matchId);
+                  if (!homeUsersByMatch[mid]) homeUsersByMatch[mid] = [];
+                  const u = userMap.get(String(row.userId));
+                  if (u) homeUsersByMatch[mid].push(u);
+                }
               }
             } catch (e) {
               console.error('Failed to fetch home team users for matches', e);
@@ -565,14 +577,26 @@ router.get("/auth/data", required, async (ctx: CustomContext) => {
 
           if (UserAwayMatches) {
             try {
+              // Fetch join rows with just ids to avoid association requirement
               const awayRows = await UserAwayMatches.findAll({
                 where: { matchId: matchIds },
-                include: [{ model: User, attributes: ['id','firstName','lastName'] }]
-              });
-              for (const row of awayRows) {
-                const mid = String(row.matchId);
-                if (!awayUsersByMatch[mid]) awayUsersByMatch[mid] = [];
-                if (row.User) awayUsersByMatch[mid].push(row.User);
+                attributes: ['matchId', 'userId'],
+                raw: true,
+              }) as Array<{ matchId: string | number; userId: string | number }>;
+
+              const awayUserIds = Array.from(new Set(awayRows.map(r => String(r.userId))));
+              if (awayUserIds.length) {
+                const users = await User.findAll({
+                  where: { id: awayUserIds },
+                  attributes: ['id','firstName','lastName'],
+                }) as any[];
+                const userMap = new Map<string, any>(users.map(u => [String(u.id), u]));
+                for (const row of awayRows) {
+                  const mid = String(row.matchId);
+                  if (!awayUsersByMatch[mid]) awayUsersByMatch[mid] = [];
+                  const u = userMap.get(String(row.userId));
+                  if (u) awayUsersByMatch[mid].push(u);
+                }
               }
             } catch (e) {
               console.error('Failed to fetch away team users for matches', e);
@@ -585,9 +609,19 @@ router.get("/auth/data", required, async (ctx: CustomContext) => {
         for (const { leagueId, matches } of perLeagueMatches) {
           const enriched = matches.map((m: any) => {
             const mid = String(m.id);
-            (m as any).availableUsers = availableUsersByMatch[mid] || [];
-            (m as any).homeTeamUsers = homeUsersByMatch[mid] || [];
-            (m as any).awayTeamUsers = awayUsersByMatch[mid] || [];
+            const avail = availableUsersByMatch[mid] || [];
+            const home = homeUsersByMatch[mid] || [];
+            const away = awayUsersByMatch[mid] || [];
+            // Ensure these ad-hoc properties are included in JSON by using setDataValue when available
+            if (typeof (m as any).setDataValue === 'function') {
+              (m as any).setDataValue('availableUsers', avail);
+              (m as any).setDataValue('homeTeamUsers', home);
+              (m as any).setDataValue('awayTeamUsers', away);
+            } else {
+              (m as any).availableUsers = avail;
+              (m as any).homeTeamUsers = home;
+              (m as any).awayTeamUsers = away;
+            }
             return m;
           });
           matchesByLeague[leagueId] = enriched;
@@ -595,11 +629,21 @@ router.get("/auth/data", required, async (ctx: CustomContext) => {
 
         // Place matches into user.leagues and user.administeredLeagues
         for (const league of user.leagues) {
-          (league as any).matches = matchesByLeague[league.id] || [];
+          const lm = matchesByLeague[league.id] || [];
+          if (typeof (league as any).setDataValue === 'function') {
+            (league as any).setDataValue('matches', lm);
+          } else {
+            (league as any).matches = lm;
+          }
         }
         if (user.administeredLeagues) {
           for (const league of user.administeredLeagues) {
-            (league as any).matches = matchesByLeague[league.id] || [];
+            const lm = matchesByLeague[league.id] || [];
+            if (typeof (league as any).setDataValue === 'function') {
+              (league as any).setDataValue('matches', lm);
+            } else {
+              (league as any).matches = lm;
+            }
           }
         }
       }
@@ -664,9 +708,20 @@ router.get("/auth/data", required, async (ctx: CustomContext) => {
           const ms = await Match.findAll({ where: { id: uniqueIds }, attributes: ['id', 'date', 'status', 'updatedAt'] });
           for (const m of ms as any[]) matchesById[String(m.id)] = m;
         }
-        (user as any).homeTeamMatches = homeTeamMatchIds.map(id => matchesById[id]).filter(Boolean);
-        (user as any).awayTeamMatches = awayTeamMatchIds.map(id => matchesById[id]).filter(Boolean);
-        (user as any).availableMatches = availableMatchIds.map(id => (id ? matchesById[id] : undefined)).filter(Boolean);
+        const homeTeamMatches = homeTeamMatchIds.map(id => matchesById[id]).filter(Boolean);
+        const awayTeamMatches = awayTeamMatchIds.map(id => matchesById[id]).filter(Boolean);
+        const availableMatches = availableMatchIds.map(id => (id ? matchesById[id] : undefined)).filter(Boolean);
+
+        // Expose these on the user payload just like /auth/status
+        if (typeof (user as any).setDataValue === 'function') {
+          (user as any).setDataValue('homeTeamMatches', homeTeamMatches);
+          (user as any).setDataValue('awayTeamMatches', awayTeamMatches);
+          (user as any).setDataValue('availableMatches', availableMatches);
+        } else {
+          (user as any).homeTeamMatches = homeTeamMatches;
+          (user as any).awayTeamMatches = awayTeamMatches;
+          (user as any).availableMatches = availableMatches;
+        }
       } catch (e) {
         console.error('Failed to load user match association arrays fast-path:', e);
       }
