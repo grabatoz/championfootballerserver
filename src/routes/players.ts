@@ -125,7 +125,7 @@ router.get('/played-with', required, async (ctx) => {
     const userMatchStats = await MatchStatistics.findAll({
       where: { user_id: userId },
       attributes: ['match_id']
-    });
+    });     
 
     let matchIds = userMatchStats.map(stat => stat.match_id);
 
