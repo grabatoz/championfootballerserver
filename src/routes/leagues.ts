@@ -894,6 +894,11 @@ router.post("/", required, upload.single('image'), async (ctx) => {
 
     // Clear any general leagues cache to ensure fresh data
     cache.clearPattern('leagues_all');
+    
+    // 🔥 INSTANT CACHE INVALIDATION: Clear auth caches for immediate update
+    cache.del(`auth_data_${ctx.state.user.userId}_ultra_fast`);
+    cache.del(`auth_status_${ctx.state.user.userId}_fast`);
+    console.log(`✅ Auth cache cleared for user ${ctx.state.user.userId} after league creation`);
 
     ctx.status = 201;
     ctx.body = {
@@ -1064,7 +1069,12 @@ router.delete("/:id", required, async (ctx) => {
   // Remove league from all user caches
   memberIds.forEach((memberId: string) => {
     cache.removeFromArray(`user_leagues_${memberId}`, ctx.params.id);
+    // 🔥 INSTANT CACHE INVALIDATION: Clear auth caches for all members
+    cache.del(`auth_data_${memberId}_ultra_fast`);
+    cache.del(`auth_status_${memberId}_fast`);
   });
+  
+  console.log(`✅ Auth cache cleared for ${memberIds.length} members after league deletion`);
 
   ctx.status = 204; // No Content
 });
@@ -1976,6 +1986,11 @@ router.post("/join", required, async (ctx) => {
 
   // Clear any general leagues cache to ensure fresh data
   cache.clearPattern('leagues_all');
+  
+  // 🔥 INSTANT CACHE INVALIDATION: Clear auth caches after joining
+  cache.del(`auth_data_${ctx.state.user.userId}_ultra_fast`);
+  cache.del(`auth_status_${ctx.state.user.userId}_fast`);
+  console.log(`✅ Auth cache cleared for user ${ctx.state.user.userId} after joining league`);
 
   ctx.body = {
     success: true,
@@ -2610,6 +2625,32 @@ router.post('/:leagueId/matches', required, async (ctx) => {
     await Notification.bulkCreate(notificationEntries);
 
     console.log(`✅ Match created with ${memberIds.length} availability entries and notifications sent`);
+
+    // 🔥 UPDATE CACHE with new match
+    const newMatchData = {
+      id: match.id,
+      homeTeamName,
+      awayTeamName,
+      location,
+      leagueId,
+      date: date ? new Date(date) : startDate,
+      start: startDate,
+      end: endDate,
+      status: 'SCHEDULED',
+      homeCaptainId: null,
+      awayCaptainId: null,
+      homeTeamUsers: [],
+      awayTeamUsers: [],
+      guests: []
+    };
+
+    // Update matches cache - this will make new match visible immediately
+    cache.updateArray('matches_all', newMatchData);
+    console.log(`💾 Cache updated with new match: ${match.id}`);
+
+    // Clear league-specific match cache
+    cache.clearPattern(`matches_league_${leagueId}`);
+    cache.clearPattern(`league_${leagueId}`);
 
     ctx.body = {
       success: true,

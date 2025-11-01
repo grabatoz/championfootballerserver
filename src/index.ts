@@ -22,6 +22,7 @@ import leagueRoutes from './routes/leagues';
 import notificationRoutes from './routes/notifications';
 import userRoutes from './routes/users';
 import playersRoutes from './routes/players';
+import cacheRoutes from './routes/cache';
 import Router from '@koa/router';
 import { setupPassport } from './config/passport';
 import passport from 'koa-passport';
@@ -137,20 +138,50 @@ app.use(async (ctx, next) => {
   }
 });
 
-// Client error handling with performance timing
+// Client error handling with performance timing and smart caching
 app.use(async (ctx, next) => {
   const start = Date.now()
   try {
     await next()
+    
+    const ms = Date.now() - start
+    
+    // Add performance headers for debugging
+    ctx.set('X-Response-Time', `${ms}ms`);
+    
+    // Smart caching based on endpoint and method
+    if (ctx.method === 'GET' && ctx.path.startsWith('/api') || ctx.path.startsWith('/leagues') || ctx.path.startsWith('/matches') || ctx.path.startsWith('/players')) {
+      // Check if response is from cache
+      const isCached = ctx.get('X-Cache') === 'HIT';
+      
+      if (!isCached) {
+        // Set cache headers for GET requests
+        if (ctx.path.includes('/leagues')) {
+          ctx.set('Cache-Control', 'private, max-age=1200'); // 20 min for leagues
+        } else if (ctx.path.includes('/matches')) {
+          ctx.set('Cache-Control', 'private, max-age=600'); // 10 min for matches
+        } else if (ctx.path.includes('/players')) {
+          ctx.set('Cache-Control', 'private, max-age=900'); // 15 min for players
+        } else if (ctx.path.includes('/auth/data')) {
+          ctx.set('Cache-Control', 'private, max-age=1800'); // 30 min for user data
+        } else {
+          ctx.set('Cache-Control', 'private, max-age=300'); // 5 min default
+        }
+      }
+    }
+    
     // Add cache headers for static content
     if (ctx.path.includes('/uploads/') || ctx.path.includes('.css') || ctx.path.includes('.js')) {
       ctx.set('Cache-Control', 'public, max-age=31536000'); // 1 year for static assets
     }
-    // Lightweight caching for safe GET JSON requests to reduce repeated DB load
-    if (ctx.method === 'GET' && ctx.path.startsWith('/api') && ctx.response.type === 'application/json') {
-      // Short default TTL for GET JSON (can be overridden on per-endpoint basis)
-      const shortTtl = Number(process.env.API_GET_JSON_TTL_SEC ?? 10);
-      ctx.set('Cache-Control', `private, max-age=${shortTtl}`);
+    
+    // Log performance
+    if (ms > 500) { // Log slow requests (reduced threshold)
+      console.log(`🐌 SLOW REQUEST: ${ctx.request.method} ${ctx.response.status} in ${ms}ms: ${ctx.request.path}`)
+    } else if (ms < 100) {
+      console.log(`⚡ FAST: ${ctx.request.method} ${ctx.response.status} in ${ms}ms: ${ctx.request.path}`)
+    } else {
+      console.log(`${ctx.request.method} ${ctx.response.status} in ${ms}ms: ${ctx.request.path}`)
     }
   } catch (error: any) {
     console.error('Request error:', error);
@@ -180,18 +211,6 @@ app.use(async (ctx, next) => {
       ctx.response.body = { message: error.message }
     } else {
       ctx.app.emit("error", error, ctx)
-    }
-  } finally {
-    const ms = Date.now() - start
-    // Add performance headers for debugging
-    ctx.set('X-Response-Time', `${ms}ms`);
-    
-    if (ms > 500) { // Log slow requests (reduced threshold)
-      console.log(`🐌 SLOW REQUEST: ${ctx.request.method} ${ctx.response.status} in ${ms}ms: ${ctx.request.path}`)
-    } else if (ms < 100) {
-      console.log(`⚡ FAST: ${ctx.request.method} ${ctx.response.status} in ${ms}ms: ${ctx.request.path}`)
-    } else {
-      console.log(`${ctx.request.method} ${ctx.response.status} in ${ms}ms: ${ctx.request.path}`)
     }
   }
 })
@@ -273,6 +292,7 @@ app.use(notificationRoutes.routes());
 app.use(userRoutes.routes()).use(userRoutes.allowedMethods());
 app.use(socialRoutes.routes());
 app.use(socialRoutes.allowedMethods());
+app.use(cacheRoutes.routes()).use(cacheRoutes.allowedMethods());
 
 // Explicitly mount world-ranking to avoid 404s if server runs an older routes index
 app.use(worldRankingRouter.routes());

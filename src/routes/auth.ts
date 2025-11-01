@@ -404,9 +404,9 @@ router.get("/auth/data", required, async (ctx: CustomContext) => {
     ctx.throw(401, "User not authenticated");
   }
 
-  // Increased cache TTLs for better performance
-  const AUTH_CACHE_TTL_SEC = Number(process.env.AUTH_DATA_CACHE_TTL_SEC ?? 60);      // 60s server cache
-  const AUTH_CLIENT_MAX_AGE_SEC = Number(process.env.AUTH_DATA_CLIENT_MAX_AGE_SEC ?? 30); // 30s browser cache
+  // Ultra-fast cache for instant league create/delete updates
+  const AUTH_CACHE_TTL_SEC = Number(process.env.AUTH_DATA_CACHE_TTL_SEC ?? 2);      // 2s server cache (instant updates)
+  const AUTH_CLIENT_MAX_AGE_SEC = Number(process.env.AUTH_DATA_CLIENT_MAX_AGE_SEC ?? 0); // 0s browser cache (no browser caching)
 
   // Allow manual bypass: /auth/data?refresh=1 (or nocache=1)
   const q = ctx.query as Record<string, string | undefined>;
@@ -774,9 +774,9 @@ router.get("/auth/status", required, async (ctx: CustomContext) => {
   const userId = ctx.state.user.userId;
   const cacheKey = `auth_status_${userId}_fast`;
   
-  // Short cache TTL (30 seconds default)
-  const STATUS_CACHE_TTL_SEC = Number(process.env.AUTH_STATUS_CACHE_TTL_SEC ?? 30);
-  const STATUS_CLIENT_MAX_AGE_SEC = Number(process.env.AUTH_STATUS_CLIENT_MAX_AGE_SEC ?? 30);
+  // Ultra-fast cache for instant league create/delete updates
+  const STATUS_CACHE_TTL_SEC = Number(process.env.AUTH_STATUS_CACHE_TTL_SEC ?? 2);      // 2s server cache (instant updates)
+  const STATUS_CLIENT_MAX_AGE_SEC = Number(process.env.AUTH_STATUS_CLIENT_MAX_AGE_SEC ?? 0); // 0s browser cache (no browser caching)
 
   // Check for manual bypass: /auth/status?refresh=1
   const q = ctx.query as Record<string, string | undefined>;

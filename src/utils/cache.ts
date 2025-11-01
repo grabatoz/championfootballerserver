@@ -7,21 +7,28 @@ interface CacheEntry<T> {
   value: T;
   expiresAt: number;
   hits: number; // Track cache hit count
+  createdAt: number; // Track creation time
 }
 
 class SuperFastCache {
   private store: Record<string, CacheEntry<any>> = {};
   private hitStats: Record<string, number> = {};
+  private missStats: Record<string, number> = {};
 
   get<T>(key: string): T | undefined {
     const entry = this.store[key];
-    if (!entry) return undefined;
+    if (!entry) {
+      this.missStats[key] = (this.missStats[key] || 0) + 1;
+      return undefined;
+    }
     if (Date.now() > entry.expiresAt) {
       delete this.store[key];
+      this.missStats[key] = (this.missStats[key] || 0) + 1;
       return undefined;
     }
     entry.hits++;
     this.hitStats[key] = (this.hitStats[key] || 0) + 1;
+    console.log(`⚡ CACHE HIT [${key}] - hits: ${entry.hits}, age: ${Math.floor((Date.now() - entry.createdAt) / 1000)}s`);
     return entry.value;
   }
 
@@ -29,8 +36,10 @@ class SuperFastCache {
     this.store[key] = {
       value,
       expiresAt: Date.now() + ttlSeconds * 1000,
-      hits: 0
+      hits: 0,
+      createdAt: Date.now()
     };
+    console.log(`💾 CACHE SET [${key}] - TTL: ${ttlSeconds}s`);
   }
 
   // Smart update for array-based caches (leagues, matches, players, etc.)
@@ -149,14 +158,57 @@ class SuperFastCache {
   getStatus() {
     const keys = Object.keys(this.store);
     const status: Record<string, any> = {};
+    const now = Date.now();
+    
     keys.forEach(key => {
       const entry = this.store[key];
       status[key] = {
         hasData: !!entry,
-        expiresIn: entry ? Math.max(0, entry.expiresAt - Date.now()) : 0
+        hits: entry?.hits || 0,
+        totalHits: this.hitStats[key] || 0,
+        totalMisses: this.missStats[key] || 0,
+        hitRate: this.hitStats[key] ? 
+          `${((this.hitStats[key] / ((this.hitStats[key] || 0) + (this.missStats[key] || 0))) * 100).toFixed(1)}%` : 
+          '0%',
+        expiresIn: entry ? Math.max(0, Math.floor((entry.expiresAt - now) / 1000)) : 0,
+        age: entry ? Math.floor((now - entry.createdAt) / 1000) : 0
       };
     });
-    return status;
+    
+    const totalHits = Object.values(this.hitStats).reduce((a, b) => a + b, 0);
+    const totalMisses = Object.values(this.missStats).reduce((a, b) => a + b, 0);
+    const overallHitRate = totalHits + totalMisses > 0 ? 
+      ((totalHits / (totalHits + totalMisses)) * 100).toFixed(1) : '0';
+    
+    console.log(`📊 Cache Stats - Entries: ${keys.length}, Hit Rate: ${overallHitRate}%`);
+    
+    return {
+      entries: status,
+      summary: {
+        totalEntries: keys.length,
+        totalHits,
+        totalMisses,
+        hitRate: `${overallHitRate}%`
+      }
+    };
+  }
+
+  // Prewarm cache with frequently accessed data
+  async prewarm(endpoints: Array<{ key: string; fetcher: () => Promise<any>; ttl?: number }>) {
+    console.log('🔥 Prewarming cache...');
+    const results = await Promise.allSettled(
+      endpoints.map(async ({ key, fetcher, ttl = 900 }) => {
+        try {
+          const data = await fetcher();
+          this.set(key, data, ttl);
+          console.log(`✅ Prewarmed: ${key}`);
+        } catch (error) {
+          console.error(`❌ Failed to prewarm ${key}:`, error);
+        }
+      })
+    );
+    const successful = results.filter(r => r.status === 'fulfilled').length;
+    console.log(`🔥 Prewarm complete: ${successful}/${endpoints.length} successful`);
   }
 }
 
