@@ -12,6 +12,7 @@ export type SocialInput = {
   avatar: string | null;
 };
 
+
 export async function findOrCreateSocialUser(input: SocialInput) {
   // 1) Already linked?
   const linked = await User.findOne({ where: { provider: input.provider, providerId: input.providerId } } as any);

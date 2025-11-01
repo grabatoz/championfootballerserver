@@ -13,6 +13,7 @@ export async function recalcUserTotalXP(userId: string): Promise<number | null> 
     const statsRows = await MatchStatistics.findAll({ where: { user_id: userId }, attributes: ['xpAwarded'], raw: true });
     const matchXP = (statsRows as any[]).reduce((sum, r) => sum + (Number(r.xpAwarded) || 0), 0);
 
+    
     const user = await User.findByPk(userId, { attributes: ['id', 'xp', 'achievements'] });
     if (!user) return null;
     const achIds: string[] = Array.isArray(user.achievements) ? user.achievements : [];

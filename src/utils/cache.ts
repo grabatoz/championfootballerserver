@@ -10,6 +10,7 @@ interface CacheEntry<T> {
   createdAt: number; // Track creation time
 }
 
+
 class SuperFastCache {
   private store: Record<string, CacheEntry<any>> = {};
   private hitStats: Record<string, number> = {};

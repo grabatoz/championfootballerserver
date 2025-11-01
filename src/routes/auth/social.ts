@@ -14,6 +14,7 @@ const FACEBOOK_ENABLED = Boolean(
   process.env.FACEBOOK_APP_ID && process.env.FACEBOOK_APP_SECRET && process.env.FACEBOOK_CALLBACK_URL,
 )
 
+
 console.log("[SOCIAL] CLIENT_URL:", CLIENT_URL)
 console.log("[SOCIAL] JWT_SECRET exists:", !!JWT_SECRET)
 console.log("[SOCIAL] Providers enabled:", {

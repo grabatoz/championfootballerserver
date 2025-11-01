@@ -4,6 +4,7 @@ export interface XPAchievement {
   xp: number;
 }
 
+
 export const xpAchievements: XPAchievement[] = [
   {
     id: "hat_trick_3_matches",

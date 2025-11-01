@@ -11,6 +11,7 @@ module.exports = {
       allowNull: true,
     });
   },
+  
 
   async down(queryInterface) {
     await queryInterface.removeColumn('Matches', 'awayWinPct');

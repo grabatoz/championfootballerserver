@@ -16,6 +16,7 @@ module.exports = {
     });
   },
 
+  
   down: async (queryInterface: QueryInterface) => {
     await queryInterface.removeColumn('users', 'country');
     await queryInterface.removeColumn('users', 'state');

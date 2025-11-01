@@ -7,6 +7,7 @@ export const leagueStatusService = {
     const models = db as unknown as Record<string, any>
     const { League, User, Match, MatchStatistics } = models
 
+    
     // Helpers
     const getKeys = (model: any) => Object.keys(model?.rawAttributes ?? {})
     const pickKey = (model: any, candidates: string[]) => {

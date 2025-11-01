@@ -13,6 +13,7 @@ import { transporter, createMailOptions } from '../modules/sendEmail';
 
 const router = new Router();
 
+
 // Mount auth routes
 router.use(authRouter.routes(), authRouter.allowedMethods());
 router.use(usersRouter.routes(), usersRouter.allowedMethods());

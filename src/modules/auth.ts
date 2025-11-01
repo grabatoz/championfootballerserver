@@ -10,6 +10,7 @@ interface CustomContext extends Context {
   };
 }
 
+
 const verifyToken = async (ctx: CustomContext) => {
   try {
     const authHeader = ctx.request.get("Authorization")

@@ -16,6 +16,7 @@ async function resolveUsers(): Promise<string> {
   throw new Error('users table not found');
 }
 
+
 (async () => {
   const { sequelize } = db;
   const table = await resolveUsers();

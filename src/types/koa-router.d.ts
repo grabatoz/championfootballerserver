@@ -11,6 +11,7 @@ declare module 'koa-router' {
     routes(): Middleware<StateT, CustomT>;
     allowedMethods(): Middleware<StateT, CustomT>;
   }
+  
 
   namespace Router {
     interface Middleware<StateT = DefaultState, CustomT = Context> {

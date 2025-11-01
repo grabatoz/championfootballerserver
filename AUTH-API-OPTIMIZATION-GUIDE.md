@@ -8,6 +8,7 @@
 - Full database query on every request
 - ~500ms+ response time
 
+
 **After:**
 - ✅ 30-second server-side cache (configurable)
 - ✅ 30-second client-side cache (configurable) 

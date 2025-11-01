@@ -10,6 +10,7 @@ async function main() {
   }
   const qi = sequelize.getQueryInterface();
 
+  
   try {
     console.log('Checking Matches table columns...');
     const columns = await qi.describeTable('Matches');

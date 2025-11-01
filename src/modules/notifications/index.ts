@@ -12,6 +12,7 @@ export type NotificationType =
   | 'CAPTAIN_REVISION_SUGGESTED'
   | 'GENERAL';
 
+  
 // Safe helper: returns league admins (no role filter on the pivot)
 async function getLeagueAdmins(leagueId: string): Promise<Array<{ id: string }>> {
   try {

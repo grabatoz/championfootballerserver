@@ -13,6 +13,7 @@ router.get('/', required, async (ctx) => {
     return;
   }
 
+  
   try {
     console.log(`🔔 Fetching notifications for user: ${ctx.state.user.userId}`);
     

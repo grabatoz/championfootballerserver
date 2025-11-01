@@ -10,6 +10,7 @@ module.exports = {
     const qi = queryInterface;
     const q = (sql) => qi.sequelize.query(sql);
 
+    
     // Matches: lookup by leagueId and sort by date
     await q("CREATE INDEX IF NOT EXISTS idx_matches_leagueid ON \"Matches\"(\"leagueId\");");
     await q("CREATE INDEX IF NOT EXISTS idx_matches_leagueid_date ON \"Matches\"(\"leagueId\", \"date\" DESC);");

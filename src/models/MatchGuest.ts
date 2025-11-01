@@ -12,6 +12,7 @@ interface MatchGuestAttributes {
 
 interface MatchGuestCreationAttributes extends Optional<MatchGuestAttributes, 'id'> {}
 
+
 class MatchGuest extends Model<MatchGuestAttributes, MatchGuestCreationAttributes>
   implements MatchGuestAttributes {
   public id!: string;

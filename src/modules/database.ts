@@ -12,6 +12,7 @@ export default { sequelize, models };
 
 
 
+
 // import sequelize from '../config/database';
 // import models from '../models';
 

@@ -9,6 +9,7 @@ export class Vote extends Model<InferAttributes<Vote>, InferCreationAttributes<V
   declare voterId: ForeignKey<string>;
   declare votedForId: ForeignKey<string>;
 
+  
   static associate(models: any) {
     Vote.belongsTo(models.Match, {
       foreignKey: 'matchId',

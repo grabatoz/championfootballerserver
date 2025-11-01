@@ -16,6 +16,7 @@ export = {
       type: 'primary key',
       name: 'pk_match_player_layouts'
     });
+    
   },
   down: async (qi: QueryInterface) => {
     await qi.dropTable('match_player_layouts');

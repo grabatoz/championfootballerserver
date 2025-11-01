@@ -70,6 +70,7 @@ async function getUserLeagueStats(userId: string, leagueId: string) {
       else winStreak = 0;
       if (winStreak > consecutiveWins) consecutiveWins = winStreak;
 
+      
       // Clean sheet win
       if (won && stat.cleanSheets > 0) cleanSheetWinStreak++;
       else cleanSheetWinStreak = 0;

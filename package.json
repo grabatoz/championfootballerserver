@@ -15,6 +15,7 @@
     "db:add-win-pct-columns": "ts-node --transpile-only src/scripts/add-win-pct-columns-to-matches.ts",
     "db:fix-users": "ts-node --transpile-only src/scripts/add-missing-user-columns.ts"
   },
+  
   "keywords": [],
   "author": "",
   "license": "ISC",

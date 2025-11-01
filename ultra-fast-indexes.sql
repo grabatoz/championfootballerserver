@@ -15,6 +15,7 @@ DROP INDEX IF EXISTS idx_votes_match_voted_for;
 CREATE INDEX CONCURRENTLY idx_users_xp_fast ON users(xp DESC NULLS LAST, "positionType") 
 WHERE xp > 0 AND "positionType" IS NOT NULL;
 
+
 -- Match statistics - optimized for leaderboard queries
 CREATE INDEX CONCURRENTLY idx_match_stats_user_metrics ON match_statistics(user_id, goals, assists, defence) 
 WHERE goals > 0 OR assists > 0 OR defence > 0;

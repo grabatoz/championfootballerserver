@@ -13,6 +13,7 @@ if (!SMTP_HOST || !SMTP_USER || !SMTP_PASS) {
   throw new Error('Missing required email environment variables');
 }
 
+
 // Create transporter with SMTP config
 const transporter: Transporter = nodemailer.createTransport({
   host: SMTP_HOST,

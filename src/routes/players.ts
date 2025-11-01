@@ -127,6 +127,7 @@ router.get('/played-with', required, async (ctx) => {
       attributes: ['match_id']
     });     
 
+    
     let matchIds = userMatchStats.map(stat => stat.match_id);
 
     // Optional: filter to a specific league's matches

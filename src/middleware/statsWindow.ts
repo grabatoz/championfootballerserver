@@ -10,6 +10,7 @@ interface MatchBasic {
   status: MatchStatus;
 }
 
+
 interface PlayedMatch extends MatchBasic {}
 
 // Replace these with your real data access helpers (keep throw, but add return types)

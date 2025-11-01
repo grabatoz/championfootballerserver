@@ -17,7 +17,8 @@ import { QueryTypes } from 'sequelize';
       ORDER BY column_name`,
     { type: QueryTypes.SELECT, replacements: { name: plain } }
   );
-
+  
+  
   console.log('Table:', quoted);
   console.log('Columns:', rows.map(r => r.column_name));
   await sequelize.close();

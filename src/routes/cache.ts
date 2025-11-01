@@ -15,6 +15,7 @@ router.get('/status', async (ctx) => {
       cache: status,
       environment: process.env.NODE_ENV || 'development'
     };
+    
   } catch (error) {
     ctx.status = 500;
     ctx.body = {

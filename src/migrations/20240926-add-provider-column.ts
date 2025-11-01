@@ -11,6 +11,7 @@ export async function up(queryInterface: QueryInterface) {
     });
   }
   
+  
   // Add providerId column if not exists
   if (!table.providerId) {
     await queryInterface.addColumn('users', 'providerId', {

@@ -105,6 +105,7 @@ router.get('/', required, async (ctx) => {
       };
     });
 
+    
     // Categorize players by position
     const categorizePlayer = (position: string) => {
       const pos = String(position || '').toLowerCase();

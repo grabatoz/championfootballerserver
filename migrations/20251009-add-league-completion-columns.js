@@ -6,6 +6,7 @@ module.exports = {
       type: Sequelize.INTEGER,
       allowNull: true,
     });
+    
     await queryInterface.addColumn('Leagues', 'isLocked', {
       type: Sequelize.BOOLEAN,
       allowNull: false,

@@ -10,6 +10,7 @@ const { User, Session, League, Match } = models;
 
 const router = new Router({ prefix: '/profile' });
 
+
 // Get user profile with all associations
 router.get('/', required, async (ctx: CustomContext) => {
   if (!ctx.state.user?.userId) {

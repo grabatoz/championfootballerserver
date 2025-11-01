@@ -12,6 +12,7 @@ router.get("/", none, async (ctx) => {
   }
 })
 
+
 router.get("/test", required, async (ctx) => {
   console.log(ctx.session)
   ctx.response.status = 200

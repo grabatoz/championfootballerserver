@@ -4,6 +4,7 @@
 -- Index on users table for XP-based queries (world ranking)
 CREATE INDEX IF NOT EXISTS idx_users_xp_position ON users(xp DESC, "positionType") WHERE xp > 0;
 
+
 -- Index on match_statistics for faster leaderboard queries  
 CREATE INDEX IF NOT EXISTS idx_match_stats_user_goals ON match_statistics(user_id, goals) WHERE goals > 0;
 CREATE INDEX IF NOT EXISTS idx_match_stats_user_assists ON match_statistics(user_id, assists) WHERE assists > 0;

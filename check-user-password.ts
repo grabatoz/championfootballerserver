@@ -12,6 +12,7 @@ async function checkUserPasswords() {
       attributes: ['id', 'email', 'password', 'positionType']
     });
 
+    
     console.log(`\n📊 Found ${users.length} users in database:`);
     
     for (const user of users) {

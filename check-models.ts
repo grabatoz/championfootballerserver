@@ -10,6 +10,7 @@ async function main() {
     if (typeof models.User.findOne !== 'function') {
       throw new Error('User.findOne is not a function');
     }
+    
     // 3. Try a test query (should not throw if no users exist)
     const user = await models.User.findOne();
     // 4. Print result

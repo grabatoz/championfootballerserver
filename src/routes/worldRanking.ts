@@ -15,6 +15,7 @@ import { Op, literal, fn, col } from 'sequelize';
 
 const router = new Router({ prefix: '/world-ranking' });
 
+
 // Unified handler so we can mount both with and without trailing slash
 async function handleGetWorldRanking(ctx: any) {
   const mode = (ctx.query.mode as string) === 'avg' ? 'avg' : 'total';

@@ -12,6 +12,7 @@ cloudinary.config({
   api_secret: process.env.CLOUDINARY_API_SECRET!,
 });
 
+
 // Use memory storage for multer
 const storage = multer.memoryStorage();
 

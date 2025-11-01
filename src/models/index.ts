@@ -13,6 +13,7 @@ import  Notification  from './Notification';
 MatchAvailability.initModel(sequelize);
 Notification.initModel(sequelize);
 
+
 // Guests per match
 Match.hasMany(MatchGuest, { as: 'guestPlayers', foreignKey: 'matchId', onDelete: 'CASCADE' });
 MatchGuest.belongsTo(Match, { as: 'match', foreignKey: 'matchId' });

@@ -1137,6 +1137,7 @@ router.get('/:matchId/availability', required, async (ctx) => {
   }
 });
 
+
 // Archive/Restore match (PATCH)
 router.patch('/:id', required, async (ctx) => {
     console.log('=== PATCH ROUTE STARTED ===');

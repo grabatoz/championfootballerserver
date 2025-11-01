@@ -13,6 +13,7 @@ The `/auth/status` and `/auth/data` APIs were very slow, causing delays when use
 - **Added performance metrics** (`X-Gen-Time` header)
 - **Result:** **50-100x faster** (from ~500ms to ~5-10ms)
 
+
 ### 2. Optimized `/auth/data` API
 - **Increased cache duration** (60s → 120s server, 30s → 60s client)
 - **Removed unnecessary fields** (statistics, notes, start fields)

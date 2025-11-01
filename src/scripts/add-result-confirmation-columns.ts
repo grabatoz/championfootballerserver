@@ -16,6 +16,7 @@ async function resolveQuotedTable(): Promise<string> {
   throw new Error('Neither "Matches" nor "matches" table found');
 }
 
+
 async function run() {
   const { sequelize } = db;
   const table = await resolveQuotedTable();

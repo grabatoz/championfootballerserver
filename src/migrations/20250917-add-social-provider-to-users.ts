@@ -11,6 +11,7 @@ export = {
       allowNull: true,
       defaultValue: null
     });
+    
     // make password nullable for social accounts
     await queryInterface.changeColumn('Users', 'password', {
       type: DataTypes.STRING,

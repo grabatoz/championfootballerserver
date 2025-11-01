@@ -15,6 +15,7 @@ pm2 status
 echo "[4/5] Restarting API with ultra-fast config..."
 pm2 restart championfootballer-api --update-env
 
+
 echo "[5/5] Checking logs for startup..."
 pm2 logs championfootballer-api --lines 20
 

@@ -12,6 +12,7 @@ npm run build
 echo [3/5] Checking PM2 status...
 pm2 status
 
+
 echo [4/5] Restarting API with ultra-fast config...
 pm2 restart championfootballer-api --update-env
 

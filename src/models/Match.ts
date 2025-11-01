@@ -42,6 +42,7 @@ export interface MatchAttributes {
 
 interface MatchCreationAttributes extends Optional<MatchAttributes, 'id' | 'archived' | 'removed'> {} // <-- added 'removed'
 
+
 class Match extends Model<MatchAttributes, MatchCreationAttributes> implements MatchAttributes {
   public id!: string;
   public date!: Date;

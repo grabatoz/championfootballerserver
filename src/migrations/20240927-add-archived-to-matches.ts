@@ -13,6 +13,7 @@ export async function up(queryInterface: QueryInterface) {
   }
 }
 
+
 export async function down(queryInterface: QueryInterface) {
   const table = await queryInterface.describeTable('Matches');
   

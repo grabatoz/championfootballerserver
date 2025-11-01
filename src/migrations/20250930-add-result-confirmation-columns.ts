@@ -11,6 +11,7 @@ export async function up(q: QueryInterface) {
   await q.addColumn('matches', 'suggestedByCaptainId', { type: DataTypes.UUID, allowNull: true });
 }
 
+
 export async function down(q: QueryInterface) {
   await q.removeColumn('matches', 'status');
   await q.removeColumn('matches', 'homeCaptainConfirmed');

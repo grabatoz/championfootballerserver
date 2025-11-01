@@ -9,6 +9,7 @@ export default {
         type: DataTypes.STRING,
         allowNull: true
       });
+      
       // Optional composite uniqueness (uncomment if needed)
       // await queryInterface.addIndex('users', ['provider', 'providerId'], {
       //   name: 'users_provider_providerId_unique',

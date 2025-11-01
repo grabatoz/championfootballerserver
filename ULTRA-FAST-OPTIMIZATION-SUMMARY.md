@@ -16,6 +16,7 @@
 
 ### 🎯 **Route Optimizations**
 
+
 #### Players Route (`/players`)
 - 30min cache duration (was 10min)
 - Limited to 20 players with XP > 50

@@ -29,6 +29,7 @@ import passport from 'koa-passport';
 import socialAuthRouter from './routes/auth/social';
 import socialRoutes from './routes/auth/social';
 
+
 // CORS configuration for both development and production
 const allowedOrigins = [
   'http://localhost:3000',

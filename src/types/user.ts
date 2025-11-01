@@ -7,6 +7,7 @@ export interface Skills {
   physical: number;
 }
 
+
 export interface User {
   id: string;
   email: string;

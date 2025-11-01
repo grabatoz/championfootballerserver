@@ -16,6 +16,7 @@ export const getLoginCode = () => {
             result += chars[Math.floor(Math.random() * chars.length)]
         return result
     }
+    
 
     return randomString(5, "1234567890")
 }

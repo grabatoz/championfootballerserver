@@ -12,6 +12,7 @@ const { User, League } = models
 
 const router = new Router({ prefix: '/users' });
 
+
 interface UserInput {
   firstName?: string;
   lastName?: string;

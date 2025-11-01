@@ -10,6 +10,7 @@ app.use(cors({
   credentials: true,
 }));
 
+
 // Test social routes without database
 router.get('/auth/google', (ctx) => {
   console.log('Google route hit');

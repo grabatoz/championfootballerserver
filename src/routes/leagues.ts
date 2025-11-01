@@ -623,6 +623,7 @@ router.get('/user', required, async (ctx) => {
   }
 });
 
+
 // Get all leagues for the current user - ULTRA FAST FIXED (keep this at "/")
 // router.get("/", required, async (ctx) => {
 //   if (!ctx.state.user || !ctx.state.user.userId) {

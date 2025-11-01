@@ -12,6 +12,7 @@ export interface NotificationAttributes {
   created_at: Date;
 }
 
+
 type NotificationCreationAttributes = Optional<NotificationAttributes, 'id' | 'user_id'>;
 
 class Notification extends Model<NotificationAttributes, NotificationCreationAttributes> implements NotificationAttributes {

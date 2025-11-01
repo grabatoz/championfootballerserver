@@ -15,6 +15,7 @@ interface LeagueAttributes {
   updatedAt: Date;
 }
 
+
 class League extends Model<LeagueAttributes> {
   declare id: string;
   declare name: string;

@@ -25,6 +25,7 @@ interface MatchStatisticsAttributes {
 
 interface MatchStatisticsCreationAttributes extends Optional<MatchStatisticsAttributes, 'id' | 'createdAt' | 'updatedAt'> {}
 
+
 class MatchStatistics extends Model<MatchStatisticsAttributes, MatchStatisticsCreationAttributes> implements MatchStatisticsAttributes {
   public id!: string;
   public user_id!: string;

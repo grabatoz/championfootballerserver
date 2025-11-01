@@ -14,6 +14,8 @@ async function main() {
     console.log('Checking Matches table columns for win pct...');
     const columns = await qi.describeTable('Matches');
 
+
+    
     if (!columns.homeWinPct) {
       console.log('Adding homeWinPct (INTEGER, NULLABLE) to Matches...');
       await qi.addColumn('Matches', 'homeWinPct', {

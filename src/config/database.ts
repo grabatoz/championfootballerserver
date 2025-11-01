@@ -4,6 +4,7 @@ import { QueryInterface, DataTypes } from 'sequelize';
 
 dotenv.config();
 
+
 // Use the full Neon connection string
 const sequelize = new Sequelize(process.env.DATABASE_URL as string, {
   dialect: 'postgres',

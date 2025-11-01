@@ -6,6 +6,7 @@ module.exports = {
        ADD COLUMN IF NOT EXISTS "removed" JSONB NOT NULL DEFAULT '{"home":[],"away":[]}'`
     );
   },
+  
   async down(qi) {
     await qi.removeColumn('Matches', 'removed');
   }

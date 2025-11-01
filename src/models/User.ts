@@ -1,4 +1,5 @@
 import { Model, DataTypes } from 'sequelize';
+
 import  sequelize  from '../config/database';
 
 export interface UserAttributes {

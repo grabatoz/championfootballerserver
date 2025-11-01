@@ -12,6 +12,7 @@ export interface MatchPlayerLayoutAttrs {
 }
 type Creation = Optional<MatchPlayerLayoutAttrs, never>;
 
+
 export class MatchPlayerLayout extends Model<MatchPlayerLayoutAttrs, Creation> implements MatchPlayerLayoutAttrs {
   public matchId!: string;
   public userId!: string;

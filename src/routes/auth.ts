@@ -2592,6 +2592,7 @@ router.get("/me", required, async (ctx: CustomContext) => {
 //       limit: 50
 //     });
 
+
 //     // Group matches by league
 //     const matchesByLeague: { [key: string]: any[] } = {};
 //     matches.forEach(match => {

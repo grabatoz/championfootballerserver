@@ -12,6 +12,7 @@ interface SessionAttributes {
 
 interface SessionCreationAttributes extends Optional<SessionAttributes, 'id' | 'ipAddress' | 'createdAt' | 'updatedAt'> {}
 
+
 class Session extends Model<SessionAttributes, SessionCreationAttributes> implements SessionAttributes {
   public id!: string;
   public userId!: string;
