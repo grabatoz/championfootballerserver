@@ -179,6 +179,28 @@ app.use(async (ctx, next) => {
   try {
     await next()
     
+    // Ensure CORS headers are always present on ALL responses
+    const requestOrigin = ctx.request.header.origin;
+    if (requestOrigin && isOriginAllowed(requestOrigin)) {
+      ctx.set('Access-Control-Allow-Origin', requestOrigin);
+      ctx.set('Access-Control-Allow-Credentials', 'true');
+    } else if (requestOrigin) {
+      const clientUrl = process.env.CLIENT_URL?.replace(/\/$/, '') || allowedOrigins[0];
+      ctx.set('Access-Control-Allow-Origin', clientUrl);
+      ctx.set('Access-Control-Allow-Credentials', 'true');
+    }
+    
+    // For OPTIONS requests, ensure all CORS headers are set
+    if (ctx.method === 'OPTIONS') {
+      ctx.set('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
+      ctx.set('Access-Control-Allow-Headers', 'Authorization,Content-Type');
+      ctx.set('Access-Control-Max-Age', '86400');
+      if (ctx.status === 200 || !ctx.body) {
+        ctx.status = 204; // No Content for preflight
+        ctx.body = null;
+      }
+    }
+    
     const ms = Date.now() - start
     
     // Add performance headers for debugging
