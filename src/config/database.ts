@@ -15,12 +15,15 @@ const sequelize = new Sequelize(process.env.DATABASE_URL as string, {
     min: 5,
     acquire: 30000,
     idle: 10000,
+    evict: 10000, // Remove idle connections after 10s
   },
   dialectOptions: {
     ssl: {
       require: true,
       rejectUnauthorized: false, // For Neon — allows self-signed certs
     },
+    keepAlive: true, // IMPORTANT: Keep connection alive
+    keepAliveInitialDelayMs: 10000, // Send keepalive every 10s
   },
   // Performance optimizations
   benchmark: false,

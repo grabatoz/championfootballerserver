@@ -10,8 +10,48 @@ import leaderboardRouter from './leaderboard';
 import worldRankingRouter from './worldRanking';
 import { Context } from 'koa';
 import { transporter, createMailOptions } from '../modules/sendEmail';
+import sequelize from '../config/database';
 
 const router = new Router();
+
+// Health check endpoints (keeps server alive!)
+router.get('/health', async (ctx) => {
+  ctx.body = {
+    status: 'ok',
+    timestamp: new Date().toISOString(),
+    uptime: Math.floor(process.uptime())
+  };
+});
+
+router.get('/ping', async (ctx) => {
+  ctx.body = { pong: true, time: Date.now() };
+});
+
+// Detailed health with DB check
+router.get('/health/detailed', async (ctx) => {
+  try {
+    await sequelize.authenticate();
+    const [results] = await sequelize.query('SELECT NOW() as time');
+    ctx.body = {
+      status: 'healthy',
+      timestamp: new Date().toISOString(),
+      uptime: Math.floor(process.uptime()),
+      database: { connected: true, time: results[0] },
+      memory: {
+        used: Math.round(process.memoryUsage().heapUsed / 1024 / 1024),
+        total: Math.round(process.memoryUsage().heapTotal / 1024 / 1024),
+        unit: 'MB'
+      }
+    };
+  } catch (error) {
+    ctx.status = 503;
+    ctx.body = {
+      status: 'unhealthy',
+      error: error instanceof Error ? error.message : 'Database error'
+    };
+  }
+});
+
 
 
 // Mount auth routes
