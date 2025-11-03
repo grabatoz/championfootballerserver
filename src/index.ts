@@ -40,8 +40,23 @@ const allowedOrigins = [
   'https://championfootballer-client-championfootballer.vercel.app'
 ];
 
+// Function to check if origin is allowed (handles trailing slash)
+const isOriginAllowed = (origin: string): boolean => {
+  if (!origin) return false;
+  const normalizedOrigin = origin.replace(/\/$/, ''); // Remove trailing slash
+  return allowedOrigins.some(allowed => allowed.replace(/\/$/, '') === normalizedOrigin);
+};
+
 app.use(cors({
-  origin: process.env.CLIENT_URL || '*',
+  origin: (ctx) => {
+    const requestOrigin = ctx.request.header.origin;
+    if (requestOrigin && isOriginAllowed(requestOrigin)) {
+      return requestOrigin; // Return exact origin without trailing slash
+    }
+    // Fallback to CLIENT_URL without trailing slash
+    const clientUrl = process.env.CLIENT_URL?.replace(/\/$/, '') || allowedOrigins[0];
+    return clientUrl;
+  },
   allowHeaders: ['Authorization', 'Content-Type'],
   exposeHeaders: ['X-Cache'],
   credentials: true,
