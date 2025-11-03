@@ -63,6 +63,25 @@ app.use(cors({
   allowMethods: ['GET','POST','PUT','PATCH','DELETE','OPTIONS'],
 }));
 
+// Explicit OPTIONS preflight handler (before body parser)
+app.use(async (ctx, next) => {
+  if (ctx.method === 'OPTIONS') {
+    const requestOrigin = ctx.request.header.origin;
+    const origin = (requestOrigin && isOriginAllowed(requestOrigin)) 
+      ? requestOrigin 
+      : (process.env.CLIENT_URL?.replace(/\/$/, '') || allowedOrigins[0]);
+    
+    ctx.set('Access-Control-Allow-Origin', origin);
+    ctx.set('Access-Control-Allow-Credentials', 'true');
+    ctx.set('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
+    ctx.set('Access-Control-Allow-Headers', 'Authorization,Content-Type');
+    ctx.set('Access-Control-Max-Age', '86400'); // 24 hours
+    ctx.status = 204; // No Content
+    return;
+  }
+  await next();
+});
+
 // Inline gzip middleware using Node's zlib to avoid adding external dependency
 // Compresses JSON/text responses over 1KB when the client accepts gzip
 app.use(async (ctx, next) => {
