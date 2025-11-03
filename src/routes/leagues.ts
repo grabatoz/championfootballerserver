@@ -3386,6 +3386,29 @@ router.get('/:leagueId/player/:playerId/quick-view', required, async (ctx) => {
     })),
   };
 
+  // Limit to player's most recent N completed matches (default 10 via ?limit=)
+  const limitRaw = typeof ctx.query.limit === 'string' ? parseInt(ctx.query.limit as string, 10) : NaN;
+  const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(limitRaw, 50) : 10;
+  const allCompleted = (league.matches || []).filter((m: any) => m.status === 'RESULT_PUBLISHED');
+  const participated = allCompleted.filter((m: any) => {
+    const home = (m.homeTeamUsers || []).some((p: any) => String(p.id) === playerId);
+    const away = (m.awayTeamUsers || []).some((p: any) => String(p.id) === playerId);
+    return home || away;
+  });
+  const getTime = (m: any) => {
+    const d = (m.start || m.date);
+    return d ? new Date(d).getTime() : 0;
+  };
+  const recentMatches = participated
+    .sort((a: any, b: any) => getTime(b) - getTime(a))
+    .slice(0, limit);
+  const recentIds = recentMatches.map((m: any) => String(m.id));
+
+  // Console log recent match IDs for verification
+  try {
+    console.log('[quick-view] recent matchIds (limit=%s, player=%s): %o', limit, playerId, recentIds);
+  } catch {}
+
   // 2) Compute base stats (then override goals/assists/motmVotes from DB below)
   type PlayerStats = { played: number; wins: number; draws: number; losses: number; goals: number; assists: number; motmVotes: number; teamGoalsConceded: number };
   const calcStats = (lg: any): Record<string, PlayerStats> => {
@@ -3432,12 +3455,11 @@ router.get('/:leagueId/player/:playerId/quick-view', required, async (ctx) => {
     return stats;
   };
 
-  const statsMap = calcStats(league);
-  const stats: PlayerStats = statsMap[playerId] || { played: 0, wins: 0, draws: 0, losses: 0, goals: 0, assists: 0, motmVotes: 0, teamGoalsConceded: 0 };
+  let stats: PlayerStats = { played: 0, wins: 0, draws: 0, losses: 0, goals: 0, assists: 0, motmVotes: 0, teamGoalsConceded: 0 };
 
   // 3) Completed matches for this league
-  const completedMatches = (league.matches || []).filter((m: any) => m.status === 'RESULT_PUBLISHED');
-  const completedIds = completedMatches.map((m: any) => String(m.id));
+  const completedMatches = recentMatches;
+  const completedIds = recentIds;
 
   // 4) Pull per-match player stats and votes from DB
   const allStats = completedIds.length
@@ -3466,16 +3488,35 @@ router.get('/:leagueId/player/:playerId/quick-view', required, async (ctx) => {
     votesByMatch[mid] = { counts, winnerId, maxVotes };
   });
 
-  // 5) Override totals in stats strictly from DB
+  // 5) Override totals in stats strictly from DB (LIMITED to last N matches)
   const totalGoals = userStatsAll.reduce((s: number, r: any) => s + Number(r.goals || 0), 0);
   const totalAssists = userStatsAll.reduce((s: number, r: any) => s + Number(r.assists || 0), 0);
   const totalMotmVotes = allVotes.filter((v: any) => String(v.votedForId) === playerId).length;
+
+  // played + W/D/L + conceded only from recent matches
+  stats.played = completedMatches.length;
+  completedMatches.forEach((m: any) => {
+    const isHome = (m.homeTeamUsers || []).some((u: any) => String(u.id) === playerId);
+    const isAway = (m.awayTeamUsers || []).some((u: any) => String(u.id) === playerId);
+    if (!isHome && !isAway) return;
+    const hg = Number(m.homeTeamGoals || 0);
+    const ag = Number(m.awayTeamGoals || 0);
+    const homeWon = hg > ag;
+    const draw = hg === ag;
+    if (isHome) {
+      if (homeWon) stats.wins += 1; else if (draw) stats.draws += 1; else stats.losses += 1;
+      stats.teamGoalsConceded += ag;
+    } else if (isAway) {
+      if (!homeWon && !draw) stats.wins += 1; else if (draw) stats.draws += 1; else stats.losses += 1;
+      stats.teamGoalsConceded += hg;
+    }
+  });
 
   stats.goals = Number(totalGoals || 0);
   stats.assists = Number(totalAssists || 0);
   stats.motmVotes = Number(totalMotmVotes || 0);
 
-  // 6) Build lastFiveDetailed from DB rows (plus a legacy lastFive)
+  // 6) Build lastXDetailed from DB rows (configurable via ?limit=)
   type UserMatchSummary = { goals: number; assists: number; conceded: number; result: 'W'|'D'|'L'; motmVotes: number };
   type LastFiveDetailed = {
     matchId: string;
@@ -3525,7 +3566,8 @@ router.get('/:leagueId/player/:playerId/quick-view', required, async (ctx) => {
   });
 
   const detailedSorted = detailedAll.sort((a, b) => (b.date ? Date.parse(b.date) : 0) - (a.date ? Date.parse(a.date) : 0));
-  const lastFiveDetailedIds = detailedSorted.slice(0, 5).map(d => d.matchId);
+  // limit already computed above (default to 10)
+  const lastFiveDetailedIds = detailedSorted.slice(0, limit).map(d => d.matchId);
 
   // After building detailedSorted and lastFiveDetailedIds, REMOVE per-match XP fetch:
   // const statsRowsForFive = lastFiveDetailedIds.length
@@ -3536,7 +3578,7 @@ router.get('/:leagueId/player/:playerId/quick-view', required, async (ctx) => {
 
   // Keep last five details, but set xp to 0 (no per-match XP)
   const lastFiveDetailed: LastFiveDetailed[] =
-    detailedSorted.slice(0, 5).map(d => ({ ...d, xp: 0 }));
+    detailedSorted.slice(0, limit).map(d => ({ ...d, xp: 0 }));
 
   const lastFive: UserMatchSummary[] = lastFiveDetailed.map(d => ({
     goals: d.goals,
@@ -3546,8 +3588,8 @@ router.get('/:leagueId/player/:playerId/quick-view', required, async (ctx) => {
     motmVotes: d.motmVotes
   }));
 
-  const cleanSheets = detailedAll.filter(d => d.cleanSheet).length;
-  const motmCount = detailedAll.filter(d => d.isMOTM).length;
+  const cleanSheets = lastFiveDetailed.filter(d => d.cleanSheet).length;
+  const motmCount = lastFiveDetailed.filter(d => d.isMOTM).length;
 
   // 7) Player + skills (DB only)
   const dbPlayer = await User.findByPk(String(ctx.params.playerId), {
@@ -3592,6 +3634,38 @@ router.get('/:leagueId/player/:playerId/quick-view', required, async (ctx) => {
   const xpLatest = profileXP;       // keep fields for compatibility
   const xpRecentTotal = profileXP;  // keep fields for compatibility
 
+  // Optional debug payload to verify calculations for last N matches
+  const debugParam = String((ctx.query as any)?.debug ?? '').toLowerCase();
+  const debugMode = debugParam === '1' || debugParam === 'true';
+  const debug = debugMode
+    ? {
+        matchIds: recentIds,
+        totals: {
+          goalsFromStats: Number(totalGoals || 0),
+          assistsFromStats: Number(totalAssists || 0),
+          motmVotesCount: Number(totalMotmVotes || 0),
+          played: Number(stats.played || 0),
+          wins: Number(stats.wins || 0),
+          draws: Number(stats.draws || 0),
+          losses: Number(stats.losses || 0),
+          concededTotal: Number(stats.teamGoalsConceded || 0),
+        },
+        voteWinners: Object.fromEntries(
+          Object.entries(votesByMatch).map(([mid, v]: [string, any]) => [mid, { winnerId: v.winnerId, maxVotes: v.maxVotes }])
+        ),
+        // Minimal per-match stat snapshot for the player
+        perMatchStat: recentIds.map((mid: string) => {
+          const r = statByMatchUser.get(`${mid}:${playerId}`);
+          return {
+            matchId: mid,
+            goals: Number(r?.goals || 0),
+            assists: Number(r?.assists || 0),
+            cleanSheets: Number(r?.cleanSheets || 0),
+          };
+        }),
+      }
+    : undefined;
+
   ctx.body = {
     success: true,
     league: { id: league.id, name: league.name },
@@ -3605,7 +3679,8 @@ router.get('/:leagueId/player/:playerId/quick-view', required, async (ctx) => {
     profileXP,
     xpLatest,
     xpRecentTotal,
-    skills
+    skills,
+    ...(debugMode ? { debug } : {})
   };
 });
 
