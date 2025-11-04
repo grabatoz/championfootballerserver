@@ -8,31 +8,46 @@ const {
   SMTP_PASS,
 } = process.env;
 
-// Ensure environment variables are defined (optional but recommended)
-if (!SMTP_HOST || !SMTP_USER || !SMTP_PASS) {
-  throw new Error('Missing required email environment variables');
+// Soft-enable email: if env is missing, export a no-op transporter instead of crashing
+const EMAIL_ENABLED = Boolean(SMTP_HOST && SMTP_USER && SMTP_PASS);
+
+// Create a real transporter when configured, otherwise a stub that logs and resolves
+let transporter: Transporter | { sendMail: (opts: any) => Promise<any>; verify?: (cb: (err: any, ok: boolean) => void) => void };
+
+if (EMAIL_ENABLED) {
+  transporter = nodemailer.createTransport({
+    host: SMTP_HOST,
+    port: 465,
+    secure: true,
+    auth: {
+      user: SMTP_USER!,
+      pass: SMTP_PASS!,
+    },
+  });
+
+  // Verify connection configuration (non-fatal)
+  (transporter as Transporter).verify((error: Error | null, success: boolean) => {
+    if (error) {
+      console.error('Error connecting to SMTP server:', error);
+    } else {
+      console.log('SMTP server is ready to send emails:', success);
+    }
+  });
+} else {
+  console.warn('[EMAIL] SMTP not configured (missing SMTP_HOST/SMTP_USER/SMTP_PASS). Emails will be skipped.');
+  transporter = {
+    async sendMail(opts: any) {
+      console.warn('[EMAIL] Skipped sendMail because email is disabled. To enable, set SMTP_HOST/SMTP_USER/SMTP_PASS. Attempted mail:', {
+        to: opts?.to,
+        subject: opts?.subject,
+      });
+      return { accepted: [], rejected: [], messageId: 'email-disabled' };
+    },
+    verify(cb?: (err: any, ok: boolean) => void) {
+      cb && cb(null, false);
+    },
+  };
 }
-
-
-// Create transporter with SMTP config
-const transporter: Transporter = nodemailer.createTransport({
-  host: SMTP_HOST,
-  port: 465,
-  secure: true,
-  auth: {
-    user: SMTP_USER,
-    pass: SMTP_PASS,
-  },
-});
-
-// Verify connection configuration
-transporter.verify((error: Error | null, success: boolean) => {
-  if (error) {
-    console.error('Error connecting to SMTP server:', error);
-  } else {
-    console.log('SMTP server is ready to send emails:', success);
-  }
-});
 
 // Define type for mail options
 type MailOptions = {
