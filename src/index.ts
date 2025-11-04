@@ -57,7 +57,7 @@ app.use(cors({
     const clientUrl = process.env.CLIENT_URL?.replace(/\/$/, '') || allowedOrigins[0];
     return clientUrl;
   },
-  allowHeaders: ['Authorization', 'Content-Type'],
+  allowHeaders: ['Authorization', 'Content-Type', 'Accept', 'X-Requested-With'],
   exposeHeaders: ['X-Cache'],
   credentials: true,
   allowMethods: ['GET','POST','PUT','PATCH','DELETE','OPTIONS'],
@@ -118,7 +118,12 @@ app.use(async (ctx, next) => {
 // Root route for health check and CORS
 app.use(async (ctx, next) => {
   if (ctx.path === '/' && ctx.method === 'GET') {
-    ctx.set('Access-Control-Allow-Origin', '*');
+    const requestOrigin = ctx.request.header.origin;
+    const origin = (requestOrigin && isOriginAllowed(requestOrigin)) 
+      ? requestOrigin 
+      : (process.env.CLIENT_URL?.replace(/\/$/, '') || allowedOrigins[0]);
+    ctx.set('Access-Control-Allow-Origin', origin);
+    ctx.set('Vary', 'Origin');
     ctx.set('Access-Control-Allow-Credentials', 'true');
     ctx.body = { 
       status: 'ok', 
@@ -169,6 +174,7 @@ app.use(async (ctx, next) => {
     } else {
       ctx.set('Access-Control-Allow-Origin', allowedOrigins[0]);
     }
+    ctx.set('Vary', 'Origin');
     ctx.set('Access-Control-Allow-Credentials', 'true');
   }
 });
@@ -188,6 +194,9 @@ app.use(async (ctx, next) => {
       const clientUrl = process.env.CLIENT_URL?.replace(/\/$/, '') || allowedOrigins[0];
       ctx.set('Access-Control-Allow-Origin', clientUrl);
       ctx.set('Access-Control-Allow-Credentials', 'true');
+    }
+    if (ctx.response.get('Access-Control-Allow-Origin')) {
+      ctx.set('Vary', 'Origin');
     }
     
     // For OPTIONS requests, ensure all CORS headers are set
@@ -250,6 +259,7 @@ app.use(async (ctx, next) => {
     } else {
       ctx.set('Access-Control-Allow-Origin', allowedOrigins[0]);
     }
+    ctx.set('Vary', 'Origin');
     ctx.set('Access-Control-Allow-Credentials', 'true');
     
     // If there isn't a status, set it to 500 with default message
