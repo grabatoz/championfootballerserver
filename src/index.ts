@@ -74,7 +74,7 @@ app.use(async (ctx, next) => {
     ctx.set('Access-Control-Allow-Origin', origin);
     ctx.set('Access-Control-Allow-Credentials', 'true');
     ctx.set('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
-    ctx.set('Access-Control-Allow-Headers', 'Authorization,Content-Type');
+    ctx.set('Access-Control-Allow-Headers', 'Authorization,Content-Type,Accept,X-Requested-With');
     ctx.set('Access-Control-Max-Age', '86400'); // 24 hours
     ctx.status = 204; // No Content
     return;
