@@ -9,9 +9,9 @@ const {
 } = process.env;
 
 // Ensure environment variables are defined (optional but recommended)
-// if (!SMTP_HOST || !SMTP_USER || !SMTP_PASS) {
-//   throw new Error('Missing required email environment variables');
-// }
+if (!SMTP_HOST || !SMTP_USER || !SMTP_PASS) {
+  throw new Error('Missing required email environment variables');
+}
 
 
 // Create transporter with SMTP config
