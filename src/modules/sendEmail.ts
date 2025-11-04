@@ -2,37 +2,41 @@ import nodemailer, { Transporter } from 'nodemailer';
 import dotenv from 'dotenv';
 dotenv.config();
 
-const {
-  SMTP_HOST,
-  SMTP_USER,
-  SMTP_PASS,
-} = process.env;
+const { SMTP_HOST, SMTP_USER, SMTP_PASS } = process.env;
 
-// Ensure environment variables are defined (optional but recommended)
-if (!SMTP_HOST || !SMTP_USER || !SMTP_PASS) {
-  throw new Error('Missing required email environment variables');
+// If SMTP credentials are missing in production, don't crash the whole app.
+// Fall back to a JSON transport that logs emails to console. Also export a flag.
+const emailEnabled = Boolean(SMTP_HOST && SMTP_USER && SMTP_PASS);
+
+// Create transporter: real SMTP when configured, otherwise a safe no-op/JSON transport
+const transporter: Transporter = emailEnabled
+  ? nodemailer.createTransport({
+      host: SMTP_HOST,
+      port: 465,
+      secure: true,
+      auth: {
+        user: SMTP_USER as string,
+        pass: SMTP_PASS as string,
+      },
+    })
+  : nodemailer.createTransport({
+      jsonTransport: true, // print emails to console as JSON (no external SMTP needed)
+    } as any);
+
+// Verify connection only when SMTP is enabled
+if (emailEnabled) {
+  transporter.verify((error: Error | null, success: boolean) => {
+    if (error) {
+      console.error('Error connecting to SMTP server:', error);
+    } else {
+      console.log('SMTP server is ready to send emails:', success);
+    }
+  });
+} else {
+  console.warn(
+    '[EMAIL] SMTP not configured (missing SMTP_HOST/SMTP_USER/SMTP_PASS). Using JSON transport; emails will not be sent.'
+  );
 }
-
-
-// Create transporter with SMTP config
-const transporter: Transporter = nodemailer.createTransport({
-  host: SMTP_HOST,
-  port: 465,
-  secure: true,
-  auth: {
-    user: SMTP_USER,
-    pass: SMTP_PASS,
-  },
-});
-
-// Verify connection configuration
-transporter.verify((error: Error | null, success: boolean) => {
-  if (error) {
-    console.error('Error connecting to SMTP server:', error);
-  } else {
-    console.log('SMTP server is ready to send emails:', success);
-  }
-});
 
 // Define type for mail options
 type MailOptions = {
@@ -43,14 +47,14 @@ type MailOptions = {
 
 export const createMailOptions = ({ to, subject, htmlContent }: MailOptions) => {
   return {
-    from: SMTP_USER,
+    from: SMTP_USER || 'Champion Footballer <no-reply@championfootballer.com>',
     to,
     subject,
     html: htmlContent,
   };
 };
 
-export { transporter };
+export { transporter, emailEnabled };
 
 
 
