@@ -318,33 +318,46 @@ app.use(socialAuthRouter.routes()).use(socialAuthRouter.allowedMethods());
 
 // Also mount under /api prefix for compatibility
 const apiRouter = new Router({ prefix: '/api' });
-apiRouter.use(socialAuthRouter.routes(), socialAuthRouter.allowedMethods());
+// Split middleware registrations to satisfy @koa/router type overloads
+apiRouter.use(socialAuthRouter.routes());
+apiRouter.use(socialAuthRouter.allowedMethods());
 //////////////////////////////////////////////////
 // Mount core routers under /api for reverse proxy compatibility
-apiRouter.use(matchRoutes.routes(), matchRoutes.allowedMethods());
-apiRouter.use(leagueRoutes.routes(), leagueRoutes.allowedMethods());
-apiRouter.use(playersRoutes.routes(), playersRoutes.allowedMethods());
+apiRouter.use(matchRoutes.routes());
+apiRouter.use(matchRoutes.allowedMethods());
+apiRouter.use(leagueRoutes.routes());
+apiRouter.use(leagueRoutes.allowedMethods());
+apiRouter.use(playersRoutes.routes());
+apiRouter.use(playersRoutes.allowedMethods());
 // ////////////////////////////////////////////////////////////////////
 app.use(apiRouter.routes()).use(apiRouter.allowedMethods());
 
 // Mount under /v1 and /api/v1 for reverse proxies that enforce versioning
 const v1Router = new Router({ prefix: '/v1' });
-v1Router.use(socialAuthRouter.routes(), socialAuthRouter.allowedMethods());
+v1Router.use(socialAuthRouter.routes());
+v1Router.use(socialAuthRouter.allowedMethods());
 //////////////////////////////////////////////////////////////////////
 // Mount core routers under /v1 as well
-v1Router.use(matchRoutes.routes(), matchRoutes.allowedMethods());
-v1Router.use(leagueRoutes.routes(), leagueRoutes.allowedMethods());
-v1Router.use(playersRoutes.routes(), playersRoutes.allowedMethods());
+v1Router.use(matchRoutes.routes());
+v1Router.use(matchRoutes.allowedMethods());
+v1Router.use(leagueRoutes.routes());
+v1Router.use(leagueRoutes.allowedMethods());
+v1Router.use(playersRoutes.routes());
+v1Router.use(playersRoutes.allowedMethods());
 //////////////////////////////////////////////////////////////////////
 app.use(v1Router.routes()).use(v1Router.allowedMethods());
 
 const apiV1Router = new Router({ prefix: '/api/v1' });
-apiV1Router.use(socialAuthRouter.routes(), socialAuthRouter.allowedMethods());
+apiV1Router.use(socialAuthRouter.routes());
+apiV1Router.use(socialAuthRouter.allowedMethods());
 /////////////////////////////////////////
 // Mount core routers under /api/v1
-apiV1Router.use(matchRoutes.routes(), matchRoutes.allowedMethods());
-apiV1Router.use(leagueRoutes.routes(), leagueRoutes.allowedMethods());
-apiV1Router.use(playersRoutes.routes(), playersRoutes.allowedMethods());
+apiV1Router.use(matchRoutes.routes());
+apiV1Router.use(matchRoutes.allowedMethods());
+apiV1Router.use(leagueRoutes.routes());
+apiV1Router.use(leagueRoutes.allowedMethods());
+apiV1Router.use(playersRoutes.routes());
+apiV1Router.use(playersRoutes.allowedMethods());
 // //////////////////////////////////////////////////////////////////////
 app.use(apiV1Router.routes()).use(apiV1Router.allowedMethods());
 
