@@ -7,9 +7,9 @@ declare module 'koa-router' {
     post(path: string, ...middleware: Middleware<StateT, CustomT>[]): Router<StateT, CustomT>;
     patch(path: string, ...middleware: Middleware<StateT, CustomT>[]): Router<StateT, CustomT>;
     delete(path: string, ...middleware: Middleware<StateT, CustomT>[]): Router<StateT, CustomT>;
-    // use(...middleware: Array<Middleware<StateT, CustomT> | Router<StateT, CustomT>>): Router<StateT, CustomT>;
-    // use(path: string, ...middleware: Array<Middleware<StateT, CustomT> | Router<StateT, CustomT>>): Router<StateT, CustomT>;
-     use(path: string, router: Router<StateT, CustomT> | Middleware<StateT, CustomT>): Router<StateT, CustomT>;
+    use(...middleware: Array<Middleware<StateT, CustomT> | Router<StateT, CustomT>>): Router<StateT, CustomT>;
+    use(path: string, ...middleware: Array<Middleware<StateT, CustomT> | Router<StateT, CustomT>>): Router<StateT, CustomT>;
+    //  use(path: string, router: Router<StateT, CustomT> | Middleware<StateT, CustomT>): Router<StateT, CustomT>;
     routes(): Middleware<StateT, CustomT>;
     allowedMethods(): Middleware<StateT, CustomT>;
   }
