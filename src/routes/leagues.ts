@@ -1,4 +1,4 @@
-import Router from '@koa/router';
+import Router from 'koa-router';
 import { leagueStatusService } from '../modules/leagues/leagueStatus.service';
 import db from '../models';
 import { required } from '../modules/auth';
