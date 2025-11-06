@@ -1,6 +1,6 @@
 import { Context } from "koa"
 import db from "./database"
-import { ModelStatic } from "sequelize"
+import { ModelStatic, QueryTypes } from "sequelize"
 import User from "../models/User";
 import League from "../models/League";
 
@@ -64,14 +64,33 @@ export async function verifyLeagueAdmin(ctx: Context, leagueId: string) {
         ctx.throw(401, 'User not authenticated');
     }
 
+    const uid = String(ctx.state.user.userId);
+
+    // Primary check: via included association (fast path)
     const league = await League.findByPk(leagueId, {
         include: [{
             model: User,
-            as: 'administeredLeagues'
+            as: 'administeredLeagues',
+            attributes: ['id']
         }]
-    }) as League & { administeredLeagues: any[] };
+    }) as (League & { administeredLeagues?: Array<{ id: string }> }) | null;
 
-    if (!league?.administeredLeagues?.find((user: { id: string }) => user.id === ctx.state.user.userId)) {
+    let isAdmin = Boolean(league?.administeredLeagues?.some(a => String(a.id) === uid));
+
+    // Fallback: query the join table directly to avoid stale include/hydration issues
+    if (!isAdmin) {
+        try {
+            const row = await (League.sequelize as any).query(
+                'SELECT 1 FROM "LeagueAdmin" WHERE "leagueId" = :lid AND "userId" = :uid LIMIT 1',
+                { type: QueryTypes.SELECT, replacements: { lid: String(leagueId), uid } }
+            );
+            isAdmin = Array.isArray(row) && row.length > 0;
+        } catch (_e) {
+            // If fallback fails, throw below
+        }
+    }
+
+    if (!isAdmin) {
         ctx.throw(403, "You are not a league admin.")
     }
 }

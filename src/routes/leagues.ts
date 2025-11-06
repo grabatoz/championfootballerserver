@@ -758,33 +758,43 @@ router.get("/:id", required, async (ctx) => {
     return respondLeagueNotFound(ctx);
   }
 
-  const isMember = (league as any).members?.some((member: any) => member.id === ctx.state.user!.userId);
-  const isAdmin = (league as any).administeredLeagues?.some((admin: any) => admin.id === ctx.state.user!.userId);
+  const userId = String(ctx.state.user!.userId);
+  const memberIds = ((league as any).members || []).map((m: any) => String(m.id));
+  const adminIds = ((league as any).administeredLeagues || []).map((a: any) => String(a.id));
+
+  let isMember = memberIds.includes(userId);
+  let isAdmin = adminIds.includes(userId);
+
+  // Robust fallbacks to avoid false 403s when includes are stale/missing
+  if (!isAdmin) {
+    try {
+      const row = await (League.sequelize as any).query(
+        'SELECT 1 FROM "LeagueAdmin" WHERE "leagueId" = :lid AND "userId" = :uid LIMIT 1',
+        { type: QueryTypes.SELECT, replacements: { lid: String(ctx.params.id), uid: userId } }
+      );
+      isAdmin = Array.isArray(row) && row.length > 0;
+      if (isAdmin) console.log('[League Access Debug] Admin verified via join table fallback');
+    } catch (e) {
+      console.warn('[League Access Debug] Admin fallback failed:', e);
+    }
+  }
+
+  if (!isMember) {
+    try {
+      const row = await (League.sequelize as any).query(
+        'SELECT 1 FROM "LeagueMember" WHERE "leagueId" = :lid AND "userId" = :uid LIMIT 1',
+        { type: QueryTypes.SELECT, replacements: { lid: String(ctx.params.id), uid: userId } }
+      );
+      isMember = Array.isArray(row) && row.length > 0;
+      if (isMember) console.log('[League Access Debug] Member verified via join table fallback');
+    } catch (e) {
+      console.warn('[League Access Debug] Member fallback failed:', e);
+    }
+  }
 
   if (!isMember && !isAdmin) {
-    // New logic: allow if user has ever shared any league with any member
-    // 1. Get all league IDs for the current user
-    const userWithLeagues = await User.findByPk(ctx.state.user!.userId, {
-      include: [{ model: League, as: 'leagues', attributes: ['id'] }]
-    });
-    const userLeagueIds = (userWithLeagues as any)?.leagues?.map((l: any) => l.id) || [];
-    // 2. For each member of this league, check if there is any overlap
-    const memberIds = (league as any).members?.map((m: any) => m.id) || [];
-    let hasCommonLeague = false;
-    for (const memberId of memberIds) {
-      if (memberId === ctx.state.user!.userId) continue;
-      const memberWithLeagues = await User.findByPk(memberId, {
-        include: [{ model: League, as: 'leagues', attributes: ['id'] }]
-      });
-      const memberLeagueIds = (memberWithLeagues as any)?.leagues?.map((l: any) => l.id) || [];
-      if (userLeagueIds.some((id: any) => memberLeagueIds.includes(id))) {
-        hasCommonLeague = true;
-        break;
-      }
-    }
-    if (!hasCommonLeague) {
-      ctx.throw(403, "You don't have access to this league");
-    }
+    console.log('[League Access Debug] Forbidden: not member/admin', { userId, memberIds, adminIds, leagueId });
+    ctx.throw(403, "You don't have access to this league");
   }
 
   ctx.body = {
