@@ -11,27 +11,28 @@ const sequelize = new Sequelize(process.env.DATABASE_URL as string, {
   protocol: 'postgres',
   logging: false, // Keep disabled for performance
   pool: {
-    max: 30, // 🚀 Optimized: Increased from 20 to 30 for better concurrency
-    min: 10, // 🚀 Optimized: Increased from 5 to 10 for faster response
-    acquire: 30000,
-    idle: 10000,
-    evict: 5000, // 🚀 Optimized: Faster cleanup of idle connections
+    max: 30, // � Balanced: Good for VPS without overloading
+    min: 10, // � Balanced: Enough ready connections
+    acquire: 60000, // 🔧 FIXED: 60s to allow retry (was causing timeout!)
+    idle: 10000, // Standard idle timeout
+    evict: 10000, // Standard eviction time
   },
   dialectOptions: {
     ssl: {
       require: true,
-      rejectUnauthorized: false, // For Neon — allows self-signed certs
+      rejectUnauthorized: false, // For Neon/Hostinger — allows self-signed certs
     },
-    keepAlive: true, // IMPORTANT: Keep connection alive
-    keepAliveInitialDelayMs: 10000, // Send keepalive every 10s
-    // 🚀 Performance: Add query timeouts to prevent hanging
-    statement_timeout: 30000, // 30 second timeout for queries
-    idle_in_transaction_session_timeout: 10000, // 10 second timeout for idle transactions
+    keepAlive: true, // CRITICAL: Keep connection alive on VPS
+    keepAliveInitialDelayMs: 10000, // Keep alive every 10s
+    // 🚀 Performance: Timeouts for queries
+    statement_timeout: 30000, // 30 second query timeout
+    idle_in_transaction_session_timeout: 10000, // 10 second idle timeout
   },
   // Performance optimizations
   benchmark: false,
   retry: {
-    max: 3
+    max: 3, // 🔧 Standard: 3 retries on connection issues
+    timeout: 30000, // 🔧 FIXED: 30s retry timeout (was 10s, causing errors!)
   }
 });
 

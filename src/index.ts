@@ -28,6 +28,7 @@ import { setupPassport } from './config/passport';
 import passport from 'koa-passport';
 import socialAuthRouter from './routes/auth/social';
 import socialRoutes from './routes/auth/social';
+import cacheMiddleware from './middleware/memoryCache';
 
 
 // CORS configuration for both development and production
@@ -163,6 +164,9 @@ app.use(async (ctx, next) => {
 });
 
 app.use(mount('/uploads', serve(path.resolve(process.cwd(), 'uploads'))));
+
+// 🚀 PERFORMANCE: In-memory cache for instant responses (1-5ms!)
+app.use(cacheMiddleware);
 
 // Always send CORS headers on 404 responses
 app.use(async (ctx, next) => {
