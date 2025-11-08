@@ -26,6 +26,23 @@ class MemoryCache {
   private defaultTTL: number = 60000; // 1 minute default
 
   /**
+   * Safe JSON stringify that handles circular references
+   */
+  private safeStringify(obj: any): string {
+    const seen = new WeakSet();
+    return JSON.stringify(obj, (key, value) => {
+      // Skip circular references
+      if (typeof value === 'object' && value !== null) {
+        if (seen.has(value)) {
+          return undefined; // Skip circular reference
+        }
+        seen.add(value);
+      }
+      return value;
+    });
+  }
+
+  /**
    * Generate cache key from request
    */
   private getCacheKey(ctx: Context): string {
@@ -96,13 +113,22 @@ class MemoryCache {
       }
     }
     
-    this.cache.set(key, {
-      data: JSON.parse(JSON.stringify(data)), // Deep clone
-      timestamp: Date.now(),
-      headers: {
-        'Content-Type': ctx.response.get('Content-Type') || 'application/json',
-      }
-    });
+    try {
+      // Use safe stringify to handle circular references
+      const safeData = JSON.parse(this.safeStringify(data));
+      
+      this.cache.set(key, {
+        data: safeData,
+        timestamp: Date.now(),
+        headers: {
+          'Content-Type': ctx.response.get('Content-Type') || 'application/json',
+        }
+      });
+    } catch (error) {
+      // If serialization fails, don't cache this response
+      console.warn('⚠️ Failed to cache response (circular structure):', ctx.path);
+      console.warn('   Error:', error instanceof Error ? error.message : error);
+    }
   }
 
   /**
