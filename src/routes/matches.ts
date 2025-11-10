@@ -75,46 +75,48 @@ async function resolveTargetUserIdForMatch(playerOrGuestId: string, matchId: str
 }
 
 router.post('/:id/votes', required, async (ctx) => {
-    if (!ctx.state.user?.userId) {
-        ctx.throw(401, 'Unauthorized');
-        return;
-    }
-    const matchId = ctx.params.id;
-    const voterId = ctx.state.user.userId;
-    const { votedForId } = ctx.request.body as { votedForId: string };
+  if (!ctx.state.user?.userId) {
+    ctx.throw(401, 'Unauthorized');
+    return;
+  }
+  const matchId = ctx.params.id;
+  const voterId = ctx.state.user.userId;
+  const { votedForId } = ctx.request.body as { votedForId?: string | null };
 
-    if (voterId === votedForId) {
-        ctx.throw(400, "You cannot vote for yourself.");
-    }
+  // Treat null/empty votedForId as an UNVOTE (remove existing vote and return success)
+  if (!votedForId) {
+    await Vote.destroy({ where: { matchId, voterId } });
+    try { cache.clearPattern(`match_votes_${matchId}_`); } catch {}
+    ctx.status = 200;
+    ctx.body = { success: true, message: 'Vote removed.' };
+    return;
+  }
 
-    // Remove any previous vote by this user for this match
-    await Vote.destroy({
-        where: {
-            matchId,
-            voterId,
-        },
-    });
+  if (voterId === votedForId) {
+    ctx.throw(400, 'You cannot vote for yourself.');
+  }
 
-    // Create the new vote
-    await Vote.create({
-        matchId,
-        voterId,
-        votedForId,
-    });
+  // Remove any previous vote by this user for this match (idempotent update)
+  await Vote.destroy({ where: { matchId, voterId } });
 
-    // Update leaderboard cache for MOTM
+  // Create the new vote (votedForId now guaranteed truthy)
+  await Vote.create({ matchId, voterId, votedForId });
+
+  // Update leaderboard cache for MOTM (increment by 1 for this player)
+  try {
     const match = await Match.findByPk(matchId);
     if (match && match.leagueId) {
-        const cacheKey = `leaderboard_motm_${match.leagueId}_all`;
-        const newStats = {
-            playerId: votedForId,
-            value: 1 // Increment vote count
-        };
-        cache.updateLeaderboard(cacheKey, newStats);
+      const cacheKey = `leaderboard_motm_${match.leagueId}_all`;
+      cache.updateLeaderboard(cacheKey, { playerId: votedForId, value: 1 });
     }
+  } catch (e) {
+    console.warn('MOTM leaderboard cache update failed', e);
+  }
 
-    ctx.status = 200;
-    ctx.body = { success: true, message: "Vote cast successfully." };
+  try { cache.clearPattern(`match_votes_${matchId}_`); } catch {}
+
+  ctx.status = 200;
+  ctx.body = { success: true, message: 'Vote cast successfully.' };
 });
 
 router.post('/:matchId/availability', required, async (ctx) => {
