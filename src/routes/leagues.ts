@@ -58,6 +58,8 @@ const toUserBasic = (p: any) => ({
   firstName: p?.firstName ?? '',
   lastName: p?.lastName ?? '',
   position: p?.positionType ?? p?.position ?? undefined,
+  // include xp if present on user (for XP-based rankings)
+  xp: typeof p?.xp === 'number' ? p.xp : (p?.xp ? Number(p.xp) : undefined),
 });
 
 const router = new Router({ prefix: '/leagues' });
@@ -191,10 +193,35 @@ router.get('/trophy-room', required, async (ctx) => {
     // Only players who actually played are eligible for table-based awards
     const eligible: string[] = ids.filter((id: string) => (statsMap[id]?.played || 0) > 0);
 
-    // League table by points (wins*3 + draws)
-    const byPoints = (a: string, b: string) =>
-      (statsMap[b].wins * 3 + statsMap[b].draws) - (statsMap[a].wins * 3 + statsMap[a].draws);
-    const table: string[] = [...eligible].sort(byPoints);
+    // Determine ranking basis: XP (if league.showPoints truthy) or Points
+    const preferXP = Boolean(league?.showPoints);
+    const pointsOf = (id: string) => (statsMap[id].wins * 3 + statsMap[id].draws);
+    const xpOf = (id: string) => {
+      const m = (league.members || []).find((x: any) => String(x.id) === String(id));
+      const v = (m && typeof m.xp !== 'undefined') ? Number(m.xp) : 0;
+      return Number.isFinite(v) ? v : 0;
+    };
+
+    const table: string[] = [...eligible].sort((a: string, b: string) => {
+      if (preferXP) {
+        const xb = xpOf(b), xa = xpOf(a);
+        if (xb !== xa) return xb - xa; // higher XP first
+        const wb = statsMap[b].wins, wa = statsMap[a].wins;
+        if (wb !== wa) return wb - wa;
+        const pb = pointsOf(b), pa = pointsOf(a);
+        if (pb !== pa) return pb - pa;
+        return String(a).localeCompare(String(b));
+      } else {
+        const pb = pointsOf(b), pa = pointsOf(a);
+        if (pb !== pa) return pb - pa; // higher points first
+        const wb = statsMap[b].wins, wa = statsMap[a].wins;
+        if (wb !== wa) return wb - wa;
+        // optional: fewer games played ranks higher if tied
+        const pla = statsMap[a].played, plb = statsMap[b].played;
+        if (pla !== plb) return pla - plb;
+        return String(a).localeCompare(String(b));
+      }
+    });
 
     const getName = (pid: string) => {
       const p = (league.members || []).find((x: any) => String(x.id) === pid);
@@ -321,7 +348,7 @@ router.get('/trophy-room', required, async (ctx) => {
   const memberLeagues = await League.findAll({
     where: { '$members.id$': userId },            // filter by membership
     include: [
-      { model: User, as: 'members', attributes: ['id', 'firstName', 'lastName', 'position', 'positionType'] },
+      { model: User, as: 'members', attributes: ['id', 'firstName', 'lastName', 'position', 'positionType', 'xp'] },
       {
         model: Match, as: 'matches',
         include: [
@@ -334,7 +361,7 @@ router.get('/trophy-room', required, async (ctx) => {
   const adminLeagues = await League.findAll({
     where: { '$administeredLeagues.id$': userId }, // filter by admin
     include: [
-      { model: User, as: 'members', attributes: ['id', 'firstName', 'lastName', 'position', 'positionType'] },
+      { model: User, as: 'members', attributes: ['id', 'firstName', 'lastName', 'position', 'positionType', 'xp'] },
       { model: User, as: 'administeredLeagues', attributes: ['id'] },
       {
         model: Match, as: 'matches',
@@ -376,6 +403,7 @@ router.get('/trophy-room', required, async (ctx) => {
     return {
       id: String(l.id),
       name: l.name,
+      showPoints: (l as any).showPoints,
       members: effectiveMembers.map(toUserBasic),
       matches: rawMatches.map((m: any) => ({
         id: String(m.id),
@@ -797,6 +825,62 @@ router.get("/:id", required, async (ctx) => {
     ctx.throw(403, "You don't have access to this league");
   }
 
+  // Build a league table aligned with frontend logic (XP vs Points)
+  const buildLeagueTable = (lg: any) => {
+    const admins = ((lg as any).administeredLeagues || []).map((a: any) => String(a.id));
+    const members: any[] = ((lg as any).members || []).map((m: any) => ({
+      id: String(m.id),
+      firstName: m.firstName || '',
+      lastName: m.lastName || '',
+      xp: typeof (m as any).xp === 'number' ? (m as any).xp : ((m as any).xp ? Number((m as any).xp) : 0),
+      isAdmin: admins.includes(String(m.id)),
+    }));
+
+    const statMap: Record<string, { played: number; wins: number; draws: number; losses: number; motm: number }> = {};
+    const ensure = (id: string) => { if (!statMap[id]) statMap[id] = { played: 0, wins: 0, draws: 0, losses: 0, motm: 0 }; };
+    members.forEach(m => ensure(m.id));
+
+    const publishedMatches: any[] = (((lg as any).matches) || []).filter((m: any) => normalizeStatus(m.status) === 'RESULT_PUBLISHED');
+    publishedMatches.forEach((match: any) => {
+      const home = (match.homeTeamUsers || []).map((u: any) => String(u.id));
+      const away = (match.awayTeamUsers || []).map((u: any) => String(u.id));
+      const hg = Number(match.homeTeamGoals || 0);
+      const ag = Number(match.awayTeamGoals || 0);
+      const homeWon = hg > ag; const awayWon = ag > hg; const draw = hg === ag;
+      [...home, ...away].forEach(ensure);
+  home.forEach((pid: string) => { statMap[pid].played++; if (homeWon) statMap[pid].wins++; else if (draw) statMap[pid].draws++; else statMap[pid].losses++; });
+  away.forEach((pid: string) => { statMap[pid].played++; if (awayWon) statMap[pid].wins++; else if (draw) statMap[pid].draws++; else statMap[pid].losses++; });
+      const votes = Object.values(match.manOfTheMatchVotes || {}) as Array<string | number>;
+      votes.forEach(v => { const id = String(v); if (statMap[id]) statMap[id].motm += 1; });
+    });
+
+    const preferXP = Boolean((lg as any).showPoints);
+    const rows = members.map(m => {
+      const s = statMap[m.id] || { played: 0, wins: 0, draws: 0, losses: 0, motm: 0 };
+      const points = s.wins * 3 + s.draws;
+      const winPercentage = s.played ? `${Math.round((s.wins / s.played) * 100)}%` : '0%';
+      return { id: m.id, name: `${m.firstName} ${m.lastName}`.trim(), played: s.played, wins: s.wins, draws: s.draws, losses: s.losses, winPercentage, xp: m.xp || 0, motmCount: s.motm, points, isAdmin: m.isAdmin };
+    });
+
+    rows.sort((a, b) => {
+      if (!preferXP) {
+        if (b.points !== a.points) return b.points - a.points;
+        if (b.wins !== a.wins) return b.wins - a.wins;
+        if (a.played !== b.played) return a.played - b.played;
+        return a.name.localeCompare(b.name);
+      } else {
+        if ((b.xp || 0) !== (a.xp || 0)) return (b.xp || 0) - (a.xp || 0);
+        if (b.wins !== a.wins) return b.wins - a.wins;
+        const pb = b.points - a.points; if (pb !== 0) return pb;
+        return a.name.localeCompare(b.name);
+      }
+    });
+
+    return rows.map((r, i) => ({ ...r, position: i + 1 }));
+  };
+
+  const leagueTable = buildLeagueTable(league);
+
   ctx.body = {
     success: true,
     league: {
@@ -810,7 +894,8 @@ router.get("/:id", required, async (ctx) => {
       active: league.active,
       maxGames: league.maxGames,
       showPoints: league.showPoints,
-      image: league.image
+      image: league.image,
+      table: leagueTable
     }
   };
 });
