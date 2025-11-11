@@ -9,7 +9,7 @@ import cors from '@koa/cors';
 import serve from 'koa-static';
 import path from 'path';
 import mount from 'koa-mount';
-import { triggerImmediateXPCalculation } from './utils/xpAchievementsEngine';
+// import { triggerImmediateXPCalculation } from './utils/xpAchievementsEngine';
 import bodyParser from 'koa-bodyparser';
 import zlib from 'zlib';
 import sequelize, { initializeDatabase } from './config/database'; // Import sequelize too
@@ -138,14 +138,14 @@ app.use(async (ctx, next) => {
 });
 
 // Manual XP calculation endpoint
-app.use(async (ctx: Koa.Context, next: Koa.Next) => {
-  if (ctx.path === '/api/trigger-xp-calculation' && ctx.method === 'POST') {
-    await triggerImmediateXPCalculation();
-    ctx.body = { success: true, message: 'XP calculation triggered' };
-    return;
-  }
-  await next();
-});
+// app.use(async (ctx: Koa.Context, next: Koa.Next) => {
+//   if (ctx.path === '/api/trigger-xp-calculation' && ctx.method === 'POST') {
+//     await triggerImmediateXPCalculation();
+//     ctx.body = { success: true, message: 'XP calculation triggered' };
+//     return;
+//   }
+//   await next();
+// });
 
 // Body parser: skip multipart so multer (upload.fields) can read the stream
 app.use(async (ctx, next) => {
@@ -418,19 +418,19 @@ initializeDatabase().then(async () => {
     console.log(`   Facebook: http://localhost:${PORT}/auth/facebook`);
 
     // Schedule a safe background XP/Achievements recalculation shortly after boot
-    try {
-      setTimeout(async () => {
-        try {
-          console.log('⏱️ Scheduling initial XP/Achievements recalculation...');
-          await triggerImmediateXPCalculation();
-          console.log('✅ Initial XP/Achievements recalculation completed');
-        } catch (calcErr) {
-          console.error('❌ Initial XP/Achievements recalculation failed:', calcErr);
-        }
-      }, 5000);
-    } catch (scheduleErr) {
-      console.error('Failed to schedule initial XP calculation:', scheduleErr);
-    }
+    // try {
+    //   setTimeout(async () => {
+    //     try {
+    //       console.log('⏱️ Scheduling initial XP/Achievements recalculation...');
+    //       await triggerImmediateXPCalculation();
+    //       console.log('✅ Initial XP/Achievements recalculation completed');
+    //     } catch (calcErr) {
+    //       console.error('❌ Initial XP/Achievements recalculation failed:', calcErr);
+    //     }
+    //   }, 5000);
+    // } catch (scheduleErr) {
+    //   console.error('Failed to schedule initial XP calculation:', scheduleErr);
+    // }
   });
 }).catch((error) => {
   console.error('❌ Failed to initialize database:', error);

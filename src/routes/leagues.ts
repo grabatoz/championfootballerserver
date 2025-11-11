@@ -9,7 +9,7 @@ import { getInviteCode, verifyLeagueAdmin } from '../modules/utils';
 import type { LeagueAttributes } from '../models/League';
 import { transporter } from '../modules/sendEmail';
 import { Op, fn, col, where, QueryTypes } from 'sequelize';
-import { calculateAndAwardXPAchievements } from '../utils/xpAchievementsEngine';
+// import { calculateAndAwardXPAchievements } from '../utils/xpAchievementsEngine';
 import Vote from '../models/Vote';
 import MatchStatistics from '../models/MatchStatistics';
 import { xpPointsTable } from '../utils/xpPointsTable';
@@ -955,16 +955,16 @@ router.patch("/:id/status", required, async (ctx) => {
   await league.save();
 
   // If the league is being made inactive, run final XP calculation for all members
-  if (active === false) {
-    console.log(`League ${league.name} (${league.id}) is ending. Running final XP calculation.`);
-    for (const member of (league as any).members || []) {
-      try {
-        await calculateAndAwardXPAchievements(member.id, league.id);
-      } catch (error) {
-        console.error(`Error during final XP calculation for user ${member.id} in league ${league.id}:`, error);
-      }
-    }
-  }
+  // if (active === false) {
+  //   console.log(`League ${league.name} (${league.id}) is ending. Running final XP calculation.`);
+  //   for (const member of (league as any).members || []) {
+  //     try {
+  //       await calculateAndAwardXPAchievements(member.id, league.id);
+  //     } catch (error) {
+  //       console.error(`Error during final XP calculation for user ${member.id} in league ${league.id}:`, error);
+  //     }
+  //   }
+  // }
 
   // Update cache with league status change
   const updatedLeagueData = {
@@ -2091,14 +2091,14 @@ router.patch('/:id/end', required, async (ctx) => {
   await league.update({ active: false });
 
   // Calculate final XP for all league members
-  for (const member of (league as any).members || []) {
-    try {
-      await calculateAndAwardXPAchievements(member.id, league.id);
-      console.log(`Final XP calculated for user ${member.id} in league ${league.id}`);
-    } catch (error) {
-      console.error(`Error calculating final XP for user ${member.id}:`, error);
-    }
-  }
+  // for (const member of (league as any).members || []) {
+  //   try {
+  //     await calculateAndAwardXPAchievements(member.id, league.id);
+  //     console.log(`Final XP calculated for user ${member.id} in league ${league.id}`);
+  //   } catch (error) {
+  //     console.error(`Error calculating final XP for user ${member.id}:`, error);
+  //   }
+  // }
 
   ctx.status = 200;
   ctx.body = { success: true, message: "League ended and final XP calculated" };
@@ -3726,13 +3726,13 @@ router.post('/:id/lock', required, async (ctx) => {
   );
 
   // On lock, run final XP/Achievement calculation for all members
-  try {
-    const league = await League.findByPk(id, { include: [{ model: User, as: 'members', attributes: ['id'] }] });
-    const memberIds: string[] = ((league as any)?.members || []).map((m: any) => String(m.id));
-    await Promise.all(memberIds.map((uid) => calculateAndAwardXPAchievements(uid, String(id))));
-  } catch (err) {
-    console.error('Final XP calc on lock failed:', err);
-  }
+  // try {
+  //   const league = await League.findByPk(id, { include: [{ model: User, as: 'members', attributes: ['id'] }] });
+  //   const memberIds: string[] = ((league as any)?.members || []).map((m: any) => String(m.id));
+  //   await Promise.all(memberIds.map((uid) => calculateAndAwardXPAchievements(uid, String(id))));
+  // } catch (err) {
+  //   console.error('Final XP calc on lock failed:', err);
+  // }
 
   ctx.body = { success: true, locked: true };
 });

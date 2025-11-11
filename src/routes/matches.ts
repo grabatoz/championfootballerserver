@@ -1,7 +1,7 @@
 import Router from '@koa/router';
 import { required } from '../modules/auth';
 import sequelize from '../config/database';
-import { calculateAndAwardXPAchievements } from '../utils/xpAchievementsEngine';
+// import { calculateAndAwardXPAchievements } from '../utils/xpAchievementsEngine';
 import { xpPointsTable } from '../utils/xpPointsTable';
 import cache from '../utils/cache';
 import { sendCaptainConfirmations, notifyCaptainConfirmed, notifyCaptainRevision } from '../modules/notifications';
@@ -1399,9 +1399,9 @@ const unifiedConfirmHandler = async (ctx: any) => {
         const homeIds = ((reloaded as any)?.homeTeamUsers || []).map((u: any) => String(u.id));
         const awayIds = ((reloaded as any)?.awayTeamUsers || []).map((u: any) => String(u.id));
         const participantIds = Array.from(new Set([...homeIds, ...awayIds]));
-        await Promise.all(
-          participantIds.map((uid) => calculateAndAwardXPAchievements(uid, String(match.leagueId)))
-        );
+        // await Promise.all(
+        //   participantIds.map((uid) => calculateAndAwardXPAchievements(uid, String(match.leagueId)))
+        // );
       } catch (e) {
         console.error('XP recalc failed', e);
       }
