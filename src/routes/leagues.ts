@@ -1795,7 +1795,7 @@ router.patch(
 
           const title = 'You were added to a match';
           const bodyTemplate = (team: 'home' | 'away') =>
-            `You have been added to the ${team} team for ${homeTeamName || match.homeTeamName} vs ${awayTeamName || match.awayTeamName} in league ${leagueName}.`;
+            `You have been added to the ${team} team for ${homeTeamName || match.homeTeamName} vs ${awayTeamName || match.awayTeamName} in ${leagueName} league.`;
 
           const notificationEntries = addedAll.map(({ id, team }) => ({
             user_id: id,
