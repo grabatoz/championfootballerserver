@@ -48,17 +48,17 @@ const isOriginAllowed = (origin: string): boolean => {
   return allowedOrigins.some(allowed => allowed.replace(/\/$/, '') === normalizedOrigin);
 };
 
-// CORS middleware: include Cache-Control so that client can safely send it if needed
 app.use(cors({
   origin: (ctx) => {
     const requestOrigin = ctx.request.header.origin;
     if (requestOrigin && isOriginAllowed(requestOrigin)) {
       return requestOrigin; // Return exact origin without trailing slash
     }
+    // Fallback to CLIENT_URL without trailing slash
     const clientUrl = process.env.CLIENT_URL?.replace(/\/$/, '') || allowedOrigins[0];
     return clientUrl;
   },
-  allowHeaders: ['Authorization', 'Content-Type', 'Accept', 'X-Requested-With', 'Cache-Control'],
+  allowHeaders: ['Authorization', 'Content-Type', 'Accept', 'X-Requested-With'],
   exposeHeaders: ['X-Cache'],
   credentials: true,
   allowMethods: ['GET','POST','PUT','PATCH','DELETE','OPTIONS'],
@@ -75,7 +75,7 @@ app.use(async (ctx, next) => {
     ctx.set('Access-Control-Allow-Origin', origin);
     ctx.set('Access-Control-Allow-Credentials', 'true');
     ctx.set('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
-  ctx.set('Access-Control-Allow-Headers', 'Authorization,Content-Type,Accept,X-Requested-With,Cache-Control');
+    ctx.set('Access-Control-Allow-Headers', 'Authorization,Content-Type,Accept,X-Requested-With');
     ctx.set('Access-Control-Max-Age', '86400'); // 24 hours
     ctx.status = 204; // No Content
     return;
@@ -206,7 +206,7 @@ app.use(async (ctx, next) => {
     // For OPTIONS requests, ensure all CORS headers are set
     if (ctx.method === 'OPTIONS') {
       ctx.set('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
-  ctx.set('Access-Control-Allow-Headers', 'Authorization,Content-Type,Accept,X-Requested-With,Cache-Control');
+      ctx.set('Access-Control-Allow-Headers', 'Authorization,Content-Type');
       ctx.set('Access-Control-Max-Age', '86400');
       if (ctx.status === 200 || !ctx.body) {
         ctx.status = 204; // No Content for preflight
