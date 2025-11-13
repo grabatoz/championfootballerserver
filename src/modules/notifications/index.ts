@@ -10,6 +10,7 @@ export type NotificationType =
   | 'RESULT_CONFIRMATION_REQUEST'
   | 'CAPTAIN_CONFIRMED'
   | 'CAPTAIN_REVISION_SUGGESTED'
+  | 'MATCH_ENDED'
   | 'GENERAL';
 
   
@@ -141,5 +142,33 @@ export async function notifyCaptainRevision(match: any, captainId: string, homeG
       body: `Captain suggests ${homeGoals}-${awayGoals} for ${match.homeTeamName} vs ${match.awayTeamName}`,
       meta,
     });
+  }
+}
+
+/**
+ * Send match ended notification to players
+ * Called when a match time has ended to notify all available players
+ */
+export async function notifyMatchEnded(match: any, userIds: string[]) {
+  const meta = {
+    matchId: String(match.id),
+    leagueId: String(match.leagueId ?? ''),
+    matchEndTime: match.end?.toISOString?.() ?? new Date().toISOString(),
+  };
+
+  for (const userId of userIds) {
+    try {
+      await (Notification as any).create({
+        user_id: userId,
+        type: 'MATCH_ENDED',
+        title: '⏰ Match Has Ended!',
+        body: `The match "${match.homeTeamName} vs ${match.awayTeamName}" at ${match.location} has ended. Thank you for participating!`,
+        meta,
+        read: false,
+        created_at: new Date(),
+      });
+    } catch (error) {
+      console.error(`Failed to send match ended notification to user ${userId}:`, error);
+    }
   }
 }

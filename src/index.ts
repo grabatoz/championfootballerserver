@@ -29,6 +29,7 @@ import passport from 'koa-passport';
 import socialAuthRouter from './routes/auth/social';
 import socialRoutes from './routes/auth/social';
 import cacheMiddleware from './middleware/memoryCache';
+import { startMatchEndScheduler } from './services/matchScheduler';
 
 
 // CORS configuration for both development and production
@@ -416,6 +417,14 @@ initializeDatabase().then(async () => {
     console.log('🔗 Social routes:');
     console.log(`   Google: http://localhost:${PORT}/auth/google`);
     console.log(`   Facebook: http://localhost:${PORT}/auth/facebook`);
+
+    // Start the match end notification scheduler
+    try {
+      startMatchEndScheduler();
+      console.log('✅ Match end notification scheduler started');
+    } catch (schedulerErr) {
+      console.error('❌ Failed to start match end scheduler:', schedulerErr);
+    }
 
     // Schedule a safe background XP/Achievements recalculation shortly after boot
     // try {
