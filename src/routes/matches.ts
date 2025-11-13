@@ -113,6 +113,89 @@ router.post('/:id/votes', required, async (ctx) => {
     console.warn('MOTM leaderboard cache update failed', e);
   }
 
+  // 🆕 Send notifications to all match players about the vote
+  try {
+    const match = await Match.findByPk(matchId, {
+      include: [
+        { model: League, as: 'league', attributes: ['id', 'name'] }
+      ]
+    });
+
+    if (match) {
+      // Fetch all players from both teams using direct SQL queries
+      const homePlayerIds = await sequelize.query<{ userId: string }>(
+        `SELECT DISTINCT "userId" FROM "UserHomeMatches" WHERE "matchId" = :matchId`,
+        {
+          replacements: { matchId },
+          type: QueryTypes.SELECT
+        }
+      );
+
+      const awayPlayerIds = await sequelize.query<{ userId: string }>(
+        `SELECT DISTINCT "userId" FROM "UserAwayMatches" WHERE "matchId" = :matchId`,
+        {
+          replacements: { matchId },
+          type: QueryTypes.SELECT
+        }
+      );
+
+      // Combine all player IDs
+      const allPlayerIds = [
+        ...homePlayerIds.map(p => p.userId),
+        ...awayPlayerIds.map(p => p.userId)
+      ];
+
+      // Remove duplicates and exclude only the voted player (voter SHOULD see notifications!)
+      const uniquePlayerIds = Array.from(new Set(allPlayerIds))
+        .filter(id => id !== votedForId);
+
+      if (uniquePlayerIds.length > 0) {
+        // Fetch voter and voted player details
+        const voter = await User.findByPk(voterId, { attributes: ['id', 'firstName', 'lastName'] });
+        const votedPlayer = await User.findByPk(votedForId, { attributes: ['id', 'firstName', 'lastName'] });
+
+        if (voter && votedPlayer) {
+          const voterName = `${voter.firstName} ${voter.lastName}`;
+          const votedPlayerName = `${votedPlayer.firstName} ${votedPlayer.lastName}`;
+
+          // Get league and team names for notification body
+          const leagueName = (match as any).league?.name || 'League';
+          const homeTeamName = (match as any).homeTeamName || 'Home Team';
+          const awayTeamName = (match as any).awayTeamName || 'Away Team';
+
+          console.log(`🗳️ Sending MOTM vote notifications to ${uniquePlayerIds.length} player(s) for match ${matchId} (including voter)`);
+
+          // Create notifications for all players (including voter)
+          const notifications = uniquePlayerIds.map(playerId => ({
+            user_id: playerId,
+            type: 'MOTM_VOTE' as const,
+            title: '🏆 New MOTM Vote',
+            body: `${voterName} voted for ${votedPlayerName} as Man of the Match in (${homeTeamName} Team vs ${awayTeamName} Team)`,
+            meta: {
+              matchId,
+              leagueId: match.leagueId,
+              leagueName,
+              homeTeamName,
+              awayTeamName,
+              voterId,
+              votedForId,
+              voterName,
+              votedPlayerName
+            },
+            read: false
+          }));
+
+          // Bulk create notifications
+          await Notification.bulkCreate(notifications as any);
+          console.log(`✅ Sent ${notifications.length} MOTM vote notification(s)`);
+        }
+      }
+    }
+  } catch (error) {
+    console.error('❌ Failed to send MOTM vote notifications:', error);
+    // Don't throw - notification failure shouldn't block the vote
+  }
+
   try { cache.clearPattern(`match_votes_${matchId}_`); } catch {}
 
   ctx.status = 200;

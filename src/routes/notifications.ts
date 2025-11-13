@@ -26,6 +26,14 @@ router.get('/', required, async (ctx) => {
     });
 
     console.log(`📬 Found ${notifications.length} notifications for user ${ctx.state.user.userId}`);
+    
+    // Log MOTM_VOTE count
+    const motmCount = notifications.filter((n: any) => n.type === 'MOTM_VOTE').length;
+    if (motmCount > 0) {
+      console.log(`🏆 Including ${motmCount} MOTM_VOTE notifications`);
+    } else {
+      console.log(`⚠️ No MOTM_VOTE notifications found in response`);
+    }
 
     const formattedNotifications = notifications.map((n: any) => ({
       id: n.id,

@@ -11,6 +11,7 @@ export type NotificationType =
   | 'CAPTAIN_CONFIRMED'
   | 'CAPTAIN_REVISION_SUGGESTED'
   | 'MATCH_ENDED'
+  | 'MOTM_VOTE'
   | 'GENERAL';
 
   
