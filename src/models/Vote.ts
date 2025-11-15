@@ -63,6 +63,7 @@ Vote.init(
   {
     sequelize,
     modelName: 'Vote',
+    tableName: 'Votes',
     timestamps: true,
   }
 );

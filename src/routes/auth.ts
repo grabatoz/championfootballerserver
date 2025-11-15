@@ -926,55 +926,38 @@ router.get("/auth/status", required, async (ctx: CustomContext) => {
 });
 
 router.get("/me", required, async (ctx: CustomContext) => {
-  if (!ctx.state.user) {
-    ctx.throw(401, "Authentication error");
-    return;
-  }
-  // const userId = ctx.state.user.userId;
-  const user = await User.findOne({ 
-    include: [{
-      model: League,
-      as: 'leagues',
+  try {
+    if (!ctx.state.user) {
+      ctx.throw(401, "Authentication error");
+      return;
+    }
+    const userId = ctx.state.user.userId;
+    
+    console.log(`📋 Fetching /me for user: ${userId}`);
+    
+    // OPTIMIZED: Removed heavy nested includes to prevent timeout
+    const user = await User.findOne({ 
+      where: { id: userId },
       include: [{
-        model: User,
-        as: 'members'
+        model: League,
+        as: 'leagues',
+        attributes: ['id', 'name', 'image', 'createdAt'],
+        include: [{
+          model: User,
+          as: 'members',
+          attributes: ['id', 'firstName', 'lastName', 'profilePicture', 'xp']
+        }]
       }, {
-        model: Match,
-        as: 'matches',
-        include: [
-          { model: User, as: 'availableUsers' },
-          { model: User, as: 'homeTeamUsers' },
-          { model: User, as: 'awayTeamUsers' },
-          { model: User, as: 'statistics' }
-        ]
+        model: League,
+        as: 'administeredLeagues',
+        attributes: ['id', 'name', 'image', 'createdAt'],
+        include: [{
+          model: User,
+          as: 'members',
+          attributes: ['id', 'firstName', 'lastName', 'profilePicture', 'xp']
+        }]
       }]
-    }, {
-      model: League,
-      as: 'administeredLeagues',
-      include: [{
-        model: User,
-        as: 'members'
-      }, {
-        model: Match,
-        as: 'matches',
-        include: [
-          { model: User, as: 'availableUsers' },
-          { model: User, as: 'homeTeamUsers' },
-          { model: User, as: 'awayTeamUsers' },
-          { model: User, as: 'statistics' }
-        ]
-      }]
-    }, {
-      model: Match,
-      as: 'homeTeamMatches'
-    }, {
-      model: Match,
-      as: 'awayTeamMatches'
-    }, {
-      model: Match,
-      as: 'availableMatches'
-    }]
-  }) as any;
+    }) as any;
 
   if (!user) {
     ctx.throw(404, "User not found");
@@ -1056,6 +1039,19 @@ router.get("/me", required, async (ctx: CustomContext) => {
     success: true,
     user: user,
   };
+  
+  console.log(`✅ /me successful for user: ${userId}`);
+  
+  } catch (error: any) {
+    console.error(`❌ /me endpoint error for user ${ctx.state.user?.userId}:`, error.message);
+    console.error('Stack:', error.stack);
+    ctx.status = 500;
+    ctx.body = {
+      success: false,
+      error: 'Internal server error fetching user data',
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined
+    };
+  }
 });
 
 

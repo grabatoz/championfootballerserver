@@ -23,6 +23,14 @@ const verifyToken = async (ctx: CustomContext) => {
       ctx.throw(401, "No token provided")
     }
 
+    // Debug: Log token info (first/last few chars only for security)
+    console.log("🔐 Token validation:", {
+      tokenLength: token.length,
+      tokenStart: token.substring(0, 10),
+      tokenEnd: token.substring(token.length - 10),
+      tokenParts: token.split('.').length // JWT should have 3 parts
+    });
+
     const decoded = jwt.verify(token, JWT_SECRET);
     ctx.state.user = decoded as CustomContext['state']['user'];
 

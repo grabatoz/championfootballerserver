@@ -196,11 +196,13 @@ router.get('/:id/stats', required, async (ctx) => {
     const { id: playerId } = ctx.params;
     const { leagueId, year } = ctx.query as { leagueId?: string, year?: string };
     const cacheKey = `player_stats_${playerId}_${leagueId || 'all'}_${year || 'all'}`;
-    const cached = cache.get(cacheKey);
-    if (cached) {
-      ctx.body = cached;
-      return;
-    }
+    
+    // DISABLED CACHE - Always fetch fresh data for clean sheets and votes
+    // const cached = cache.get(cacheKey);
+    // if (cached) {
+    //   ctx.body = cached;
+    //   return;
+    // }
     try {
         const player = await UserModel.findByPk(playerId, {
             attributes: ['id', 'firstName', 'lastName', 'profilePicture', 'xp', 'position', 'age', 'style', 'positionType', 'preferredFoot', 'shirtNumber']
@@ -281,13 +283,14 @@ router.get('/:id/stats', required, async (ctx) => {
                     [sequelize.fn('SUM', sequelize.col('goals')), 'goals'],
                     [sequelize.fn('SUM', sequelize.col('assists')), 'assists'],
                     [sequelize.fn('SUM', sequelize.col('clean_sheets')), 'cleanSheets'],
-                ]
+                ],
+                raw: true
             });
 
             const votes = await Vote.count({ where: { votedForId: playerId, matchId: { [Op.in]: matchIds } } });
-            const goals = statsResult?.get('goals') || 0;
-            const assists = statsResult?.get('assists') || 0;
-            const cleanSheets = statsResult?.get('cleanSheets') || 0;
+            const goals = (statsResult as any)?.goals || 0;
+            const assists = (statsResult as any)?.assists || 0;
+            const cleanSheets = (statsResult as any)?.cleanSheets || 0;
 
             let totalWins = 0;
             let bestWinMargin = 0;
@@ -421,11 +424,24 @@ router.get('/:id/stats', required, async (ctx) => {
         
         // Build leagues array with matches for this player in this year
         const playerLeaguesWithMatches = await Promise.all(playerLeagues.map(async (league: any) => {
-          // For each league, filter matches by year if requested
+          // For each league, filter matches by year AND where player actually played
+          const totalMatches = league.matches?.length || 0;
           let filteredMatches = league.matches || [];
+          
+          // Filter by year if requested
           if (selectedYear) {
             filteredMatches = filteredMatches.filter((match: any) => new Date(match.date).getFullYear() === selectedYear);
           }
+          
+          // CRITICAL FIX: Only include matches where THIS PLAYER participated
+          filteredMatches = filteredMatches.filter((match: any) => {
+            const playerInHome = match.homeTeamUsers && match.homeTeamUsers.some((u: any) => String(u.id) === String(playerId));
+            const playerInAway = match.awayTeamUsers && match.awayTeamUsers.some((u: any) => String(u.id) === String(playerId));
+            return playerInHome || playerInAway;
+          });
+          
+          console.log(`\n⚽ League "${league.name}": Total matches: ${totalMatches}, Player participated: ${filteredMatches.length}`);
+          
           // Get player stats for each match
           const matchesWithStats = await Promise.all(filteredMatches.map(async (match: any) => {
             const playerStats = await MatchStatistics.findOne({
@@ -433,22 +449,35 @@ router.get('/:id/stats', required, async (ctx) => {
                 user_id: playerId, 
                 match_id: match.id 
               },
-              attributes: ['goals', 'assists', 'clean_sheets']
+              attributes: ['goals', 'assists', 'clean_sheets'], // Explicitly select columns including clean_sheets
+              raw: true
             });
+            
             const motmVotes = await Vote.count({
               where: { 
                 votedForId: playerId, 
                 matchId: match.id 
               }
             });
+            
+            // Comprehensive debug logging
+            console.log(`\n🔍 Match ${match.id}:`);
+            console.log(`   Raw playerStats:`, playerStats);
+            console.log(`   clean_sheets value:`, playerStats ? (playerStats as any).clean_sheets : 'NO STATS');
+            console.log(`   MOTM Votes count:`, motmVotes);
+            
+            const statsToReturn = playerStats ? {
+              goals: playerStats.goals || 0,
+              assists: playerStats.assists || 0,
+              cleanSheets: (playerStats as any).clean_sheets || 0,
+              motmVotes: motmVotes
+            } : null;
+            
+            console.log(`   Final playerStats to send:`, statsToReturn);
+            
             return {
               ...match.toJSON(),
-              playerStats: playerStats ? {
-                goals: playerStats.goals || 0,
-                assists: playerStats.assists || 0,
-                cleanSheets: playerStats.cleanSheets || 0,
-                motmVotes: motmVotes
-              } : null
+              playerStats: statsToReturn
             };
           }));
           return {
@@ -481,7 +510,8 @@ router.get('/:id/stats', required, async (ctx) => {
                 trophies: trophyMap // <-- now includes league info for each trophy
             }
         };
-        cache.set(cacheKey, result, 600); // cache for 30 seconds
+        // CACHE DISABLED for fresh data
+        // cache.set(cacheKey, result, 600);
         ctx.body = result;
     } catch (error) {
         console.error('Error fetching player stats:', error);
