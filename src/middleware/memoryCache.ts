@@ -13,11 +13,13 @@
  */
 
 import { Context, Next } from 'koa';
+import crypto from 'crypto';
 
 interface CacheEntry {
   data: any;
   timestamp: number;
   headers: Record<string, string>;
+  etag: string;
 }
 
 class MemoryCache {
@@ -117,12 +119,14 @@ class MemoryCache {
       // Use safe stringify to handle circular references
       const safeData = JSON.parse(this.safeStringify(data));
       
+      const hash = crypto.createHash('sha1').update(JSON.stringify(safeData)).digest('hex');
       this.cache.set(key, {
         data: safeData,
         timestamp: Date.now(),
         headers: {
           'Content-Type': ctx.response.get('Content-Type') || 'application/json',
-        }
+        },
+        etag: hash
       });
     } catch (error) {
       // If serialization fails, don't cache this response
@@ -213,6 +217,13 @@ export const cacheMiddleware = async (ctx: Context, next: Next) => {
   const cached = cache.get(ctx);
   
   if (cached) {
+    // Handle conditional request with If-None-Match
+    const inm = ctx.get('If-None-Match');
+    if (inm && inm === cached.etag) {
+      ctx.status = 304;
+      ctx.set('ETag', cached.etag);
+      return; // Not modified
+    }
     // 🚀 CACHE HIT - Return instantly!
     ctx.status = 200;
     ctx.body = cached.data;
@@ -234,6 +245,11 @@ export const cacheMiddleware = async (ctx: Context, next: Next) => {
   if (ctx.status === 200 && ctx.body) {
     cache.set(ctx, ctx.body);
     ctx.set('X-Cache', 'MISS');
+    // Add ETag for client-side conditional requests
+    const entry = cache.get(ctx);
+    if (entry?.etag) {
+      ctx.set('ETag', entry.etag);
+    }
   }
 };
 

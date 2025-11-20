@@ -23,6 +23,7 @@ import notificationRoutes from './routes/notifications';
 import userRoutes from './routes/users';
 import playersRoutes from './routes/players';
 import cacheRoutes from './routes/cache';
+import realtimeRouter from './routes/realtime';
 import Router from '@koa/router';
 import { setupPassport } from './config/passport';
 import passport from 'koa-passport';
@@ -30,6 +31,7 @@ import socialAuthRouter from './routes/auth/social';
 import socialRoutes from './routes/auth/social';
 import cacheMiddleware from './middleware/memoryCache';
 import { startMatchEndScheduler } from './services/matchScheduler';
+import { startDbEventBridge } from './services/dbEvents';
 
 
 // CORS configuration for both development and production
@@ -365,6 +367,8 @@ app.use(userRoutes.routes()).use(userRoutes.allowedMethods());
 app.use(socialRoutes.routes());
 app.use(socialRoutes.allowedMethods());
 app.use(cacheRoutes.routes()).use(cacheRoutes.allowedMethods());
+// Realtime SSE endpoint (mounted at root)
+app.use(realtimeRouter.routes()).use(realtimeRouter.allowedMethods());
 
 // Explicitly mount world-ranking to avoid 404s if server runs an older routes index
 app.use(worldRankingRouter.routes());
@@ -409,6 +413,8 @@ const PORT = process.env.PORT || 5000;
 // Initialize database and start server (ONLY ONCE)
 initializeDatabase().then(async () => {
   await applyPerformanceIndexesIfEnabled();
+  // Start LISTEN/NOTIFY bridge after DB ready
+  startDbEventBridge();
   app.listen(PORT, () => {
     console.log(`🚀 Server is running on http://localhost:${PORT}`);
     console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
