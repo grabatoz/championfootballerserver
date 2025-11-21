@@ -15,11 +15,21 @@ const verifyToken = async (ctx: CustomContext) => {
   try {
     const authHeader = ctx.request.get("Authorization")
     if (!authHeader) {
+      // Better logging for debugging
+      console.error("❌ No authorization header:", {
+        method: ctx.method,
+        path: ctx.path,
+        headers: Object.keys(ctx.request.headers),
+        hasAuthHeader: !!authHeader
+      });
       ctx.throw(401, "No authorization header")
     }
 
     const token = authHeader.split(" ")[1]
     if (!token) {
+      console.error("❌ No token in authorization header:", {
+        authHeader: authHeader.substring(0, 20)
+      });
       ctx.throw(401, "No token provided")
     }
 
@@ -60,14 +70,15 @@ const verifyToken = async (ctx: CustomContext) => {
     if (error.name === 'TokenExpiredError') {
       console.error("❌ JWT Expired:", {
         expiredAt: error.expiredAt,
-        message: error.message
+        message: error.message,
+        path: ctx.path
       });
       ctx.throw(401, "jwt expired");
     } else if (error.name === 'JsonWebTokenError') {
-      console.error("❌ JWT Invalid:", error.message);
+      console.error("❌ JWT Invalid:", error.message, "path:", ctx.path);
       ctx.throw(401, "Invalid token");
     } else {
-      console.error("Auth error:", error.message)
+      console.error("Auth error:", error.message, "path:", ctx.path)
       ctx.throw(401, error.message || "Invalid access token")
     }
   }
