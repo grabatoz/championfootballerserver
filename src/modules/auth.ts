@@ -31,12 +31,45 @@ const verifyToken = async (ctx: CustomContext) => {
       tokenParts: token.split('.').length // JWT should have 3 parts
     });
 
-    const decoded = jwt.verify(token, JWT_SECRET);
-    ctx.state.user = decoded as CustomContext['state']['user'];
+    const decoded = jwt.verify(token, JWT_SECRET) as { userId: string; email: string; iat: number; exp: number; };
+    ctx.state.user = decoded;
+
+    // Check if token is expiring soon (less than 1 hour remaining)
+    const currentTime = Math.floor(Date.now() / 1000);
+    const timeUntilExpiry = decoded.exp - currentTime;
+    
+    if (timeUntilExpiry < 3600) { // Less than 1 hour
+      // Generate new token with extended expiry
+      const newToken = jwt.sign(
+        { userId: decoded.userId, email: decoded.email }, 
+        JWT_SECRET, 
+        { expiresIn: '7d' }
+      );
+      
+      // Send new token in response header
+      ctx.set('X-New-Token', newToken);
+      ctx.set('X-Token-Refreshed', 'true');
+      
+      console.log("🔄 Token refreshed for user:", decoded.userId, {
+        timeRemaining: timeUntilExpiry,
+        newExpiry: '7d'
+      });
+    }
 
   } catch (error: any) {
-    console.error("Auth error:", error.message)
-    ctx.throw(401, error.message || "Invalid access token")
+    if (error.name === 'TokenExpiredError') {
+      console.error("❌ JWT Expired:", {
+        expiredAt: error.expiredAt,
+        message: error.message
+      });
+      ctx.throw(401, "jwt expired");
+    } else if (error.name === 'JsonWebTokenError') {
+      console.error("❌ JWT Invalid:", error.message);
+      ctx.throw(401, "Invalid token");
+    } else {
+      console.error("Auth error:", error.message)
+      ctx.throw(401, error.message || "Invalid access token")
+    }
   }
 }
 
