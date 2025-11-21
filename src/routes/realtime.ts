@@ -1,11 +1,12 @@
 import Router from '@koa/router';
 import type Koa from 'koa';
 import { realtime } from '../services/realtime';
+import { none } from '../modules/auth';
 
 const router = new Router();
 
-// Server-Sent Events endpoint
-router.get('/events', async (ctx: Koa.Context) => {
+// Server-Sent Events endpoint - NO AUTH REQUIRED
+router.get('/events', none, async (ctx: Koa.Context) => {
   // CORS
   const origin = ctx.request.header.origin || '*';
   ctx.set('Access-Control-Allow-Origin', origin);
@@ -18,6 +19,8 @@ router.get('/events', async (ctx: Koa.Context) => {
   ctx.set('X-Accel-Buffering', 'no');
   ctx.set('Cache-Control', 'no-transform');
   ctx.set('Connection', 'keep-alive');
+
+  console.log('📡 SSE Client connected');
 
   // Take over low-level response
   ctx.status = 200;
@@ -32,6 +35,7 @@ router.get('/events', async (ctx: Koa.Context) => {
 
   // Cleanup on close
   const onClose = () => {
+    console.log('📡 SSE Client disconnected:', id);
     realtime.removeClient(id);
   };
   res.on('close', onClose);
