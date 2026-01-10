@@ -18,7 +18,7 @@ const sequelize = new Sequelize(process.env.DATABASE_URL as string, {
     evict: 10000, // Standard eviction time
   },
   dialectOptions: {
-    ssl: false, // Disabled for VPS database that doesn't support SSL
+    ssl: false, // Disabled  for VPS database that doesn't support SSL
     keepAlive: true, // CRITICAL: Keep connection alive on VPS
     keepAliveInitialDelayMs: 10000, // Keep alive every 10s
     application_name: 'championfootballer-api',
