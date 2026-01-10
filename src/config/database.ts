@@ -18,10 +18,7 @@ const sequelize = new Sequelize(process.env.DATABASE_URL as string, {
     evict: 10000, // Standard eviction time
   },
   dialectOptions: {
-    ssl: {
-      require: true,
-      rejectUnauthorized: false, // For Neon/Hostinger — allows self-signed certs
-    },
+    ssl: false, // Disabled for VPS database that doesn't support SSL
     keepAlive: true, // CRITICAL: Keep connection alive on VPS
     keepAliveInitialDelayMs: 10000, // Keep alive every 10s
     application_name: 'championfootballer-api',
@@ -110,11 +107,11 @@ export async function initializeDatabase() {
         DO $$
         BEGIN
           IF NOT EXISTS (SELECT 1 FROM pg_proc WHERE proname = 'cf_notify_json') THEN
-            CREATE OR REPLACE FUNCTION cf_notify_json(channel TEXT, payload JSON) RETURNS void AS $$
+            CREATE OR REPLACE FUNCTION cf_notify_json(channel TEXT, payload JSON) RETURNS void AS $func$
             BEGIN
               PERFORM pg_notify(channel, payload::text);
             END;
-            $$ LANGUAGE plpgsql;
+            $func$ LANGUAGE plpgsql;
           END IF;
         END
         $$;
