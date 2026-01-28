@@ -31,6 +31,7 @@ class League extends Model<LeagueAttributes> {
   declare users: (typeof User)[];
   declare admins: (typeof User)[];
   declare matches: Match[];
+  declare seasons: any[];
 
   static associate(models: any) {
     League.belongsToMany(models.User, {
@@ -50,6 +51,11 @@ class League extends Model<LeagueAttributes> {
     League.hasMany(models.Match, {
       foreignKey: 'leagueId',
       as: 'matches'
+    });
+
+    League.hasMany(models.Season, {
+      foreignKey: 'leagueId',
+      as: 'seasons'
     });
   }
 }

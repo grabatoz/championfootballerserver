@@ -1,189 +1,24 @@
 import Router from '@koa/router';
 import { required } from '../modules/auth';
 import { CustomContext } from '../types';
+import { 
+  getProfile, 
+  updateProfile
+} from '../controllers/profileController';
 import models from '../models';
 import { upload, uploadToCloudinary } from '../middleware/upload';
-import { hash } from 'bcrypt';
 import jwt from 'jsonwebtoken';
 import cache from '../utils/cache';
+
 const { User, Session, League, Match } = models;
 
 const router = new Router({ prefix: '/profile' });
 
-
 // Get user profile with all associations
-router.get('/', required, async (ctx: CustomContext) => {
-  if (!ctx.state.user?.userId) {
-    ctx.throw(401, "User not authenticated");
-  }
-  console.log('Profile GET: userId', ctx.state.user.userId);
-  const user = await User.findByPk(ctx.state.user.userId, {
-    include: [
-      {
-        model: League,
-        as: 'leagues',
-        include: [
-          { model: User, as: 'members', attributes: ['id', 'firstName', 'lastName', 'position', 'positionType'] },
-          { model: User, as: 'administeredLeagues', attributes: ['id'] },
-        ],
-      },
-      {
-        model: League,
-        as: 'administeredLeagues',
-        include: [{ model: User, as: 'members', attributes: ['id', 'firstName', 'lastName', 'position', 'positionType'] }],
-      },
-      { model: Match, as: 'homeTeamMatches' },
-      { model: Match, as: 'awayTeamMatches' },
-      { model: Match, as: 'availableMatches' },
-    ],
-  });
-  console.log('Profile GET: found user', user ? user.id : null);
-  if (!user) {
-    ctx.throw(404, "User not found");
-  }
-
-  // Delete sensitive data
-  const propertiesToDelete = [
-    "password",
-    "ipAddress",
-  ];
-
-  for (const property of propertiesToDelete) {
-    delete (user as any)[property];
-  }
-
-  ctx.body = { 
-    success: true,
-    user: {
-      id: user.id,
-      firstName: user.firstName,
-      lastName: user.lastName,
-      email: user.email,
-      age: user.age,
-      gender: user.gender,
-      country: (user as any).country ?? null,
-      state: (user as any).state ?? null,
-      city: (user as any).city ?? null,
-      position: user.position,
-      positionType: user.positionType,
-      style: user.style,
-      preferredFoot: user.preferredFoot,
-      shirtNumber: user.shirtNumber,
-      profilePicture: user.profilePicture,
-      skills: user.skills,
-      joinedLeagues: (user as any).leagues || [],
-      managedLeagues: (user as any).administeredLeagues || [],
-      homeTeamMatches: (user as any).homeTeamMatches || [],
-      awayTeamMatches: (user as any).awayTeamMatches || [],
-      availableMatches: (user as any).availableMatches || []
-    }
-  };
-});
+router.get('/', required, getProfile);
 
 // Patch (partial update) user profile
-router.patch('/', required, async (ctx: CustomContext) => {
-  if (!ctx.state.user?.userId) {
-    ctx.throw(401, "User not authenticated");
-  }
-  console.log('Profile PATCH: userId', ctx.state.user.userId, 'update data', ctx.request.body);
-  const { firstName, lastName, email, age, gender, country, state, city, position, positionType, style, preferredFoot, shirtNumber, skills, password } = ctx.request.body;
-  console.log('Extracted positionType:', positionType);
-  const user = await User.findByPk(ctx.state.user.userId);
-  console.log('Profile PATCH: found user', user ? user.id : null);
-  if (!user) {
-    ctx.throw(404, "User not found");
-  }
-
-  // Prepare update data
-  const updateData: any = {
-    ...(firstName !== undefined && { firstName }),
-    ...(lastName !== undefined && { lastName }),
-    ...(email !== undefined && { email: email.toLowerCase() }),
-    ...(age !== undefined && { age }),
-    ...(gender !== undefined && { gender }),
-    ...(country !== undefined && { country }),
-    ...(state !== undefined && { state }),
-    ...(city !== undefined && { city }),
-    ...(position !== undefined && { position }),
-    ...(positionType !== undefined && { positionType }),
-    ...(style !== undefined && { style }),
-    ...(preferredFoot !== undefined && { preferredFoot }),
-    ...(shirtNumber !== undefined && { shirtNumber }),
-    ...(skills !== undefined && { skills }),
-  };
-  
-  console.log('Update data to be saved:', updateData);
-
-  // Handle password update with hashing
-  if (password !== undefined && password !== "") {
-    console.log('🔐 Password update detected:', {
-      hasPassword: !!password,
-      passwordLength: password?.length,
-      willHash: true
-    });
-    updateData.password = await hash(password, 10);
-    console.log('🔐 Password hashed successfully, new hash length:', updateData.password.length);
-  } else {
-    console.log('🔐 No password update - keeping existing password');
-  }
-
-  // Only update fields that are present in the request
-  await user.update(updateData);
-  
-  console.log('✅ User updated successfully');
-  if (updateData.password) {
-    console.log('🔐 Password was updated in database');
-  }
-
-  // Update cache with new user data
-  const updatedUserData = {
-    id: user.id,
-    firstName: user.firstName,
-    lastName: user.lastName,
-    profilePicture: user.profilePicture,
-    position: user.position,
-    positionType: user.positionType,
-    xp: user.xp || 0
-  };
-
-  // Update players cache
-  cache.updateArray('players_all', updatedUserData);
-  
-  // Clear any user-specific caches
-  cache.clearPattern(`user_leagues_${user.id}`);
-
-  // Delete sensitive data
-  const propertiesToDelete = [
-    "password",
-    "ipAddress",
-  ];
-
-  for (const property of propertiesToDelete) {
-    delete (user as any)[property];
-  }
-
-  ctx.body = { 
-    success: true,
-    user: {
-      id: user.id,
-      firstName: user.firstName,
-      lastName: user.lastName,
-      email: user.email,
-      age: user.age,
-      gender: user.gender,
-      country: (user as any).country ?? null,
-      state: (user as any).state ?? null,
-      city: (user as any).city ?? null,
-      position: user.position,
-      positionType: user.positionType,
-      style: user.style,
-      preferredFoot: user.preferredFoot,
-      shirtNumber: user.shirtNumber,
-      profilePicture: user.profilePicture,
-      skills: user.skills
-    }
-  };
-});
+router.patch('/', required, updateProfile);
 
 // Get user statistics
 router.get('/statistics', required, async (ctx: CustomContext) => {

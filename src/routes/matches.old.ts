@@ -1,12 +1,8 @@
-// Match Routes - Controller-based implementation
 import Router from '@koa/router';
 import { required } from '../modules/auth';
 import * as matchController from '../controllers/matchController.full';
 
 const router = new Router({ prefix: '/matches' });
-
-// Create new match (automatically assigns to active season)
-router.post('/', required, matchController.createMatch);
 
 // Vote for MOTM
 router.post('/:id/votes', required, matchController.voteForMotm);

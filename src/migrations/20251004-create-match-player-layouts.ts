@@ -1,6 +1,6 @@
 import { QueryInterface, DataTypes } from 'sequelize';
 
-export = {
+export default {
   up: async (qi: QueryInterface) => {
     await qi.createTable('match_player_layouts', {
       matchId: { type: DataTypes.STRING, allowNull: false },

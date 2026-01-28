@@ -1,8 +1,9 @@
 import Router from '@koa/router';
 import authRouter from './auth';
 import usersRouter from './users';
-import matchesRoutes from './matches';
 import leaguesRouter from './leagues';
+import matchesRoutes from './matches';
+import seasonsRouter from './seasons';
 import profileRouter from './profile';
 import dreamTeamRouter from './dreamTeam';
 import playersRouter from './players';
@@ -60,6 +61,7 @@ router.use(usersRouter.routes(), usersRouter.allowedMethods());
 router.use(matchesRoutes.routes());
 router.use(matchesRoutes.allowedMethods());
 router.use(leaguesRouter.routes(), leaguesRouter.allowedMethods());
+router.use(seasonsRouter.routes(), seasonsRouter.allowedMethods());
 router.use(profileRouter.routes(), profileRouter.allowedMethods());
 router.use(dreamTeamRouter.routes(), dreamTeamRouter.allowedMethods());
 router.use(playersRouter.routes(), playersRouter.allowedMethods());

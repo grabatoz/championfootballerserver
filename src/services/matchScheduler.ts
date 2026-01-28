@@ -9,31 +9,61 @@ import User from '../models/User';
 const notifiedMatches = new Set<string>();
 
 /**
- * Check for matches that have ended and send notifications to players
- * Runs periodically to notify players when match time is over
+ * Check for matches that have ended and update their status + send notifications
+ * Runs periodically to:
+ * 1. Update match status from SCHEDULED to RESULT_UPLOADED when match time ends
+ * 2. Notify players when match time is over
  */
 export async function checkEndedMatches() {
   try {
     const now = new Date();
     console.log('🔍 Checking for ended matches at:', now.toISOString());
     
-    // Find matches that have ended (end time has passed) but haven't been notified yet
+    // Find SCHEDULED matches that have ended (end time has passed)
+    // These need status update to RESULT_UPLOADED
+    const scheduledEndedMatches = await Match.findAll({
+      where: {
+        end: {
+          [Op.lte]: now, // Match end time is less than or equal to current time
+        },
+        status: 'SCHEDULED', // Only SCHEDULED matches
+        archived: false, // Only non-archived matches
+      },
+      attributes: ['id', 'homeTeamName', 'awayTeamName', 'end', 'location', 'leagueId', 'archived', 'status'],
+    });
+
+    // Update status for SCHEDULED matches that have ended
+    if (scheduledEndedMatches.length > 0) {
+      console.log(`📝 Found ${scheduledEndedMatches.length} SCHEDULED match(es) that have ended - updating status to RESULT_UPLOADED`);
+      
+      for (const match of scheduledEndedMatches) {
+        try {
+          await Match.update(
+            { status: 'RESULT_UPLOADED' },
+            { where: { id: match.id } }
+          );
+          console.log(`✓ Updated match ${match.id} status to RESULT_UPLOADED`);
+        } catch (updateError) {
+          console.error(`✗ Failed to update match ${match.id} status:`, updateError);
+        }
+      }
+    }
+    
+    // Find all ended matches for notification (both newly updated and already RESULT_UPLOADED)
     const endedMatches = await Match.findAll({
       where: {
         end: {
           [Op.lte]: now, // Match end time is less than or equal to current time
         },
         status: {
-          [Op.in]: ['SCHEDULED', 'RESULT_PUBLISHED'], // Check both SCHEDULED and RESULT_PUBLISHED
+          [Op.in]: ['RESULT_UPLOADED', 'RESULT_PUBLISHED'], // Check RESULT_UPLOADED and RESULT_PUBLISHED
         },
         archived: false, // Only non-archived matches
       },
       attributes: ['id', 'homeTeamName', 'awayTeamName', 'end', 'location', 'leagueId', 'archived', 'status'],
     });
 
-    console.log(`📊 Total matches found: ${endedMatches.length}`);
-
-    console.log(`📊 Total matches found: ${endedMatches.length}`);
+    console.log(`📊 Total ended matches for notification: ${endedMatches.length}`);
 
     if (endedMatches.length === 0) {
       console.log('✓ No ended matches found for notification');

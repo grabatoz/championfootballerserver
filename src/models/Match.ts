@@ -14,6 +14,7 @@ export interface MatchAttributes {
     away: number;
   };
   leagueId: string;
+  seasonId?: string;
   homeTeamName: string;
   awayTeamName: string;
   homeTeamGoals?: number;
@@ -53,6 +54,7 @@ class Match extends Model<MatchAttributes, MatchCreationAttributes> implements M
     away: number;
   };
   public leagueId!: string;
+  public seasonId?: string;
   public homeTeamName!: string;
   public awayTeamName!: string;
   public homeTeamGoals?: number;
@@ -82,6 +84,11 @@ class Match extends Model<MatchAttributes, MatchCreationAttributes> implements M
     Match.belongsTo(models.League, {
       foreignKey: 'leagueId',
       as: 'league',
+    });
+
+    Match.belongsTo(models.Season, {
+      foreignKey: 'seasonId',
+      as: 'season',
     });
 
     Match.belongsToMany(models.User, {
@@ -198,6 +205,14 @@ Match.init(
       allowNull: false,
       references: {
         model: League,
+        key: 'id',
+      },
+    },
+    seasonId: {
+      type: DataTypes.UUID,
+      allowNull: true,
+      references: {
+        model: 'Seasons',
         key: 'id',
       },
     },
