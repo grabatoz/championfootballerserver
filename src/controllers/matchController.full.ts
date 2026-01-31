@@ -420,6 +420,15 @@ export const confirmMatchResult = async (ctx: Context) => {
       });
       console.log(`🎉 Both captains confirmed - Match ${matchId} status updated to RESULT_PUBLISHED`);
 
+      // Award XP to all players in this match
+      try {
+        const { awardXPForMatch } = await import('../utils/xpAchievementsEngine');
+        await awardXPForMatch(matchId);
+        console.log(`💰 XP awarded to players for match ${matchId}`);
+      } catch (xpErr) {
+        console.error('Failed to award XP for match:', xpErr);
+      }
+
       // Send confirmation notification to the captain who just confirmed
       try {
         await notifyCaptainConfirmed(match, userId);

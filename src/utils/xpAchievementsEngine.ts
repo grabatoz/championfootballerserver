@@ -325,7 +325,19 @@ export async function calculateAndAwardXPAchievements(userId: string, leagueId?:
       if (motmId === player.id) xp += (teamResult === 'win' ? xpPointsTable.motm.win : xpPointsTable.motm.lose);
       // MOTM Votes
       if (voteCounts[player.id]) xp += (teamResult === 'win' ? xpPointsTable.motmVote.win : xpPointsTable.motmVote.lose) * voteCounts[player.id];
-      // TODO: Captain's Bonus (if you have logic to determine captain picks, add here)
+      
+      // Defensive Impact (Captain Pick)
+      if (match.homeDefensiveImpactId === player.id || match.awayDefensiveImpactId === player.id) {
+        xp += (teamResult === 'win' ? xpPointsTable.defensiveImpact.win : xpPointsTable.defensiveImpact.lose);
+        console.log(`🛡️  Defensive Impact XP: User ${player.id} gets ${teamResult === 'win' ? xpPointsTable.defensiveImpact.win : xpPointsTable.defensiveImpact.lose} XP`);
+      }
+      
+      // Mentality (Captain Pick)
+      if (match.homeMentalityId === player.id || match.awayMentalityId === player.id) {
+        xp += (teamResult === 'win' ? xpPointsTable.mentality.win : xpPointsTable.mentality.lose);
+        console.log(`🧠 Mentality XP: User ${player.id} gets ${teamResult === 'win' ? xpPointsTable.mentality.win : xpPointsTable.mentality.lose} XP`);
+      }
+      
       // TODO: Streak Bonuses (if you have logic to determine streaks, add here)
       // Award XP
       const user = await User.findByPk(player.id);

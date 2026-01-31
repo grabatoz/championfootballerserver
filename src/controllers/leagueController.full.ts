@@ -450,6 +450,7 @@ export const getLeagueById = async (ctx: Context) => {
       // Fetch matches for active season (admin sees current season matches)
       let matches: any[] = [];
       if (userSeasonId) {
+        const Vote = (await import('../models/Vote')).Vote;
         matches = await Match.findAll({
           where: {
             leagueId: id,
@@ -458,17 +459,32 @@ export const getLeagueById = async (ctx: Context) => {
           attributes: { exclude: [] },
           include: [
             { model: User, as: 'homeTeamUsers', attributes: ['id', 'firstName', 'lastName', 'profilePicture', 'shirtNumber'] },
-            { model: User, as: 'awayTeamUsers', attributes: ['id', 'firstName', 'lastName', 'profilePicture', 'shirtNumber'] }
+            { model: User, as: 'awayTeamUsers', attributes: ['id', 'firstName', 'lastName', 'profilePicture', 'shirtNumber'] },
+            { model: Vote, as: 'votes', attributes: ['voterId', 'votedForId'] }
           ],
           order: [['createdAt', 'ASC']] // Order by creation date to assign matchNumber
         });
       }
 
-      // Add matchNumber to each match based on creation order
-      const matchesWithNumbers = matches.map((match: any, index: number) => ({
-        ...match.toJSON(),
-        matchNumber: index + 1
-      }));
+      // Add matchNumber and process votes for each match
+      const matchesWithNumbers = matches.map((match: any, index: number) => {
+        const matchJson = match.toJSON();
+        
+        // Convert votes array to manOfTheMatchVotes object format
+        const manOfTheMatchVotes: Record<string, string> = {};
+        if (matchJson.votes && Array.isArray(matchJson.votes)) {
+          matchJson.votes.forEach((vote: any) => {
+            manOfTheMatchVotes[vote.voterId] = vote.votedForId;
+          });
+        }
+        delete matchJson.votes; // Remove votes array
+        
+        return {
+          ...matchJson,
+          matchNumber: index + 1,
+          manOfTheMatchVotes
+        };
+      });
 
       ctx.body = {
         success: true,
@@ -535,6 +551,7 @@ export const getLeagueById = async (ctx: Context) => {
     // Now fetch matches ONLY for the user's season
     let matches: any[] = [];
     if (userSeasonId) {
+      const Vote = (await import('../models/Vote')).Vote;
       matches = await Match.findAll({
         where: {
           leagueId: id,
@@ -543,17 +560,32 @@ export const getLeagueById = async (ctx: Context) => {
         attributes: { exclude: [] },
         include: [
           { model: User, as: 'homeTeamUsers', attributes: ['id', 'firstName', 'lastName', 'profilePicture', 'shirtNumber'] },
-          { model: User, as: 'awayTeamUsers', attributes: ['id', 'firstName', 'lastName', 'profilePicture', 'shirtNumber'] }
+          { model: User, as: 'awayTeamUsers', attributes: ['id', 'firstName', 'lastName', 'profilePicture', 'shirtNumber'] },
+          { model: Vote, as: 'votes', attributes: ['voterId', 'votedForId'] }
         ],
         order: [['createdAt', 'ASC']] // Order by creation date to assign matchNumber
       });
     }
 
-    // Add matchNumber to each match based on creation order
-    const matchesWithNumbers = matches.map((match: any, index: number) => ({
-      ...match.toJSON(),
-      matchNumber: index + 1
-    }));
+    // Add matchNumber and process votes for each match
+    const matchesWithNumbers = matches.map((match: any, index: number) => {
+      const matchJson = match.toJSON();
+      
+      // Convert votes array to manOfTheMatchVotes object format
+      const manOfTheMatchVotes: Record<string, string> = {};
+      if (matchJson.votes && Array.isArray(matchJson.votes)) {
+        matchJson.votes.forEach((vote: any) => {
+          manOfTheMatchVotes[vote.voterId] = vote.votedForId;
+        });
+      }
+      delete matchJson.votes; // Remove votes array
+      
+      return {
+        ...matchJson,
+        matchNumber: index + 1,
+        manOfTheMatchVotes
+      };
+    });
 
     // Filter seasons - only show seasons where user is a member, sorted by seasonNumber DESC
     const filteredSeasons = seasons
