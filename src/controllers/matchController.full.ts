@@ -310,6 +310,15 @@ export const updateMatchGoals = async (ctx: Context) => {
 
     await match.update(updateData);
 
+    // Send notification to both team captains after updating goals
+    try {
+      console.log('📧 Sending captain confirmation notifications for match:', matchId);
+      await sendCaptainConfirmations(match, (match as any).league);
+      console.log('✅ Captain notifications sent successfully');
+    } catch (notifErr) {
+      console.error('❌ Failed to send captain notifications:', notifErr);
+    }
+
     ctx.body = {
       success: true,
       match: {
@@ -355,6 +364,89 @@ export const updateMatchNote = async (ctx: Context) => {
   }
 };
 
+// Confirm match result (for captains)
+export const confirmMatchResult = async (ctx: Context) => {
+  const { matchId } = ctx.params;
+
+  if (!ctx.state.user) {
+    ctx.throw(401, 'Unauthorized');
+    return;
+  }
+
+  const userId = ctx.state.user.userId;
+
+  try {
+    const match = await Match.findByPk(matchId, {
+      include: [{ model: League, as: 'league', attributes: ['id', 'name'] }]
+    });
+
+    if (!match) {
+      ctx.throw(404, 'Match not found');
+      return;
+    }
+
+    // Check if user is a captain
+    const isHomeCaptain = match.homeCaptainId === userId;
+    const isAwayCaptain = match.awayCaptainId === userId;
+
+    if (!isHomeCaptain && !isAwayCaptain) {
+      ctx.throw(403, 'Only team captains can confirm results');
+      return;
+    }
+
+    // Update confirmation status
+    const updateData: any = {};
+    if (isHomeCaptain) {
+      updateData.homeCaptainConfirmed = true;
+      console.log(`✅ Home captain ${userId} confirmed result for match ${matchId}`);
+    }
+    if (isAwayCaptain) {
+      updateData.awayCaptainConfirmed = true;
+      console.log(`✅ Away captain ${userId} confirmed result for match ${matchId}`);
+    }
+
+    await match.update(updateData);
+
+    // Check if both captains have confirmed
+    const bothConfirmed = 
+      (isHomeCaptain ? true : match.homeCaptainConfirmed) && 
+      (isAwayCaptain ? true : match.awayCaptainConfirmed);
+
+    if (bothConfirmed) {
+      // Update match status to RESULT_PUBLISHED
+      await match.update({ 
+        status: 'RESULT_PUBLISHED',
+        resultPublishedAt: new Date()
+      });
+      console.log(`🎉 Both captains confirmed - Match ${matchId} status updated to RESULT_PUBLISHED`);
+
+      // Send confirmation notification to the captain who just confirmed
+      try {
+        await notifyCaptainConfirmed(match, userId);
+      } catch (notifErr) {
+        console.error('Failed to send confirmation notification:', notifErr);
+      }
+    }
+
+    ctx.body = {
+      success: true,
+      message: bothConfirmed ? 'Result confirmed by both captains' : 'Result confirmed',
+      confirmed: true,
+      bothConfirmed,
+      match: {
+        id: match.id,
+        status: match.status,
+        homeCaptainConfirmed: match.homeCaptainConfirmed,
+        awayCaptainConfirmed: match.awayCaptainConfirmed
+      }
+    };
+  } catch (err) {
+    console.error('Confirm result error', err);
+    ctx.status = 500;
+    ctx.body = { success: false, message: 'Failed to confirm result' };
+  }
+};
+
 // Get stats window for match
 export const getStatsWindow = async (ctx: Context) => {
   const { matchId } = ctx.params;
@@ -390,15 +482,30 @@ export const getStatsWindow = async (ctx: Context) => {
 // Submit match stats
 export const submitMatchStats = async (ctx: Context) => {
   const { matchId } = ctx.params;
-  const { stats } = ctx.request.body as { stats: Array<{ playerId: string; goals: number; assists: number; cleanSheet: boolean }> };
+  const body = ctx.request.body as any;
 
   if (!ctx.state.user) {
     ctx.throw(401, 'Unauthorized');
     return;
   }
 
-  if (!Array.isArray(stats)) {
-    ctx.throw(400, 'stats must be an array');
+  // Handle both single stats object and array of stats
+  // Frontend sends single object: { playerId?, goals, assists, ... }
+  // Or array: [{ playerId, goals, assists, ... }]
+  let statsArray: Array<any>;
+  
+  if (Array.isArray(body.stats)) {
+    // Legacy format: { stats: [...] }
+    statsArray = body.stats;
+  } else if (Array.isArray(body)) {
+    // Array format: [...]
+    statsArray = body;
+  } else if (body.playerId || body.goals !== undefined) {
+    // Single object format: { playerId, goals, assists, ... }
+    // If no playerId, it's the current user submitting their own stats
+    statsArray = [body];
+  } else {
+    ctx.throw(400, 'Invalid stats format');
     return;
   }
 
@@ -413,13 +520,20 @@ export const submitMatchStats = async (ctx: Context) => {
     }
 
     const isAdmin = (match as any).league?.administeredLeagues?.some((a: any) => String(a.id) === String(ctx.state.user.userId));
-    if (!isAdmin) {
-      ctx.throw(403, 'Only league admins can submit stats');
-      return;
-    }
-
-    for (const stat of stats) {
-      const userId = await resolveTargetUserIdForMatch(stat.playerId, matchId);
+    
+    // Allow both admins and players to submit their own stats
+    const currentUserId = String(ctx.state.user.userId);
+    
+    for (const stat of statsArray) {
+      // Determine target user: if playerId provided, use it; otherwise use current user
+      const targetPlayerId = stat.playerId || currentUserId;
+      const userId = await resolveTargetUserIdForMatch(targetPlayerId, matchId);
+      
+      // Check permissions: admins can edit anyone, players can only edit themselves
+      if (!isAdmin && userId !== currentUserId) {
+        ctx.throw(403, 'You can only submit your own stats');
+        return;
+      }
       
       const [statRecord] = await MatchStatistics.findOrCreate({
         where: { match_id: matchId, user_id: userId },
@@ -428,15 +542,15 @@ export const submitMatchStats = async (ctx: Context) => {
           user_id: userId,
           goals: stat.goals || 0,
           assists: stat.assists || 0,
-          cleanSheets: stat.cleanSheet ? 1 : 0,
-          penalties: 0,
-          freeKicks: 0,
-          yellowCards: 0,
-          redCards: 0,
-          defence: 0,
-          impact: 0,
-          minutesPlayed: 0,
-          rating: 0,
+          cleanSheets: stat.cleanSheets || stat.cleanSheet || 0,
+          penalties: stat.penalties || 0,
+          freeKicks: stat.freeKicks || 0,
+          yellowCards: stat.yellowCards || 0,
+          redCards: stat.redCards || 0,
+          defence: stat.defence || 0,
+          impact: stat.impact || 0,
+          minutesPlayed: stat.minutesPlayed || 0,
+          rating: stat.rating || 0,
           xpAwarded: 0
         }
       });
@@ -444,7 +558,11 @@ export const submitMatchStats = async (ctx: Context) => {
       await statRecord.update({
         goals: stat.goals || 0,
         assists: stat.assists || 0,
-        cleanSheets: stat.cleanSheet ? 1 : 0
+        cleanSheets: stat.cleanSheets || stat.cleanSheet || 0,
+        penalties: stat.penalties || 0,
+        freeKicks: stat.freeKicks || 0,
+        defence: stat.defence || 0,
+        impact: stat.impact || 0
       });
 
       // Update cache
@@ -474,7 +592,8 @@ export const getMatchVotes = async (ctx: Context) => {
     return;
   }
 
-  const cacheKey = `match_votes_${matchId}_all`;
+  const userId = ctx.state.user.userId || ctx.state.user.id;
+  const cacheKey = `match_votes_${matchId}_${userId}`;
   const cached = cache.get(cacheKey);
   if (cached) {
     ctx.body = cached;
@@ -482,21 +601,32 @@ export const getMatchVotes = async (ctx: Context) => {
   }
 
   try {
+    // Get all votes grouped by votedForId
     const votes = await Vote.findAll({
       where: { matchId },
       attributes: ['votedForId', [fn('COUNT', col('id')), 'count']],
       group: ['votedForId']
     });
 
+    // Convert to object format { playerId: count }
+    const votesObject: Record<string, number> = {};
+    votes.forEach((v: any) => {
+      votesObject[v.votedForId] = Number(v.get('count'));
+    });
+
+    // Get current user's vote
+    const userVote = await Vote.findOne({
+      where: { matchId, voterId: userId },
+      attributes: ['votedForId']
+    });
+
     const result = {
       success: true,
-      votes: votes.map((v: any) => ({
-        playerId: v.votedForId,
-        count: Number(v.get('count'))
-      }))
+      votes: votesObject,
+      userVote: userVote?.votedForId || null
     };
 
-    cache.set(cacheKey, result, 300);
+    cache.set(cacheKey, result, 60); // Cache for 1 minute
     ctx.body = result;
   } catch (err) {
     console.error('Get votes error', err);
@@ -765,26 +895,35 @@ export const getCaptainPicks = async (ctx: Context) => {
     return;
   }
 
+  const cacheKey = `captain_picks_${matchId}`;
+  const cached = cache.get(cacheKey);
+  if (cached) {
+    ctx.body = cached;
+    return;
+  }
+
   try {
-    const CaptainPick = (models as any).CaptainPick;
-    if (!CaptainPick) {
-      ctx.body = { success: true, picks: [] };
+    const match = await Match.findByPk(matchId);
+    if (!match) {
+      ctx.status = 404;
+      ctx.body = { success: false, message: 'Match not found' };
       return;
     }
-    const picks = await CaptainPick.findAll({
-      where: { matchId },
-      include: [{ model: User, as: 'user', attributes: ['id', 'firstName', 'lastName'] }]
-    });
 
-    ctx.body = {
+    const result = {
       success: true,
-      picks: picks.map((p: any) => ({
-        userId: p.userId,
-        team: p.team,
-        confirmed: p.confirmed,
-        user: p.user
-      }))
+      home: {
+        defence: match.homeDefensiveImpactId || null,
+        influence: match.homeMentalityId || null
+      },
+      away: {
+        defence: match.awayDefensiveImpactId || null,
+        influence: match.awayMentalityId || null
+      }
     };
+
+    cache.set(cacheKey, result, 300);
+    ctx.body = result;
   } catch (err) {
     console.error('Get captain picks error', err);
     ctx.status = 500;
@@ -792,37 +931,58 @@ export const getCaptainPicks = async (ctx: Context) => {
   }
 };
 
-// Submit captain picks
+// Submit captain picks (Defensive Impact and Mentality)
 export const submitCaptainPicks = async (ctx: Context) => {
   const { matchId } = ctx.params;
-  const { team } = ctx.request.body as { team: 'home' | 'away' };
+  const { category, playerId } = ctx.request.body as { category: 'defence' | 'influence'; playerId: string };
 
   if (!ctx.state.user) {
     ctx.throw(401, 'Unauthorized');
     return;
   }
 
-  const userId = ctx.state.user.userId;
+  const userId = ctx.state.user.userId || ctx.state.user.id;
 
   try {
-    const CaptainPick = (models as any).CaptainPick;
-    if (!CaptainPick) {
-      ctx.throw(404, 'CaptainPick model not found');
+    const match = await Match.findByPk(matchId);
+    if (!match) {
+      ctx.status = 404;
+      ctx.body = { success: false, message: 'Match not found' };
       return;
     }
-    const [pick, created] = await CaptainPick.findOrCreate({
-      where: { matchId, userId },
-      defaults: { matchId, userId, team, confirmed: false }
-    });
 
-    if (!created) {
-      await pick.update({ team });
+    // Check if user is a captain
+    const isHomeCaptain = match.homeCaptainId === userId;
+    const isAwayCaptain = match.awayCaptainId === userId;
+
+    if (!isHomeCaptain && !isAwayCaptain) {
+      ctx.status = 403;
+      ctx.body = { success: false, message: 'Only team captains can save picks' };
+      return;
     }
+
+    // Update appropriate field based on team and category
+    if (isHomeCaptain) {
+      if (category === 'defence') {
+        await match.update({ homeDefensiveImpactId: playerId });
+      } else if (category === 'influence') {
+        await match.update({ homeMentalityId: playerId });
+      }
+    } else if (isAwayCaptain) {
+      if (category === 'defence') {
+        await match.update({ awayDefensiveImpactId: playerId });
+      } else if (category === 'influence') {
+        await match.update({ awayMentalityId: playerId });
+      }
+    }
+
+    // Clear cache
+    cache.del(`captain_picks_${matchId}`);
+    cache.del(`match_${matchId}`);
 
     ctx.body = {
       success: true,
-      message: 'Captain pick submitted',
-      pick: { userId, team, confirmed: pick.confirmed }
+      message: 'Captain pick saved'
     };
   } catch (err) {
     console.error('Submit captain pick error', err);

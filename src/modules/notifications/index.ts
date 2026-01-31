@@ -81,6 +81,15 @@ async function getLeagueAdmins(leagueId: string): Promise<Array<{ id: string }>>
 }
 
 export async function sendCaptainConfirmations(match: any, league: any) {
+  console.log('🔔 sendCaptainConfirmations called');
+  console.log('   Match ID:', match?.id);
+  console.log('   Home Captain ID:', match?.homeCaptainId);
+  console.log('   Away Captain ID:', match?.awayCaptainId);
+  console.log('   Home Team Name:', match?.homeTeamName);
+  console.log('   Away Team Name:', match?.awayTeamName);
+  console.log('   Home Goals:', match?.homeTeamGoals);
+  console.log('   Away Goals:', match?.awayTeamGoals);
+
   const meta = {
     matchId: String(match.id),
     leagueId: String(league?.id ?? match.leagueId ?? ''),
@@ -104,14 +113,36 @@ export async function sendCaptainConfirmations(match: any, league: any) {
     },
   ].filter(Boolean) as Array<{ userId: string; type: NotificationType; title: string; body: string; meta: any }>;
 
+  console.log(`   📨 Creating ${items.length} notifications`);
+
   for (const it of items) {
-    await (Notification as any).create({
-      user_id: it.userId,
-      type: it.type,
-      title: it.title,
-      body: it.body,
-      meta: it.meta,
-    });
+    try {
+      console.log(`   ➡️ Sending to user: ${it.userId}`);
+      console.log(`   📝 Notification data:`, JSON.stringify({
+        user_id: it.userId,
+        type: it.type,
+        title: it.title,
+        body: it.body,
+        meta: it.meta,
+      }, null, 2));
+      
+      const created = await (Notification as any).create({
+        user_id: it.userId,
+        type: it.type,
+        title: it.title,
+        body: it.body,
+        meta: it.meta,
+        read: false,
+      });
+      
+      console.log(`   ✅ Notification created with ID: ${created.id}`);
+    } catch (err) {
+      console.error(`   ❌ Failed to create notification for user ${it.userId}:`, err);
+    }
+  }
+
+  if (items.length === 0) {
+    console.log('   ⚠️ No notifications created - captain IDs are missing!');
   }
 }
 

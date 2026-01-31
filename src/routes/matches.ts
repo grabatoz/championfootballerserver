@@ -26,6 +26,9 @@ router.patch('/:matchId/goals', required, matchController.updateMatchGoals);
 // Update match note
 router.patch('/:matchId/note', required, matchController.updateMatchNote);
 
+// Confirm match result (for captains)
+router.post('/:matchId/confirm', required, matchController.confirmMatchResult);
+
 // Get stats window
 router.get('/:matchId/stats-window', required, matchController.getStatsWindow);
 

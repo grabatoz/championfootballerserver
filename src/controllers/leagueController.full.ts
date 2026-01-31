@@ -652,7 +652,7 @@ export const getLeagueStatistics = async (ctx: Context) => {
         where: {
           leagueId: id,
           seasonId: seasonId,
-          status: { [Op.in]: ['RESULT_PUBLISHED', 'result_uploaded', 'complete', 'finished', 'ended'] }
+          status: { [Op.in]: ['RESULT_PUBLISHED', 'RESULT_UPLOADED'] }
         }
       });
       playedMatches = completedCount;
@@ -662,7 +662,7 @@ export const getLeagueStatistics = async (ctx: Context) => {
         where: {
           leagueId: id,
           seasonId: seasonId,
-          status: { [Op.notIn]: ['RESULT_PUBLISHED', 'result_uploaded', 'complete', 'finished', 'ended'] }
+          status: { [Op.notIn]: ['RESULT_PUBLISHED', 'RESULT_UPLOADED'] }
         }
       });
       remaining = scheduledCount;
@@ -692,13 +692,13 @@ export const getLeagueStatistics = async (ctx: Context) => {
               where: {
                 leagueId: id,
                 seasonId: seasonId,
-                status: { [Op.in]: ['RESULT_PUBLISHED', 'result_uploaded', 'complete', 'finished', 'ended'] }
+                status: { [Op.in]: ['RESULT_PUBLISHED', 'RESULT_UPLOADED'] }
               },
               attributes: ['id', 'date'],
               required: true
             }
           ],
-          attributes: ['userId', 'xpAwarded'],
+          attributes: [['user_id', 'userId'], ['xp_awarded', 'xpAwarded']],
           order: [[{ model: Match, as: 'match' }, 'date', 'DESC']],
           limit: 50
         });
@@ -825,13 +825,13 @@ export const getLeagueXP = async (ctx: Context) => {
               where: {
                 leagueId: id,
                 seasonId: seasonId,
-                status: { [Op.in]: ['RESULT_PUBLISHED', 'result_uploaded', 'complete', 'finished', 'ended'] }
+                status: { [Op.in]: ['RESULT_PUBLISHED', 'RESULT_UPLOADED'] }
               },
               attributes: ['id'],
               required: true
             }
           ],
-          attributes: ['userId', 'xpAwarded']
+          attributes: [['user_id', 'userId'], ['xp_awarded', 'xpAwarded']]
         });
 
         // Aggregate XP by user
@@ -1629,8 +1629,8 @@ export const updateMatchInLeague = async (ctx: Context) => {
     if (notes !== undefined) updateData.notes = notes;
     if (homeTeamImage) updateData.homeTeamImage = homeTeamImage;
     if (awayTeamImage) updateData.awayTeamImage = awayTeamImage;
-    if (homeCaptainId !== undefined) updateData.homeCaptain = homeCaptainId || null;
-    if (awayCaptainId !== undefined) updateData.awayCaptain = awayCaptainId || null;
+    if (homeCaptainId !== undefined) updateData.homeCaptainId = homeCaptainId || null;
+    if (awayCaptainId !== undefined) updateData.awayCaptainId = awayCaptainId || null;
 
     await match.update(updateData);
 

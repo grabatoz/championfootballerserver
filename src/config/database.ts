@@ -234,23 +234,28 @@ export async function testConnection() {
   }
 }
 
-// Remove top-level await and call testConnection normally
-// Guard against multiple executions in dev/hot-reload scenarios
-if (!(global as any).__DB_TESTED__) {
-  (global as any).__DB_TESTED__ = true;
-  testConnection();
-}
+// REMOVED: Auto-initialization on module load
+// This was causing multiple database connections in dev mode with ts-node-dev
+// Database is now initialized ONLY from index.ts startup
+// Guard is kept for safety but function call removed
+// if (!(global as any).__DB_TESTED__) {
+//   (global as any).__DB_TESTED__ = true;
+//   testConnection();
+// }
 
-process.on('SIGINT', async () => {
-  try {
-    await sequelize.close();
-    console.log('Database connection closed.');
-    process.exit(0);
-  } catch (error) {
-    console.error('Error closing database connection:', error);
-    process.exit(1);
-  }
-});
+// REMOVED: SIGINT handler was prematurely closing database connection
+// This was causing "ConnectionManager.getConnection was called after the connection manager was closed!"
+// Let the application handle graceful shutdown instead
+// process.on('SIGINT', async () => {
+//   try {
+//     await sequelize.close();
+//     console.log('Database connection closed.');
+//     process.exit(0);
+//   } catch (error) {
+//     console.error('Error closing database connection:', error);
+//     process.exit(1);
+//   }
+// });
 
 export default sequelize;
 

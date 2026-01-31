@@ -39,6 +39,11 @@ export interface MatchAttributes {
   removed?: { home: string[]; away: string[] }; // <-- added
   homeWinPct?: number | null;
   awayWinPct?: number | null;
+  // Captain picks: Defensive Impact and Mentality players
+  homeDefensiveImpactId?: string | null;
+  homeMentalityId?: string | null;
+  awayDefensiveImpactId?: string | null;
+  awayMentalityId?: string | null;
 }
 
 interface MatchCreationAttributes extends Optional<MatchAttributes, 'id' | 'archived' | 'removed'> {} // <-- added 'removed'
@@ -78,6 +83,11 @@ class Match extends Model<MatchAttributes, MatchCreationAttributes> implements M
   public removed?: { home: string[]; away: string[] }; // <-- added
   public homeWinPct?: number | null;
   public awayWinPct?: number | null;
+  // Captain picks: Defensive Impact and Mentality players
+  public homeDefensiveImpactId?: string | null;
+  public homeMentalityId?: string | null;
+  public awayDefensiveImpactId?: string | null;
+  public awayMentalityId?: string | null;
 
   // Static associate function
   public static associate(models: any) {
@@ -279,6 +289,11 @@ Match.init(
     },
     homeWinPct: { type: DataTypes.INTEGER, allowNull: true },
     awayWinPct: { type: DataTypes.INTEGER, allowNull: true },
+    // Captain picks: Defensive Impact and Mentality players
+    homeDefensiveImpactId: { type: DataTypes.UUID, allowNull: true },
+    homeMentalityId: { type: DataTypes.UUID, allowNull: true },
+    awayDefensiveImpactId: { type: DataTypes.UUID, allowNull: true },
+    awayMentalityId: { type: DataTypes.UUID, allowNull: true },
   },
   {
     sequelize,
