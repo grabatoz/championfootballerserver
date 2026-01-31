@@ -785,7 +785,7 @@ export const getMatchAvailability = async (ctx: Context) => {
 // Update match
 export const updateMatch = async (ctx: Context) => {
   const { id } = ctx.params;
-  const { date, status, homeTeamGoals, awayTeamGoals } = ctx.request.body as any;
+  const { date, status, homeTeamGoals, awayTeamGoals, archived } = ctx.request.body as any;
 
   if (!ctx.state.user) {
     ctx.throw(401, 'Unauthorized');
@@ -813,6 +813,7 @@ export const updateMatch = async (ctx: Context) => {
     if (status) updateData.status = status;
     if (typeof homeTeamGoals === 'number') updateData.homeTeamGoals = homeTeamGoals;
     if (typeof awayTeamGoals === 'number') updateData.awayTeamGoals = awayTeamGoals;
+    if (typeof archived === 'boolean') updateData.archived = archived;
 
     await match.update(updateData);
 
@@ -823,7 +824,8 @@ export const updateMatch = async (ctx: Context) => {
         date: match.date,
         status: match.status,
         homeTeamGoals: match.homeTeamGoals,
-        awayTeamGoals: match.awayTeamGoals
+        awayTeamGoals: match.awayTeamGoals,
+        archived: match.archived
       }
     };
   } catch (err) {
