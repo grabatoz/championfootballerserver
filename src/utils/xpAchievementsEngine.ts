@@ -391,4 +391,157 @@ export async function calculateAllUsersXP() {
 export async function triggerImmediateXPCalculation() {
   console.log('⚡ Triggering immediate XP calculation...');
   await calculateAllUsersXP();
+}
+
+// Award XP for a specific match - called when both captains confirm the result
+export async function awardXPForMatch(matchId: string) {
+  console.log(`🏆 Starting XP award for match ${matchId}`);
+  
+  const match = await Match.findByPk(matchId, {
+    include: [
+      { model: User, as: 'homeTeamUsers' },
+      { model: User, as: 'awayTeamUsers' },
+      { model: Vote, as: 'votes' },
+    ]
+  });
+
+  if (!match) {
+    console.log(`❌ Match ${matchId} not found`);
+    return;
+  }
+
+  // Get all users in this match
+  const homeTeamUsers = ((match as any).homeTeamUsers || []);
+  const awayTeamUsers = ((match as any).awayTeamUsers || []);
+  const allPlayers = [...homeTeamUsers, ...awayTeamUsers];
+
+  console.log(`📋 Match ${matchId}: ${homeTeamUsers.length} home players, ${awayTeamUsers.length} away players`);
+
+  // Get all stats for this match
+  const allStats = await MatchStatistics.findAll({ where: { match_id: matchId } });
+  console.log(`📊 Found ${allStats.length} player stats for match ${matchId}`);
+
+  // Get all votes for this match
+  const votes = await Vote.findAll({ where: { matchId: matchId } });
+  
+  // Determine MOTM (most votes)
+  const voteCounts: Record<string, number> = {};
+  votes.forEach(vote => {
+    const id = String(vote.votedForId);
+    voteCounts[id] = (voteCounts[id] || 0) + 1;
+  });
+  let motmId: string | null = null;
+  let maxVotes = 0;
+  Object.entries(voteCounts).forEach(([id, count]) => {
+    if (count > maxVotes) {
+      motmId = id;
+      maxVotes = count;
+    }
+  });
+  console.log(`🌟 MOTM for match ${matchId}: Player ${motmId} with ${maxVotes} votes`);
+
+  const homeGoals = match.homeTeamGoals ?? 0;
+  const awayGoals = match.awayTeamGoals ?? 0;
+  console.log(`⚽ Score: Home ${homeGoals} - ${awayGoals} Away`);
+
+  // Award XP for each player
+  for (const player of allPlayers) {
+    let xp = 0;
+    const xpBreakdown: string[] = [];
+    
+    const stat = allStats.find(s => s.user_id === player.id);
+    const isHome = homeTeamUsers.some((u: any) => u.id === player.id);
+    const isAway = awayTeamUsers.some((u: any) => u.id === player.id);
+
+    // Win/Draw/Loss
+    let teamResult: 'win' | 'draw' | 'lose' = 'lose';
+    if (isHome && homeGoals > awayGoals) teamResult = 'win';
+    else if (isAway && awayGoals > homeGoals) teamResult = 'win';
+    else if (homeGoals === awayGoals) teamResult = 'draw';
+
+    if (teamResult === 'win') {
+      xp += xpPointsTable.winningTeam;
+      xpBreakdown.push(`Win: +${xpPointsTable.winningTeam}`);
+    } else if (teamResult === 'draw') {
+      xp += xpPointsTable.draw;
+      xpBreakdown.push(`Draw: +${xpPointsTable.draw}`);
+    } else {
+      xp += xpPointsTable.losingTeam;
+      xpBreakdown.push(`Loss: +${xpPointsTable.losingTeam}`);
+    }
+
+    // Goals
+    if (stat && stat.goals > 0) {
+      const goalXP = (teamResult === 'win' ? xpPointsTable.goal.win : xpPointsTable.goal.lose) * stat.goals;
+      xp += goalXP;
+      xpBreakdown.push(`Goals (${stat.goals}): +${goalXP}`);
+    }
+
+    // Assists
+    if (stat && stat.assists > 0) {
+      const assistXP = (teamResult === 'win' ? xpPointsTable.assist.win : xpPointsTable.assist.lose) * stat.assists;
+      xp += assistXP;
+      xpBreakdown.push(`Assists (${stat.assists}): +${assistXP}`);
+    }
+
+    // Clean Sheets (Goalkeeper)
+    if (stat && stat.cleanSheets > 0) {
+      const cleanSheetXP = xpPointsTable.cleanSheet * stat.cleanSheets;
+      xp += cleanSheetXP;
+      xpBreakdown.push(`Clean Sheets (${stat.cleanSheets}): +${cleanSheetXP}`);
+    }
+
+    // Impact/Defence
+    if (stat && stat.defence > 0) {
+      const defenceXP = (teamResult === 'win' ? xpPointsTable.defensiveImpact.win : xpPointsTable.defensiveImpact.lose) * stat.defence;
+      xp += defenceXP;
+      xpBreakdown.push(`Defence Impact (${stat.defence}): +${defenceXP}`);
+    }
+
+    // MOTM Winner
+    if (motmId === player.id) {
+      const motmXP = (teamResult === 'win' ? xpPointsTable.motm.win : xpPointsTable.motm.lose);
+      xp += motmXP;
+      xpBreakdown.push(`MOTM Winner: +${motmXP}`);
+    }
+
+    // MOTM Votes received
+    if (voteCounts[player.id]) {
+      const voteXP = (teamResult === 'win' ? xpPointsTable.motmVote.win : xpPointsTable.motmVote.lose) * voteCounts[player.id];
+      xp += voteXP;
+      xpBreakdown.push(`MOTM Votes (${voteCounts[player.id]}): +${voteXP}`);
+    }
+
+    // Defensive Impact (Captain Pick)
+    if ((match as any).homeDefensiveImpactId === player.id || (match as any).awayDefensiveImpactId === player.id) {
+      const defImpactXP = (teamResult === 'win' ? xpPointsTable.defensiveImpact.win : xpPointsTable.defensiveImpact.lose);
+      xp += defImpactXP;
+      xpBreakdown.push(`Captain Pick - Defensive Impact: +${defImpactXP}`);
+    }
+
+    // Mentality (Captain Pick)
+    if ((match as any).homeMentalityId === player.id || (match as any).awayMentalityId === player.id) {
+      const mentalityXP = (teamResult === 'win' ? xpPointsTable.mentality.win : xpPointsTable.mentality.lose);
+      xp += mentalityXP;
+      xpBreakdown.push(`Captain Pick - Mentality: +${mentalityXP}`);
+    }
+
+    // Update MatchStatistics with xpAwarded
+    if (stat) {
+      await stat.update({ xpAwarded: xp });
+    }
+
+    // Update User's total XP
+    const user = await User.findByPk(player.id);
+    if (user) {
+      const oldXP = user.xp || 0;
+      user.xp = oldXP + xp;
+      await user.save();
+      console.log(`💰 XP AWARDED! User ${player.id} (${(user as any).firstName || 'Unknown'}): +${xp} XP`);
+      console.log(`   Breakdown: ${xpBreakdown.join(', ')}`);
+      console.log(`   Total XP: ${oldXP} → ${user.xp}`);
+    }
+  }
+
+  console.log(`✅ Completed XP awards for match ${matchId}`);
 } 
