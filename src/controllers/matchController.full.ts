@@ -574,6 +574,15 @@ export const submitMatchStats = async (ctx: Context) => {
         impact: stat.impact || 0
       });
 
+      // 🎯 AWARD XP IMMEDIATELY when stats are saved
+      try {
+        const { awardXPForPlayer } = await import('../utils/xpAchievementsEngine');
+        const xpAwarded = await awardXPForPlayer(userId, matchId, statRecord);
+        console.log(`💰 XP awarded to player ${userId}: ${xpAwarded} XP`);
+      } catch (xpErr) {
+        console.error('Failed to award XP:', xpErr);
+      }
+
       // Update cache
       try {
         cache.updateLeaderboard(`leaderboard_goals_${match.leagueId}_all`, { playerId: userId, value: stat.goals || 0 });

@@ -544,4 +544,104 @@ export async function awardXPForMatch(matchId: string) {
   }
 
   console.log(`✅ Completed XP awards for match ${matchId}`);
-} 
+}
+
+// Award XP for a single player immediately when they submit stats
+export async function awardXPForPlayer(userId: string, matchId: string, statRecord: any): Promise<number> {
+  console.log(`🎯 Calculating XP for player ${userId} in match ${matchId}`);
+
+  const match = await Match.findByPk(matchId, {
+    include: [
+      { model: User, as: 'homeTeamUsers' },
+      { model: User, as: 'awayTeamUsers' },
+    ]
+  });
+
+  if (!match) {
+    console.log(`❌ Match ${matchId} not found`);
+    return 0;
+  }
+
+  const homeTeamUsers = ((match as any).homeTeamUsers || []);
+  const awayTeamUsers = ((match as any).awayTeamUsers || []);
+  
+  const isHome = homeTeamUsers.some((u: any) => String(u.id) === String(userId));
+  const isAway = awayTeamUsers.some((u: any) => String(u.id) === String(userId));
+  
+  if (!isHome && !isAway) {
+    console.log(`❌ Player ${userId} not found in match teams`);
+    return 0;
+  }
+
+  const homeGoals = match.homeTeamGoals ?? 0;
+  const awayGoals = match.awayTeamGoals ?? 0;
+
+  // Determine win/draw/lose
+  let teamResult: 'win' | 'draw' | 'lose' = 'lose';
+  if (isHome && homeGoals > awayGoals) teamResult = 'win';
+  else if (isAway && awayGoals > homeGoals) teamResult = 'win';
+  else if (homeGoals === awayGoals) teamResult = 'draw';
+
+  let xp = 0;
+  const xpBreakdown: string[] = [];
+
+  // Win/Draw/Loss XP
+  if (teamResult === 'win') {
+    xp += xpPointsTable.winningTeam;
+    xpBreakdown.push(`Win: +${xpPointsTable.winningTeam}`);
+  } else if (teamResult === 'draw') {
+    xp += xpPointsTable.draw;
+    xpBreakdown.push(`Draw: +${xpPointsTable.draw}`);
+  } else {
+    xp += xpPointsTable.losingTeam;
+    xpBreakdown.push(`Loss: +${xpPointsTable.losingTeam}`);
+  }
+
+  // Goals XP
+  const goals = statRecord.goals || 0;
+  if (goals > 0) {
+    const goalXP = (teamResult === 'win' ? xpPointsTable.goal.win : xpPointsTable.goal.lose) * goals;
+    xp += goalXP;
+    xpBreakdown.push(`Goals (${goals}): +${goalXP}`);
+  }
+
+  // Assists XP
+  const assists = statRecord.assists || 0;
+  if (assists > 0) {
+    const assistXP = (teamResult === 'win' ? xpPointsTable.assist.win : xpPointsTable.assist.lose) * assists;
+    xp += assistXP;
+    xpBreakdown.push(`Assists (${assists}): +${assistXP}`);
+  }
+
+  // Clean Sheets XP
+  const cleanSheets = statRecord.cleanSheets || 0;
+  if (cleanSheets > 0) {
+    const cleanSheetXP = xpPointsTable.cleanSheet * cleanSheets;
+    xp += cleanSheetXP;
+    xpBreakdown.push(`Clean Sheets (${cleanSheets}): +${cleanSheetXP}`);
+  }
+
+  // Defence XP
+  const defence = statRecord.defence || 0;
+  if (defence > 0) {
+    const defenceXP = (teamResult === 'win' ? xpPointsTable.defensiveImpact.win : xpPointsTable.defensiveImpact.lose) * defence;
+    xp += defenceXP;
+    xpBreakdown.push(`Defence (${defence}): +${defenceXP}`);
+  }
+
+  // Update MatchStatistics with xpAwarded
+  await statRecord.update({ xpAwarded: xp });
+
+  // Update User's total XP
+  const user = await User.findByPk(userId);
+  if (user) {
+    const oldXP = user.xp || 0;
+    user.xp = oldXP + xp;
+    await user.save();
+    console.log(`💰 XP AWARDED! User ${userId}: +${xp} XP`);
+    console.log(`   Breakdown: ${xpBreakdown.join(', ')}`);
+    console.log(`   Total XP: ${oldXP} → ${user.xp}`);
+  }
+
+  return xp;
+}
