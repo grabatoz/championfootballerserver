@@ -416,7 +416,8 @@ export const getLeagueById = async (ctx: Context) => {
             {
               model: User,
               as: 'players',
-              attributes: ['id']
+              attributes: ['id', 'firstName', 'lastName', 'profilePicture', 'position', 'positionType', 'xp', 'shirtNumber'],
+              through: { attributes: [] } // Don't include join table data
             }
           ]
         }
@@ -442,29 +443,31 @@ export const getLeagueById = async (ctx: Context) => {
     const seasons = (league as any).seasons || [];
     let userSeasonId: string | null = null;
 
-    // If user is ADMIN - show ALL seasons and active season's matches
+    // If user is ADMIN - show ALL seasons and ALL matches (frontend will filter)
     if (isAdmin) {
       const activeSeason = seasons.find((s: any) => s.isActive);
       userSeasonId = activeSeason?.id || (seasons.length > 0 ? seasons[0].id : null);
 
-      // Fetch matches for active season (admin sees current season matches)
-      let matches: any[] = [];
-      if (userSeasonId) {
-        const Vote = (await import('../models/Vote')).Vote;
-        matches = await Match.findAll({
-          where: {
-            leagueId: id,
-            seasonId: userSeasonId
-          },
-          attributes: { exclude: [] },
-          include: [
-            { model: User, as: 'homeTeamUsers', attributes: ['id', 'firstName', 'lastName', 'profilePicture', 'shirtNumber'] },
-            { model: User, as: 'awayTeamUsers', attributes: ['id', 'firstName', 'lastName', 'profilePicture', 'shirtNumber'] },
-            { model: Vote, as: 'votes', attributes: ['voterId', 'votedForId'] }
-          ],
-          order: [['createdAt', 'ASC']] // Order by creation date to assign matchNumber
-        });
-      }
+      // Fetch ALL matches for ALL seasons (admin can switch between seasons in frontend)
+      const Vote = (await import('../models/Vote')).Vote;
+      const matches = await Match.findAll({
+        where: {
+          leagueId: id
+          // No seasonId filter - return ALL matches with their seasonIds
+        },
+        attributes: { exclude: [] },
+        include: [
+          { model: User, as: 'homeTeamUsers', attributes: ['id', 'firstName', 'lastName', 'profilePicture', 'shirtNumber'] },
+          { model: User, as: 'awayTeamUsers', attributes: ['id', 'firstName', 'lastName', 'profilePicture', 'shirtNumber'] },
+          { model: Vote, as: 'votes', attributes: ['voterId', 'votedForId'] }
+        ],
+        order: [['createdAt', 'ASC']] // Order by creation date to assign matchNumber
+      });
+
+      console.log(`📊 [ADMIN] Fetching ALL matches for league ${id}: ${matches.length} matches`);
+      matches.forEach((m: any) => {
+        console.log(`   - ${m.homeTeamName} vs ${m.awayTeamName} | seasonId: ${m.seasonId}`);
+      });
 
       // Add matchNumber and process votes for each match
       const matchesWithNumbers = matches.map((match: any, index: number) => {
@@ -486,6 +489,19 @@ export const getLeagueById = async (ctx: Context) => {
         };
       });
 
+      // Format seasons with members instead of players for frontend compatibility
+      const formattedSeasons = seasons.map((season: any) => ({
+        ...season.toJSON(),
+        members: season.players || [] // Rename 'players' to 'members' for frontend
+      }));
+
+      console.log('📊 [ADMIN] Returning league data:');
+      console.log(`   - League: ${league.name}`);
+      console.log(`   - Total seasons: ${formattedSeasons.length}`);
+      formattedSeasons.forEach((s: any) => {
+        console.log(`   - Season ${s.seasonNumber}: ${s.members?.length || 0} members`);
+      });
+
       ctx.body = {
         success: true,
         league: {
@@ -497,7 +513,7 @@ export const getLeagueById = async (ctx: Context) => {
           maxGames: league.maxGames,
           members: (league as any).members || [],
           matches: matchesWithNumbers,
-          seasons: seasons, // Admin sees ALL seasons
+          seasons: formattedSeasons, // Admin sees ALL seasons with members
           currentSeason: activeSeason || (seasons.length > 0 ? seasons[0] : null), // Admin's current = active season
           administrators: (league as any).administeredLeagues || [],
           isAdmin
@@ -548,24 +564,37 @@ export const getLeagueById = async (ctx: Context) => {
       }
     }
 
-    // Now fetch matches ONLY for the user's season
-    let matches: any[] = [];
-    if (userSeasonId) {
-      const Vote = (await import('../models/Vote')).Vote;
-      matches = await Match.findAll({
-        where: {
-          leagueId: id,
-          seasonId: userSeasonId
-        },
-        attributes: { exclude: [] },
-        include: [
-          { model: User, as: 'homeTeamUsers', attributes: ['id', 'firstName', 'lastName', 'profilePicture', 'shirtNumber'] },
-          { model: User, as: 'awayTeamUsers', attributes: ['id', 'firstName', 'lastName', 'profilePicture', 'shirtNumber'] },
-          { model: Vote, as: 'votes', attributes: ['voterId', 'votedForId'] }
-        ],
-        order: [['createdAt', 'ASC']] // Order by creation date to assign matchNumber
-      });
-    }
+    // Fetch ALL matches for seasons user is a member of (frontend will filter by selected season)
+    const Vote = (await import('../models/Vote')).Vote;
+    
+    // Get all season IDs user is a member of
+    const userSeasonIds = seasons
+      .filter((s: any) => {
+        const seasonPlayers = s.players || [];
+        return seasonPlayers.some((p: any) => String(p.id) === String(userId));
+      })
+      .map((s: any) => s.id);
+    
+    console.log(`📊 [MEMBER] User ${userId} is in seasons:`, userSeasonIds);
+    
+    const matches = await Match.findAll({
+      where: {
+        leagueId: id,
+        seasonId: userSeasonIds.length > 0 ? userSeasonIds : null // Fetch matches for all user's seasons
+      },
+      attributes: { exclude: [] },
+      include: [
+        { model: User, as: 'homeTeamUsers', attributes: ['id', 'firstName', 'lastName', 'profilePicture', 'shirtNumber'] },
+        { model: User, as: 'awayTeamUsers', attributes: ['id', 'firstName', 'lastName', 'profilePicture', 'shirtNumber'] },
+        { model: Vote, as: 'votes', attributes: ['voterId', 'votedForId'] }
+      ],
+      order: [['createdAt', 'ASC']] // Order by creation date to assign matchNumber
+    });
+    
+    console.log(`📊 [MEMBER] Fetching matches for user's seasons: ${matches.length} matches`);
+    matches.forEach((m: any) => {
+      console.log(`   - ${m.homeTeamName} vs ${m.awayTeamName} | seasonId: ${m.seasonId}`);
+    });
 
     // Add matchNumber and process votes for each match
     const matchesWithNumbers = matches.map((match: any, index: number) => {
@@ -593,13 +622,20 @@ export const getLeagueById = async (ctx: Context) => {
         const seasonPlayers = season.players || [];
         return seasonPlayers.some((p: any) => String(p.id) === String(userId));
       })
-      .sort((a: any, b: any) => (b.seasonNumber || 0) - (a.seasonNumber || 0));
+      .sort((a: any, b: any) => (b.seasonNumber || 0) - (a.seasonNumber || 0))
+      .map((season: any) => ({
+        ...season.toJSON(),
+        members: season.players || [] // Rename 'players' to 'members' for frontend
+      }));
 
     // Get the user's current season (highest season they are in)
     const userCurrentSeason = filteredSeasons.find((s: any) => s.id === userSeasonId) || 
                               (filteredSeasons.length > 0 ? filteredSeasons[0] : null);
     
-    console.log(`📊 User ${userId} - filteredSeasons: ${filteredSeasons.map((s: any) => s.seasonNumber).join(', ')}, currentSeason: ${userCurrentSeason?.seasonNumber}`);
+    console.log(`📊 [MEMBER] User ${userId} - filteredSeasons: ${filteredSeasons.map((s: any) => s.seasonNumber).join(', ')}, currentSeason: ${userCurrentSeason?.seasonNumber}`);
+    filteredSeasons.forEach((s: any) => {
+      console.log(`   - Season ${s.seasonNumber}: ${s.members?.length || 0} members`);
+    });
 
     ctx.body = {
       success: true,
