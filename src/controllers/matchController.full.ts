@@ -660,6 +660,47 @@ export const submitMatchStats = async (ctx: Context) => {
           breakdown.push(`Clean Sheets (${cleanSheets}): +${cleanSheetXP}`);
         }
         
+        // 🏆 CAPTAIN PICKS XP - Check if this user was selected for captain picks
+        try {
+          // Get captain picks for this match (both home and away teams)
+          // Table name is "Matches" (with capital M) in database
+          const captainPicksResult = await sequelize.query(
+            `SELECT "homeDefensiveImpactId", "awayDefensiveImpactId", "homeMentalityId", "awayMentalityId" FROM "Matches" WHERE id = $1`,
+            { bind: [matchId], type: QueryTypes.SELECT }
+          );
+          
+          if (captainPicksResult.length > 0) {
+            const picks = captainPicksResult[0] as any;
+            console.log(`🏆 Captain Picks for match ${matchId}:`, JSON.stringify(picks));
+            
+            // Defensive Impact XP - check both home and away picks
+            const isDefensivePick = 
+              (picks.homeDefensiveImpactId && String(picks.homeDefensiveImpactId) === String(userId)) ||
+              (picks.awayDefensiveImpactId && String(picks.awayDefensiveImpactId) === String(userId));
+            
+            if (isDefensivePick) {
+              const defenseXP = teamResult === 'win' ? xpPointsTable.defensiveImpact.win : xpPointsTable.defensiveImpact.lose;
+              newXpToAward += defenseXP;
+              breakdown.push(`Defensive Impact (Captain Pick): +${defenseXP}`);
+              console.log(`🛡️ User ${userId} selected for Defensive Impact - +${defenseXP} XP`);
+            }
+            
+            // Mentality XP - check both home and away picks
+            const isMentalityPick = 
+              (picks.homeMentalityId && String(picks.homeMentalityId) === String(userId)) ||
+              (picks.awayMentalityId && String(picks.awayMentalityId) === String(userId));
+            
+            if (isMentalityPick) {
+              const mentalityXP = teamResult === 'win' ? xpPointsTable.mentality.win : xpPointsTable.mentality.lose;
+              newXpToAward += mentalityXP;
+              breakdown.push(`Mentality (Captain Pick): +${mentalityXP}`);
+              console.log(`💪 User ${userId} selected for Mentality - +${mentalityXP} XP`);
+            }
+          }
+        } catch (captainErr) {
+          console.error('⚠️ Error checking captain picks:', captainErr);
+        }
+        
         console.log(`🎮 XP CALCULATION for user ${userId}:`);
         console.log(`   Team Result: ${teamResult.toUpperCase()}`);
         console.log(`   Breakdown: ${breakdown.join(', ')}`);
