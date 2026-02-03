@@ -412,6 +412,11 @@ export const confirmMatchResult = async (ctx: Context) => {
       (isHomeCaptain ? true : match.homeCaptainConfirmed) && 
       (isAwayCaptain ? true : match.awayCaptainConfirmed);
 
+    console.log(`🔍 Captain confirmation check for match ${matchId}:`);
+    console.log(`   isHomeCaptain: ${isHomeCaptain}, isAwayCaptain: ${isAwayCaptain}`);
+    console.log(`   homeCaptainConfirmed: ${match.homeCaptainConfirmed}, awayCaptainConfirmed: ${match.awayCaptainConfirmed}`);
+    console.log(`   bothConfirmed: ${bothConfirmed}`);
+
     if (bothConfirmed) {
       // Update match status to RESULT_PUBLISHED
       await match.update({ 
@@ -420,14 +425,9 @@ export const confirmMatchResult = async (ctx: Context) => {
       });
       console.log(`🎉 Both captains confirmed - Match ${matchId} status updated to RESULT_PUBLISHED`);
 
-      // Award XP to all players in this match
-      try {
-        const { awardXPForMatch } = await import('../utils/xpAchievementsEngine');
-        await awardXPForMatch(matchId);
-        console.log(`💰 XP awarded to players for match ${matchId}`);
-      } catch (xpErr) {
-        console.error('Failed to award XP for match:', xpErr);
-      }
+      // NOTE: XP is now awarded IMMEDIATELY when stats are submitted (in submitMatchStats)
+      // NO MORE XP awarding here to prevent DOUBLE XP
+      console.log(`ℹ️ XP already awarded during stats submission - skipping here to prevent double XP`);
 
       // Send confirmation notification to the captain who just confirmed
       try {
@@ -533,10 +533,20 @@ export const submitMatchStats = async (ctx: Context) => {
     // Allow both admins and players to submit their own stats
     const currentUserId = String(ctx.state.user.userId);
     
+    console.log(`📊 Stats submission - Request body:`, JSON.stringify(statsArray, null, 2));
+    
     for (const stat of statsArray) {
       // Determine target user: if playerId provided, use it; otherwise use current user
       const targetPlayerId = stat.playerId || currentUserId;
       const userId = await resolveTargetUserIdForMatch(targetPlayerId, matchId);
+      
+      console.log(`📊 Processing stats for user ${userId}:`, {
+        goals: stat.goals,
+        assists: stat.assists,
+        cleanSheets: stat.cleanSheets || stat.cleanSheet,
+        defence: stat.defence,
+        impact: stat.impact
+      });
       
       // Check permissions: admins can edit anyone, players can only edit themselves
       if (!isAdmin && userId !== currentUserId) {
@@ -544,7 +554,7 @@ export const submitMatchStats = async (ctx: Context) => {
         return;
       }
       
-      const [statRecord] = await MatchStatistics.findOrCreate({
+      const [statRecord, created] = await MatchStatistics.findOrCreate({
         where: { match_id: matchId, user_id: userId },
         defaults: {
           match_id: matchId,
@@ -564,7 +574,9 @@ export const submitMatchStats = async (ctx: Context) => {
         }
       });
 
-      await statRecord.update({
+      console.log(`📊 Stats record ${created ? 'CREATED' : 'FOUND'} for user ${userId}`);
+
+      const updateData = {
         goals: stat.goals || 0,
         assists: stat.assists || 0,
         cleanSheets: stat.cleanSheets || stat.cleanSheet || 0,
@@ -572,15 +584,122 @@ export const submitMatchStats = async (ctx: Context) => {
         freeKicks: stat.freeKicks || 0,
         defence: stat.defence || 0,
         impact: stat.impact || 0
+      };
+      
+      console.log(`📊 Updating stats for user ${userId}:`, updateData);
+      
+      await statRecord.update(updateData);
+      
+      // Verify stats were saved correctly
+      const verifyStats = await MatchStatistics.findOne({
+        where: { match_id: matchId, user_id: userId }
+      });
+      console.log(`✅ Stats VERIFIED in DB for user ${userId}:`, {
+        match_id: verifyStats?.match_id,
+        user_id: verifyStats?.user_id,
+        goals: verifyStats?.goals,
+        assists: verifyStats?.assists,
+        cleanSheets: verifyStats?.cleanSheets
       });
 
-      // 🎯 AWARD XP IMMEDIATELY when stats are saved
+      // 🎮 IMMEDIATELY AWARD XP when stats are submitted
       try {
-        const { awardXPForPlayer } = await import('../utils/xpAchievementsEngine');
-        const xpAwarded = await awardXPForPlayer(userId, matchId, statRecord);
-        console.log(`💰 XP awarded to player ${userId}: ${xpAwarded} XP`);
+        const homeTeamUserIds = await sequelize.query<{ userId: string }>(
+          `SELECT DISTINCT "userId" FROM "UserHomeMatches" WHERE "matchId" = :matchId`,
+          { replacements: { matchId }, type: QueryTypes.SELECT }
+        );
+        const awayTeamUserIds = await sequelize.query<{ userId: string }>(
+          `SELECT DISTINCT "userId" FROM "UserAwayMatches" WHERE "matchId" = :matchId`,
+          { replacements: { matchId }, type: QueryTypes.SELECT }
+        );
+        
+        const isHome = homeTeamUserIds.some(u => u.userId === userId);
+        const isAway = awayTeamUserIds.some(u => u.userId === userId);
+        const homeGoals = match.homeTeamGoals ?? 0;
+        const awayGoals = match.awayTeamGoals ?? 0;
+        
+        let teamResult: 'win' | 'draw' | 'lose' = 'lose';
+        if (isHome && homeGoals > awayGoals) teamResult = 'win';
+        else if (isAway && awayGoals > homeGoals) teamResult = 'win';
+        else if (homeGoals === awayGoals) teamResult = 'draw';
+        
+        let xpToAward = 0;
+        const breakdown: string[] = [];
+        
+        // Win/Draw/Loss
+        if (teamResult === 'win') {
+          xpToAward += xpPointsTable.winningTeam;
+          breakdown.push(`Win: +${xpPointsTable.winningTeam}`);
+        } else if (teamResult === 'draw') {
+          xpToAward += xpPointsTable.draw;
+          breakdown.push(`Draw: +${xpPointsTable.draw}`);
+        } else {
+          xpToAward += xpPointsTable.losingTeam;
+          breakdown.push(`Loss: +${xpPointsTable.losingTeam}`);
+        }
+        
+        // Goals
+        if (stat.goals > 0) {
+          const goalXP = (teamResult === 'win' ? xpPointsTable.goal.win : xpPointsTable.goal.lose) * stat.goals;
+          xpToAward += goalXP;
+          breakdown.push(`Goals (${stat.goals}): +${goalXP}`);
+        }
+        
+        // Assists
+        if (stat.assists > 0) {
+          const assistXP = (teamResult === 'win' ? xpPointsTable.assist.win : xpPointsTable.assist.lose) * stat.assists;
+          xpToAward += assistXP;
+          breakdown.push(`Assists (${stat.assists}): +${assistXP}`);
+        }
+        
+        // Clean Sheets
+        const cleanSheets = stat.cleanSheets || stat.cleanSheet || 0;
+        if (cleanSheets > 0) {
+          const cleanSheetXP = xpPointsTable.cleanSheet * cleanSheets;
+          xpToAward += cleanSheetXP;
+          breakdown.push(`Clean Sheets (${cleanSheets}): +${cleanSheetXP}`);
+        }
+        
+        console.log(`🎮 XP CALCULATION for user ${userId}:`);
+        console.log(`   Team Result: ${teamResult.toUpperCase()}`);
+        console.log(`   Breakdown: ${breakdown.join(', ')}`);
+        console.log(`   Total XP to award: +${xpToAward}`);
+        
+        // 💰 IMMEDIATELY UPDATE USER XP IN DATABASE
+        // Get current XP
+        const userResult = await sequelize.query<{ id: string; firstName: string; xp: number }>(
+          `SELECT id, "firstName", xp FROM users WHERE id = :userId`,
+          { replacements: { userId }, type: QueryTypes.SELECT }
+        );
+        
+        if (userResult.length > 0) {
+          const oldXP = userResult[0].xp || 0;
+          const newXP = oldXP + xpToAward;
+          
+          // Update user XP using raw SQL
+          await sequelize.query(
+            `UPDATE users SET xp = :newXP WHERE id = :userId`,
+            { replacements: { newXP, userId } }
+          );
+          
+          // Update MatchStatistics with xpAwarded
+          await sequelize.query(
+            `UPDATE "MatchStatistics" SET "xpAwarded" = :xp WHERE match_id = :matchId AND user_id = :userId`,
+            { replacements: { xp: xpToAward, matchId, userId } }
+          );
+          
+          console.log(`💰 XP AWARDED IMMEDIATELY! User ${userId} (${userResult[0].firstName}): +${xpToAward} XP`);
+          console.log(`   Total XP: ${oldXP} → ${newXP}`);
+          
+          // Verify
+          const verifyXP = await sequelize.query<{ xp: number }>(
+            `SELECT xp FROM users WHERE id = :userId`,
+            { replacements: { userId }, type: QueryTypes.SELECT }
+          );
+          console.log(`   ✅ Verified in DB - User XP: ${verifyXP[0]?.xp}`);
+        }
       } catch (xpErr) {
-        console.error('Failed to award XP:', xpErr);
+        console.error('⚠️ Could not award XP:', xpErr);
       }
 
       // Update cache
@@ -728,6 +847,7 @@ export const getAllMatches = async (ctx: Context) => {
 // Get match stats
 export const getMatchStats = async (ctx: Context) => {
   const { matchId } = ctx.params;
+  const { playerId } = ctx.query as { playerId?: string };
 
   if (!ctx.state.user) {
     ctx.throw(401, 'Unauthorized');
@@ -735,6 +855,38 @@ export const getMatchStats = async (ctx: Context) => {
   }
 
   try {
+    // If playerId is provided, get stats for that specific player only
+    if (playerId) {
+      const stat = await MatchStatistics.findOne({
+        where: { match_id: matchId, user_id: playerId },
+        include: [{ model: User, as: 'user', attributes: ['id', 'firstName', 'lastName', 'profilePicture'] }]
+      });
+
+      if (stat) {
+        ctx.body = {
+          success: true,
+          stats: {
+            userId: stat.user_id,
+            goals: stat.goals,
+            assists: stat.assists,
+            cleanSheets: stat.cleanSheets,
+            penalties: stat.penalties,
+            freeKicks: stat.freeKicks,
+            defence: stat.defence,
+            impact: stat.impact,
+            user: (stat as any).user
+          }
+        };
+      } else {
+        ctx.body = {
+          success: true,
+          stats: null
+        };
+      }
+      return;
+    }
+
+    // Otherwise, get all stats for the match
     const stats = await MatchStatistics.findAll({
       where: { match_id: matchId },
       include: [{ model: User, as: 'user', attributes: ['id', 'firstName', 'lastName', 'profilePicture'] }]
@@ -747,6 +899,10 @@ export const getMatchStats = async (ctx: Context) => {
         goals: s.goals,
         assists: s.assists,
         cleanSheets: s.cleanSheets,
+        penalties: s.penalties,
+        freeKicks: s.freeKicks,
+        defence: s.defence,
+        impact: s.impact,
         user: (s as any).user
       }))
     };

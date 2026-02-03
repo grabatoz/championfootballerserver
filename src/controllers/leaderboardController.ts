@@ -95,7 +95,7 @@ export const getLeaderboard = async (ctx: Context) => {
 
     const statsGrouped = await models.MatchStatistics.findAll({
       attributes: [
-        'userId',
+        ['user_id', 'userId'],
         [fn('SUM', col(dbColumn)), 'total']
       ],
       include: [
@@ -106,13 +106,13 @@ export const getLeaderboard = async (ctx: Context) => {
           attributes: []
         }
       ],
-      group: ['userId', 'MatchStatistic.id'],
+      group: ['user_id', 'MatchStatistics.id'],
       order: [[literal('total'), 'DESC']],
       limit: 10,
       raw: false
     });
 
-    const playerIds = statsGrouped.map((s: any) => s.userId);
+    const playerIds = statsGrouped.map((s: any) => s.get('userId') || s.user_id);
     const users = await models.User.findAll({
       where: {
         id: playerIds,
@@ -124,11 +124,12 @@ export const getLeaderboard = async (ctx: Context) => {
     const userMap = new Map(users.map(u => [u.id, u]));
     const players = statsGrouped
       .map((s: any) => {
-        const user = userMap.get(s.userId);
+        const odUserId = s.get('userId') || s.user_id;
+        const user = userMap.get(odUserId);
         if (!user) return null;
         if (positionType && user.positionType !== positionType) return null;
         return {
-          id: s.userId,
+          id: odUserId,
           name: `${user.firstName} ${user.lastName}`,
           profilePicture: user.profilePicture,
           position: user.position,
