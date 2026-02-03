@@ -406,7 +406,7 @@ export const getLeagueById = async (ctx: Context) => {
   try {
     const league = await League.findByPk(id, {
       include: [
-        { model: User, as: 'members', attributes: ['id', 'firstName', 'lastName', 'profilePicture', 'position', 'positionType', 'xp', 'shirtNumber'] },
+        { model: User, as: 'members', attributes: ['id', 'firstName', 'lastName', 'profilePicture', 'position', 'positionType', 'xp', 'shirtNumber', 'style'] },
         { model: User, as: 'administeredLeagues', attributes: ['id'] },
         {
           model: Season,
@@ -416,7 +416,7 @@ export const getLeagueById = async (ctx: Context) => {
             {
               model: User,
               as: 'players',
-              attributes: ['id', 'firstName', 'lastName', 'profilePicture', 'position', 'positionType', 'xp', 'shirtNumber'],
+              attributes: ['id', 'firstName', 'lastName', 'profilePicture', 'position', 'positionType', 'xp', 'shirtNumber', 'style'],
               through: { attributes: [] } // Don't include join table data
             }
           ]
