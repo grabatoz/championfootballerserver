@@ -469,6 +469,37 @@ export const getLeagueById = async (ctx: Context) => {
         console.log(`   - ${m.homeTeamName} vs ${m.awayTeamName} | seasonId: ${m.seasonId}`);
       });
 
+      // Fetch availability data for all matches in this league
+      const matchIds = matches.map((m: any) => m.id);
+      const availabilityRecords = await MatchAvailability.findAll({
+        where: {
+          match_id: matchIds,
+          status: 'available' // Only get users who are AVAILABLE
+        }
+      });
+
+      // Get all user IDs who are available
+      const availableUserIds = [...new Set(availabilityRecords.map((a: any) => a.user_id))];
+      const availableUsersData = await User.findAll({
+        where: { id: availableUserIds },
+        attributes: ['id', 'firstName', 'lastName', 'profilePicture']
+      });
+
+      // Create a map of userId -> user data
+      const userMap = new Map(availableUsersData.map((u: any) => [u.id, u.toJSON()]));
+
+      // Create a map of matchId -> available users
+      const matchAvailabilityMap: Record<string, any[]> = {};
+      availabilityRecords.forEach((a: any) => {
+        if (!matchAvailabilityMap[a.match_id]) {
+          matchAvailabilityMap[a.match_id] = [];
+        }
+        const userData = userMap.get(a.user_id);
+        if (userData) {
+          matchAvailabilityMap[a.match_id].push(userData);
+        }
+      });
+
       // Add matchNumber and process votes for each match
       const matchesWithNumbers = matches.map((match: any, index: number) => {
         const matchJson = match.toJSON();
@@ -485,7 +516,8 @@ export const getLeagueById = async (ctx: Context) => {
         return {
           ...matchJson,
           matchNumber: index + 1,
-          manOfTheMatchVotes
+          manOfTheMatchVotes,
+          availableUsers: matchAvailabilityMap[match.id] || [] // Add available users
         };
       });
 
@@ -596,6 +628,37 @@ export const getLeagueById = async (ctx: Context) => {
       console.log(`   - ${m.homeTeamName} vs ${m.awayTeamName} | seasonId: ${m.seasonId}`);
     });
 
+    // Fetch availability data for all matches
+    const matchIds = matches.map((m: any) => m.id);
+    const availabilityRecords = await MatchAvailability.findAll({
+      where: {
+        match_id: matchIds,
+        status: 'available' // Only get users who are AVAILABLE
+      }
+    });
+
+    // Get all user IDs who are available
+    const availableUserIds = [...new Set(availabilityRecords.map((a: any) => a.user_id))];
+    const availableUsersData = await User.findAll({
+      where: { id: availableUserIds },
+      attributes: ['id', 'firstName', 'lastName', 'profilePicture']
+    });
+
+    // Create a map of userId -> user data
+    const userMap = new Map(availableUsersData.map((u: any) => [u.id, u.toJSON()]));
+
+    // Create a map of matchId -> available users
+    const matchAvailabilityMap: Record<string, any[]> = {};
+    availabilityRecords.forEach((a: any) => {
+      if (!matchAvailabilityMap[a.match_id]) {
+        matchAvailabilityMap[a.match_id] = [];
+      }
+      const userData = userMap.get(a.user_id);
+      if (userData) {
+        matchAvailabilityMap[a.match_id].push(userData);
+      }
+    });
+
     // Add matchNumber and process votes for each match
     const matchesWithNumbers = matches.map((match: any, index: number) => {
       const matchJson = match.toJSON();
@@ -612,7 +675,8 @@ export const getLeagueById = async (ctx: Context) => {
       return {
         ...matchJson,
         matchNumber: index + 1,
-        manOfTheMatchVotes
+        manOfTheMatchVotes,
+        availableUsers: matchAvailabilityMap[match.id] || [] // Add available users
       };
     });
 

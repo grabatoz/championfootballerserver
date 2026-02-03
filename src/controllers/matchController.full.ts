@@ -408,11 +408,23 @@ export const setMatchAvailability = async (ctx: Context) => {
 
   const { matchId } = ctx.params;
   const userId = ctx.state.user.userId;
-  const { available } = ctx.request.body as { available: boolean };
-
-  if (typeof available !== 'boolean') {
-    ctx.throw(400, 'available must be a boolean');
-    return;
+  const body = ctx.request.body as { available?: boolean | string };
+  
+  // Check for action in query params first (client sends ?action=available or ?action=unavailable)
+  const actionQuery = ctx.query.action as string | undefined;
+  
+  // Handle both query param and body
+  let available: boolean;
+  if (actionQuery) {
+    // Query param takes precedence
+    available = actionQuery.toLowerCase() === 'available';
+  } else if (typeof body.available === 'boolean') {
+    available = body.available;
+  } else if (typeof body.available === 'string') {
+    available = body.available.toLowerCase() === 'true' || body.available.toLowerCase() === 'available';
+  } else {
+    // Default to true if nothing provided
+    available = true;
   }
 
   try {
