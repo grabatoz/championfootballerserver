@@ -602,7 +602,7 @@ export const submitMatchStats = async (ctx: Context) => {
         cleanSheets: verifyStats?.cleanSheets
       });
 
-      // 🎮 IMMEDIATELY AWARD XP when stats are submitted
+      // 🎮 IMMEDIATELY AWARD XP when stats are submitted (or UPDATE if stats changed)
       try {
         const homeTeamUserIds = await sequelize.query<{ userId: string }>(
           `SELECT DISTINCT "userId" FROM "UserHomeMatches" WHERE "matchId" = :matchId`,
@@ -623,32 +623,32 @@ export const submitMatchStats = async (ctx: Context) => {
         else if (isAway && awayGoals > homeGoals) teamResult = 'win';
         else if (homeGoals === awayGoals) teamResult = 'draw';
         
-        let xpToAward = 0;
+        let newXpToAward = 0;
         const breakdown: string[] = [];
         
         // Win/Draw/Loss
         if (teamResult === 'win') {
-          xpToAward += xpPointsTable.winningTeam;
+          newXpToAward += xpPointsTable.winningTeam;
           breakdown.push(`Win: +${xpPointsTable.winningTeam}`);
         } else if (teamResult === 'draw') {
-          xpToAward += xpPointsTable.draw;
+          newXpToAward += xpPointsTable.draw;
           breakdown.push(`Draw: +${xpPointsTable.draw}`);
         } else {
-          xpToAward += xpPointsTable.losingTeam;
+          newXpToAward += xpPointsTable.losingTeam;
           breakdown.push(`Loss: +${xpPointsTable.losingTeam}`);
         }
         
         // Goals
         if (stat.goals > 0) {
           const goalXP = (teamResult === 'win' ? xpPointsTable.goal.win : xpPointsTable.goal.lose) * stat.goals;
-          xpToAward += goalXP;
+          newXpToAward += goalXP;
           breakdown.push(`Goals (${stat.goals}): +${goalXP}`);
         }
         
         // Assists
         if (stat.assists > 0) {
           const assistXP = (teamResult === 'win' ? xpPointsTable.assist.win : xpPointsTable.assist.lose) * stat.assists;
-          xpToAward += assistXP;
+          newXpToAward += assistXP;
           breakdown.push(`Assists (${stat.assists}): +${assistXP}`);
         }
         
@@ -656,51 +656,93 @@ export const submitMatchStats = async (ctx: Context) => {
         const cleanSheets = stat.cleanSheets || stat.cleanSheet || 0;
         if (cleanSheets > 0) {
           const cleanSheetXP = xpPointsTable.cleanSheet * cleanSheets;
-          xpToAward += cleanSheetXP;
+          newXpToAward += cleanSheetXP;
           breakdown.push(`Clean Sheets (${cleanSheets}): +${cleanSheetXP}`);
         }
         
         console.log(`🎮 XP CALCULATION for user ${userId}:`);
         console.log(`   Team Result: ${teamResult.toUpperCase()}`);
         console.log(`   Breakdown: ${breakdown.join(', ')}`);
-        console.log(`   Total XP to award: +${xpToAward}`);
+        console.log(`   New XP to award: +${newXpToAward}`);
         
-        // 💰 IMMEDIATELY UPDATE USER XP IN DATABASE
-        // Get current XP
-        const userResult = await sequelize.query<{ id: string; firstName: string; xp: number }>(
-          `SELECT id, "firstName", xp FROM users WHERE id = :userId`,
-          { replacements: { userId }, type: QueryTypes.SELECT }
+        // 💰 CHECK IF XP WAS ALREADY AWARDED (for stat updates)
+        // Table name is "match_statistics" (snake_case) in database
+        console.log(`🔍 Checking existing XP for matchId=${matchId}, userId=${userId}`);
+        
+        const existingXPResult = await sequelize.query(
+          `SELECT xp_awarded FROM match_statistics WHERE match_id = $1 AND user_id = $2`,
+          { bind: [matchId, userId], type: QueryTypes.SELECT }
         );
         
+        console.log(`🔍 Existing XP Query Result:`, JSON.stringify(existingXPResult));
+        
+        const previouslyAwardedXP = (existingXPResult[0] as any)?.xp_awarded || 0;
+        const xpDifference = newXpToAward - previouslyAwardedXP;
+        
+        console.log(`📊 XP UPDATE CHECK:`);
+        console.log(`   Previously awarded XP: ${previouslyAwardedXP}`);
+        console.log(`   New XP to award: ${newXpToAward}`);
+        console.log(`   Difference (to add/subtract): ${xpDifference > 0 ? '+' : ''}${xpDifference}`);
+        
+        // Get current user XP
+        const userResult = await sequelize.query(
+          `SELECT id, "firstName", xp FROM users WHERE id = $1`,
+          { bind: [userId], type: QueryTypes.SELECT }
+        );
+        
+        console.log(`🔍 User Query Result:`, JSON.stringify(userResult));
+        
         if (userResult.length > 0) {
-          const oldXP = userResult[0].xp || 0;
-          const newXP = oldXP + xpToAward;
+          const user = userResult[0] as any;
+          const currentXP = user.xp || 0;
+          const finalXP = Math.max(0, currentXP + xpDifference); // Ensure XP doesn't go negative
           
-          // Update user XP using raw SQL
-          await sequelize.query(
-            `UPDATE users SET xp = :newXP WHERE id = :userId`,
-            { replacements: { newXP, userId } }
+          console.log(`📝 Updating user XP: ${currentXP} + (${xpDifference}) = ${finalXP}`);
+          
+          // Update user XP using raw SQL (add or subtract the difference)
+          const updateUserResult = await sequelize.query(
+            `UPDATE users SET xp = $1 WHERE id = $2 RETURNING xp`,
+            { bind: [finalXP, userId], type: QueryTypes.UPDATE }
           );
+          console.log(`📝 User XP Update Result:`, JSON.stringify(updateUserResult));
           
-          // Update MatchStatistics with xpAwarded
-          await sequelize.query(
-            `UPDATE "MatchStatistics" SET "xpAwarded" = :xp WHERE match_id = :matchId AND user_id = :userId`,
-            { replacements: { xp: xpToAward, matchId, userId } }
+          // Update match_statistics with new xp_awarded value
+          const updateStatsResult = await sequelize.query(
+            `UPDATE match_statistics SET xp_awarded = $1 WHERE match_id = $2 AND user_id = $3 RETURNING xp_awarded`,
+            { bind: [newXpToAward, matchId, userId], type: QueryTypes.UPDATE }
           );
+          console.log(`📝 match_statistics Update Result:`, JSON.stringify(updateStatsResult));
           
-          console.log(`💰 XP AWARDED IMMEDIATELY! User ${userId} (${userResult[0].firstName}): +${xpToAward} XP`);
-          console.log(`   Total XP: ${oldXP} → ${newXP}`);
+          if (xpDifference > 0) {
+            console.log(`💰 XP ADDED! User ${userId} (${user.firstName}): +${xpDifference} XP`);
+          } else if (xpDifference < 0) {
+            console.log(`📉 XP REDUCED! User ${userId} (${user.firstName}): ${xpDifference} XP`);
+          } else {
+            console.log(`⚖️ XP UNCHANGED! User ${userId} (${user.firstName}): No change`);
+          }
+          console.log(`   Total XP: ${currentXP} → ${finalXP}`);
           
-          // Verify
-          const verifyXP = await sequelize.query<{ xp: number }>(
-            `SELECT xp FROM users WHERE id = :userId`,
-            { replacements: { userId }, type: QueryTypes.SELECT }
+          // Verify both tables
+          const verifyUser = await sequelize.query(
+            `SELECT xp FROM users WHERE id = $1`,
+            { bind: [userId], type: QueryTypes.SELECT }
           );
-          console.log(`   ✅ Verified in DB - User XP: ${verifyXP[0]?.xp}`);
+          const verifyStats = await sequelize.query(
+            `SELECT xp_awarded FROM match_statistics WHERE match_id = $1 AND user_id = $2`,
+            { bind: [matchId, userId], type: QueryTypes.SELECT }
+          );
+          console.log(`   ✅ VERIFIED - users.xp: ${(verifyUser[0] as any)?.xp}`);
+          console.log(`   ✅ VERIFIED - match_statistics.xp_awarded: ${(verifyStats[0] as any)?.xp_awarded}`);
+        } else {
+          console.log(`❌ User not found with id: ${userId}`);
         }
-      } catch (xpErr) {
-        console.error('⚠️ Could not award XP:', xpErr);
+      } catch (xpErr: any) {
+        console.error('⚠️ Could not award XP - FULL ERROR:', xpErr);
+        console.error('⚠️ Error message:', xpErr?.message);
+        console.error('⚠️ Error stack:', xpErr?.stack);
       }
+
+      console.log(`🏁 XP Processing complete for user ${userId}`);
 
       // Update cache
       try {
@@ -712,6 +754,7 @@ export const submitMatchStats = async (ctx: Context) => {
       } catch {}
     }
 
+    console.log(`✅ Stats submission complete - sending response`);
     ctx.body = { success: true, message: 'Stats submitted successfully' };
   } catch (err) {
     console.error('Submit stats error', err);

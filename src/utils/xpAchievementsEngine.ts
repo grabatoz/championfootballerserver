@@ -592,16 +592,16 @@ export async function awardXPForMatch(matchId: string) {
       xpBreakdown.push(`Captain Pick - Mentality: +${mentalityXP}`);
     }
 
-    // Update MatchStatistics with xpAwarded using raw SQL
+    // Update match_statistics with xp_awarded using raw SQL (snake_case table name)
     if (stat) {
       try {
         await sequelize.query(
-          `UPDATE "MatchStatistics" SET "xpAwarded" = :xp WHERE match_id = :matchId AND user_id = :userId`,
+          `UPDATE match_statistics SET xp_awarded = :xp WHERE match_id = :matchId AND user_id = :userId`,
           { replacements: { xp, matchId, userId: player.id } }
         );
-        console.log(`   📝 Updated MatchStatistics record with xpAwarded: ${xp}`);
+        console.log(`   📝 Updated match_statistics record with xp_awarded: ${xp}`);
       } catch (statErr) {
-        console.error(`   ❌ Failed to update MatchStatistics:`, statErr);
+        console.error(`   ❌ Failed to update match_statistics:`, statErr);
       }
     }
 
