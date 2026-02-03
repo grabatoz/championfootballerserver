@@ -322,8 +322,7 @@ export async function calculateAndAwardXPAchievements(userId: string, leagueId?:
       if (stat && stat.assists) xp += (teamResult === 'win' ? xpPointsTable.assist.win : xpPointsTable.assist.lose) * stat.assists;
       // Clean Sheets (Goalkeeper)
       if (stat && stat.cleanSheets) xp += xpPointsTable.cleanSheet * stat.cleanSheets;
-      // MOTM
-      if (motmId === player.id) xp += (teamResult === 'win' ? xpPointsTable.motm.win : xpPointsTable.motm.lose);
+      // MOTM Winner bonus removed - only individual votes count
       // MOTM Votes
       if (voteCounts[player.id]) xp += (teamResult === 'win' ? xpPointsTable.motmVote.win : xpPointsTable.motmVote.lose) * voteCounts[player.id];
       
@@ -564,12 +563,7 @@ export async function awardXPForMatch(matchId: string) {
       xpBreakdown.push(`Defence Impact (${defence}): +${defenceXP}`);
     }
 
-    // MOTM Winner
-    if (motmId === player.id) {
-      const motmXP = (teamResult === 'win' ? xpPointsTable.motm.win : xpPointsTable.motm.lose);
-      xp += motmXP;
-      xpBreakdown.push(`MOTM Winner: +${motmXP}`);
-    }
+    // MOTM Winner bonus removed - only individual votes count
 
     // MOTM Votes received
     if (voteCounts[player.id]) {

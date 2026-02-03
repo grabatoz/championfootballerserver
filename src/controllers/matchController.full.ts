@@ -153,7 +153,47 @@ export const voteForMotm = async (ctx: Context) => {
   const voterId = ctx.state.user.userId;
   const { votedForId } = ctx.request.body as { votedForId?: string | null };
 
+  // Get old vote to subtract XP from previous voted player
+  const oldVote = await Vote.findOne({ where: { matchId, voterId } });
+  const oldVotedForId = oldVote?.votedForId;
+
   if (!votedForId) {
+    // Removing vote - subtract XP from previously voted player
+    if (oldVotedForId) {
+      try {
+        const match = await Match.findByPk(matchId);
+        if (match) {
+          const homeGoals = match.homeTeamGoals ?? 0;
+          const awayGoals = match.awayTeamGoals ?? 0;
+          const homeTeamUserIds = await sequelize.query<{ userId: string }>(
+            `SELECT DISTINCT "userId" FROM "UserHomeMatches" WHERE "matchId" = $1`,
+            { bind: [matchId], type: QueryTypes.SELECT }
+          );
+          const awayTeamUserIds = await sequelize.query<{ userId: string }>(
+            `SELECT DISTINCT "userId" FROM "UserAwayMatches" WHERE "matchId" = $1`,
+            { bind: [matchId], type: QueryTypes.SELECT }
+          );
+          const isHome = homeTeamUserIds.some(u => String(u.userId) === String(oldVotedForId));
+          const isAway = awayTeamUserIds.some(u => String(u.userId) === String(oldVotedForId));
+          let teamResult: 'win' | 'draw' | 'lose' = 'lose';
+          if (isHome && homeGoals > awayGoals) teamResult = 'win';
+          else if (isAway && awayGoals > homeGoals) teamResult = 'win';
+          else if (homeGoals === awayGoals) teamResult = 'draw';
+          
+          const voteXP = teamResult === 'win' ? xpPointsTable.motmVote.win : xpPointsTable.motmVote.lose;
+          const userResult = await sequelize.query(
+            `SELECT id, "firstName", xp FROM users WHERE id = $1`,
+            { bind: [oldVotedForId], type: QueryTypes.SELECT }
+          );
+          if (userResult.length > 0) {
+            const user = userResult[0] as any;
+            const newXP = Math.max(0, (user.xp || 0) - voteXP);
+            await sequelize.query(`UPDATE users SET xp = $1 WHERE id = $2`, { bind: [newXP, oldVotedForId] });
+            console.log(`🗳️ Vote removed - ${user.firstName} lost -${voteXP} XP`);
+          }
+        }
+      } catch (e) { console.error('Error removing vote XP:', e); }
+    }
     await Vote.destroy({ where: { matchId, voterId } });
     try { cache.clearPattern(`match_votes_${matchId}_`); } catch {}
     ctx.status = 200;
@@ -165,8 +205,129 @@ export const voteForMotm = async (ctx: Context) => {
     ctx.throw(400, 'You cannot vote for yourself.');
   }
 
+  // If changing vote, subtract XP from old voted player first
+  if (oldVotedForId && oldVotedForId !== votedForId) {
+    try {
+      const match = await Match.findByPk(matchId);
+      if (match) {
+        const homeGoals = match.homeTeamGoals ?? 0;
+        const awayGoals = match.awayTeamGoals ?? 0;
+        const homeTeamUserIds = await sequelize.query<{ userId: string }>(
+          `SELECT DISTINCT "userId" FROM "UserHomeMatches" WHERE "matchId" = $1`,
+          { bind: [matchId], type: QueryTypes.SELECT }
+        );
+        const awayTeamUserIds = await sequelize.query<{ userId: string }>(
+          `SELECT DISTINCT "userId" FROM "UserAwayMatches" WHERE "matchId" = $1`,
+          { bind: [matchId], type: QueryTypes.SELECT }
+        );
+        const isHome = homeTeamUserIds.some(u => String(u.userId) === String(oldVotedForId));
+        const isAway = awayTeamUserIds.some(u => String(u.userId) === String(oldVotedForId));
+        let teamResult: 'win' | 'draw' | 'lose' = 'lose';
+        if (isHome && homeGoals > awayGoals) teamResult = 'win';
+        else if (isAway && awayGoals > homeGoals) teamResult = 'win';
+        else if (homeGoals === awayGoals) teamResult = 'draw';
+        
+        const voteXP = teamResult === 'win' ? xpPointsTable.motmVote.win : xpPointsTable.motmVote.lose;
+        const userResult = await sequelize.query(
+          `SELECT id, "firstName", xp FROM users WHERE id = $1`,
+          { bind: [oldVotedForId], type: QueryTypes.SELECT }
+        );
+        if (userResult.length > 0) {
+          const user = userResult[0] as any;
+          const newXP = Math.max(0, (user.xp || 0) - voteXP);
+          await sequelize.query(`UPDATE users SET xp = $1 WHERE id = $2`, { bind: [newXP, oldVotedForId] });
+          console.log(`🗳️ Vote changed - ${user.firstName} lost -${voteXP} XP`);
+        }
+      }
+    } catch (e) { console.error('Error removing old vote XP:', e); }
+  }
+
   await Vote.destroy({ where: { matchId, voterId } });
   await Vote.create({ matchId, voterId, votedForId });
+
+  console.log(`🗳️ Vote created - voterId: ${voterId}, votedForId: ${votedForId}, matchId: ${matchId}`);
+  console.log(`🗳️ Old vote was for: ${oldVotedForId || 'none'}`);
+
+  // 🗳️ Award XP to the voted player immediately (skip if same player)
+  if (!oldVotedForId || oldVotedForId !== votedForId) {
+    console.log(`🗳️ Processing XP award for ${votedForId}...`);
+    try {
+      const match = await Match.findByPk(matchId);
+      console.log(`🗳️ Match found: ${match ? 'YES' : 'NO'}`);
+      
+      if (match) {
+        // Determine if voted player's team won, lost, or drew
+        const homeGoals = match.homeTeamGoals ?? 0;
+        const awayGoals = match.awayTeamGoals ?? 0;
+        console.log(`🗳️ Score: Home ${homeGoals} - Away ${awayGoals}`);
+        
+        // Check if voted player is in home or away team
+        const homeTeamUserIds = await sequelize.query<{ userId: string }>(
+          `SELECT DISTINCT "userId" FROM "UserHomeMatches" WHERE "matchId" = $1`,
+          { bind: [matchId], type: QueryTypes.SELECT }
+        );
+        const awayTeamUserIds = await sequelize.query<{ userId: string }>(
+          `SELECT DISTINCT "userId" FROM "UserAwayMatches" WHERE "matchId" = $1`,
+          { bind: [matchId], type: QueryTypes.SELECT }
+        );
+        
+        console.log(`🗳️ Home team users: ${JSON.stringify(homeTeamUserIds)}`);
+        console.log(`🗳️ Away team users: ${JSON.stringify(awayTeamUserIds)}`);
+        
+        const isHome = homeTeamUserIds.some(u => String(u.userId) === String(votedForId));
+        const isAway = awayTeamUserIds.some(u => String(u.userId) === String(votedForId));
+        console.log(`🗳️ VotedFor isHome: ${isHome}, isAway: ${isAway}`);
+      
+        let teamResult: 'win' | 'draw' | 'lose' = 'lose';
+        if (isHome && homeGoals > awayGoals) teamResult = 'win';
+        else if (isAway && awayGoals > homeGoals) teamResult = 'win';
+        else if (homeGoals === awayGoals) teamResult = 'draw';
+        console.log(`🗳️ Team result: ${teamResult}`);
+        
+        // Award motmVote XP for this single vote
+        const voteXP = teamResult === 'win' ? xpPointsTable.motmVote.win : xpPointsTable.motmVote.lose;
+        console.log(`🗳️ Vote XP to award: ${voteXP}`);
+        
+        // Get current user XP and add vote XP
+        const userResult = await sequelize.query(
+          `SELECT id, "firstName", xp FROM users WHERE id = $1`,
+          { bind: [votedForId], type: QueryTypes.SELECT }
+        );
+        console.log(`🗳️ User query result: ${JSON.stringify(userResult)}`);
+        
+        if (userResult.length > 0) {
+          const user = userResult[0] as any;
+          const currentXP = user.xp || 0;
+          const newXP = currentXP + voteXP;
+          
+          console.log(`🗳️ Updating user XP: ${currentXP} + ${voteXP} = ${newXP}`);
+          
+          const updateResult = await sequelize.query(
+            `UPDATE users SET xp = $1 WHERE id = $2 RETURNING id, xp`,
+            { bind: [newXP, votedForId], type: QueryTypes.UPDATE }
+          );
+          console.log(`🗳️ Update result: ${JSON.stringify(updateResult)}`);
+          
+          // Verify the update
+          const verifyResult = await sequelize.query(
+            `SELECT id, "firstName", xp FROM users WHERE id = $1`,
+            { bind: [votedForId], type: QueryTypes.SELECT }
+          );
+          console.log(`🗳️ VERIFIED - User XP after update: ${JSON.stringify(verifyResult)}`);
+          
+          console.log(`✅ MOTM Vote XP awarded! ${user.firstName} received +${voteXP} XP (${currentXP} → ${newXP})`);
+        } else {
+          console.log(`❌ User not found with id: ${votedForId}`);
+        }
+      }
+    } catch (voteXpErr: any) {
+      console.error('⚠️ Error awarding vote XP:', voteXpErr);
+      console.error('⚠️ Error message:', voteXpErr?.message);
+      console.error('⚠️ Error stack:', voteXpErr?.stack);
+    }
+  } else {
+    console.log(`🗳️ Skipping XP - same player voted again`);
+  }
 
   try {
     const match = await Match.findByPk(matchId);
@@ -660,7 +821,41 @@ export const submitMatchStats = async (ctx: Context) => {
           breakdown.push(`Clean Sheets (${cleanSheets}): +${cleanSheetXP}`);
         }
         
-        // 🏆 CAPTAIN PICKS XP - Check if this user was selected for captain picks
+        // � MOTM (Man of the Match) XP - Check votes received by this user
+        try {
+          // Get all votes for this match where this user was voted for
+          const votesResult = await sequelize.query(
+            `SELECT COUNT(*) as vote_count FROM "Votes" WHERE "matchId" = $1 AND "votedForId" = $2`,
+            { bind: [matchId, userId], type: QueryTypes.SELECT }
+          );
+          
+          const voteCount = parseInt((votesResult[0] as any)?.vote_count || '0', 10);
+          
+          if (voteCount > 0) {
+            // Individual vote XP (motmVote) - XP for each vote received
+            const voteXP = (teamResult === 'win' ? xpPointsTable.motmVote.win : xpPointsTable.motmVote.lose) * voteCount;
+            newXpToAward += voteXP;
+            breakdown.push(`MOTM Votes (${voteCount}): +${voteXP}`);
+            console.log(`🗳️ User ${userId} received ${voteCount} MOTM votes - +${voteXP} XP`);
+            
+            // Check if this user has the MOST votes (is the actual MOTM winner)
+            const mostVotesResult = await sequelize.query(
+              `SELECT "votedForId", COUNT(*) as vote_count 
+               FROM "Votes" 
+               WHERE "matchId" = $1 
+               GROUP BY "votedForId" 
+               ORDER BY vote_count DESC 
+               LIMIT 1`,
+              { bind: [matchId], type: QueryTypes.SELECT }
+            );
+            
+            // MOTM Winner bonus removed - only individual votes count
+          }
+        } catch (motmErr) {
+          console.error('⚠️ Error checking MOTM votes:', motmErr);
+        }
+        
+        // �🏆 CAPTAIN PICKS XP - Check if this user was selected for captain picks
         try {
           // Get captain picks for this match (both home and away teams)
           // Table name is "Matches" (with capital M) in database
@@ -1403,6 +1598,311 @@ export const submitMatchPrediction = async (ctx: Context) => {
     console.error('Submit prediction error', err);
     ctx.status = 500;
     ctx.body = { success: false, message: 'Failed to submit prediction' };
+  }
+};
+
+// ============================================================================
+// DEBUG: Get XP breakdown for a match - shows who got what XP and why
+// ============================================================================
+export const getMatchXPBreakdown = async (ctx: Context) => {
+  const { matchId } = ctx.params;
+  
+  console.log('📊 [XP DEBUG] Getting XP breakdown for match:', matchId);
+  
+  try {
+    // 1. Get match details
+    const match = await sequelize.query(`
+      SELECT m.id, m."homeTeamGoals", m."awayTeamGoals", m.status,
+             m."homeCaptainId", m."awayCaptainId",
+             m."homeDefensiveImpactId", m."awayDefensiveImpactId",
+             m."homeMentalityId", m."awayMentalityId",
+             m."homeTeamName", m."awayTeamName"
+      FROM "Matches" m
+      WHERE m.id = :matchId
+    `, {
+      replacements: { matchId },
+      type: QueryTypes.SELECT
+    });
+    
+    if (!match || match.length === 0) {
+      ctx.status = 404;
+      ctx.body = { success: false, message: 'Match not found' };
+      return;
+    }
+    
+    const matchData = match[0] as any;
+    console.log('📊 [XP DEBUG] Match data:', matchData);
+    
+    // 2. Determine match result
+    const homeGoals = matchData.homeTeamGoals || 0;
+    const awayGoals = matchData.awayTeamGoals || 0;
+    let matchResult = 'draw';
+    if (homeGoals > awayGoals) matchResult = 'home_win';
+    else if (awayGoals > homeGoals) matchResult = 'away_win';
+    
+    // 3. Get all match statistics for this match
+    const stats = await sequelize.query(`
+      SELECT ms.*, u."firstName", u."lastName", u.xp as "currentUserXP"
+      FROM match_statistics ms
+      JOIN users u ON ms."userId" = u.id
+      WHERE ms."matchId" = :matchId
+    `, {
+      replacements: { matchId },
+      type: QueryTypes.SELECT
+    });
+    
+    console.log('📊 [XP DEBUG] Found stats for', stats.length, 'players');
+    
+    // 4. Get home and away team users
+    const homeUsers = await sequelize.query(`
+      SELECT u.id, u."firstName", u."lastName", u.xp
+      FROM users u
+      JOIN "UserHomeMatches" uhm ON u.id = uhm."userId"
+      WHERE uhm."matchId" = :matchId
+    `, {
+      replacements: { matchId },
+      type: QueryTypes.SELECT
+    });
+    
+    const awayUsers = await sequelize.query(`
+      SELECT u.id, u."firstName", u."lastName", u.xp
+      FROM users u
+      JOIN "UserAwayMatches" uam ON u.id = uam."userId"
+      WHERE uam."matchId" = :matchId
+    `, {
+      replacements: { matchId },
+      type: QueryTypes.SELECT
+    });
+    
+    // 5. Get MOTM votes
+    const votes = await sequelize.query(`
+      SELECT v.*, 
+             voter."firstName" as "voterFirstName", voter."lastName" as "voterLastName",
+             voted."firstName" as "votedFirstName", voted."lastName" as "votedLastName"
+      FROM "Votes" v
+      JOIN users voter ON v."voterId" = voter.id
+      JOIN users voted ON v."votedForId" = voted.id
+      WHERE v."matchId" = :matchId
+    `, {
+      replacements: { matchId },
+      type: QueryTypes.SELECT
+    });
+    
+    // 6. Count votes per player
+    const voteCountMap: Record<string, number> = {};
+    for (const v of votes as any[]) {
+      const votedId = String(v.votedForId);
+      voteCountMap[votedId] = (voteCountMap[votedId] || 0) + 1;
+    }
+    
+    // Find MOTM winner (most votes)
+    let motmWinnerId: string | null = null;
+    let maxVotes = 0;
+    for (const [userId, count] of Object.entries(voteCountMap)) {
+      if (count > maxVotes) {
+        maxVotes = count;
+        motmWinnerId = userId;
+      }
+    }
+    
+    // 7. XP Points Table (hardcoded for reference)
+    const xpTable = {
+      winningTeam: 30,
+      draw: 15,
+      losingTeam: 10,
+      cleanSheet: 5,
+      goal: { win: 3, lose: 2 },
+      assist: { win: 2, lose: 1 },
+      motmVote: { win: 2, lose: 1 },
+      defensiveImpact: { win: 2, lose: 1 },
+      mentality: { win: 2, lose: 2 }
+    };
+    
+    // 8. Build detailed breakdown for each player
+    const playerBreakdown: any[] = [];
+    
+    // Process home team
+    for (const user of homeUsers as any[]) {
+      const userId = String(user.id);
+      const playerStats = (stats as any[]).find(s => String(s.userId) === userId);
+      const isWinningTeam = matchResult === 'home_win';
+      const isLosingTeam = matchResult === 'away_win';
+      const isDraw = matchResult === 'draw';
+      
+      const breakdown: any = {
+        id: userId,
+        name: `${user.firstName} ${user.lastName}`,
+        team: 'home',
+        currentXP: user.xp,
+        xpAwardedInMatch: playerStats?.xp_awarded || 0,
+        stats: playerStats ? {
+          goals: playerStats.goals || 0,
+          assists: playerStats.assists || 0,
+          cleanSheets: playerStats.cleanSheets || 0
+        } : null,
+        xpBreakdown: {
+          teamResult: {
+            type: isWinningTeam ? 'WIN' : (isDraw ? 'DRAW' : 'LOSS'),
+            xp: isWinningTeam ? xpTable.winningTeam : (isDraw ? xpTable.draw : xpTable.losingTeam)
+          },
+          goals: playerStats ? {
+            count: playerStats.goals || 0,
+            xpPerGoal: isWinningTeam ? xpTable.goal.win : xpTable.goal.lose,
+            totalXP: (playerStats.goals || 0) * (isWinningTeam ? xpTable.goal.win : xpTable.goal.lose)
+          } : null,
+          assists: playerStats ? {
+            count: playerStats.assists || 0,
+            xpPerAssist: isWinningTeam ? xpTable.assist.win : xpTable.assist.lose,
+            totalXP: (playerStats.assists || 0) * (isWinningTeam ? xpTable.assist.win : xpTable.assist.lose)
+          } : null,
+          cleanSheets: playerStats ? {
+            count: playerStats.cleanSheets || 0,
+            xpPerCleanSheet: xpTable.cleanSheet,
+            totalXP: (playerStats.cleanSheets || 0) * xpTable.cleanSheet
+          } : null,
+          motmVotes: {
+            received: voteCountMap[userId] || 0,
+            xpPerVote: isWinningTeam ? xpTable.motmVote.win : xpTable.motmVote.lose,
+            totalXP: (voteCountMap[userId] || 0) * (isWinningTeam ? xpTable.motmVote.win : xpTable.motmVote.lose)
+          },
+          captainPicks: {
+            defensiveImpact: String(matchData.homeDefensiveImpactId) === userId ? {
+              selected: true,
+              xp: isWinningTeam ? xpTable.defensiveImpact.win : xpTable.defensiveImpact.lose
+            } : null,
+            mentality: String(matchData.homeMentalityId) === userId ? {
+              selected: true,
+              xp: isWinningTeam ? xpTable.mentality.win : xpTable.mentality.lose
+            } : null
+          }
+        },
+        calculatedTotalXP: 0
+      };
+      
+      // Calculate total
+      let total = breakdown.xpBreakdown.teamResult.xp;
+      if (breakdown.xpBreakdown.goals) total += breakdown.xpBreakdown.goals.totalXP;
+      if (breakdown.xpBreakdown.assists) total += breakdown.xpBreakdown.assists.totalXP;
+      if (breakdown.xpBreakdown.cleanSheets) total += breakdown.xpBreakdown.cleanSheets.totalXP;
+      total += breakdown.xpBreakdown.motmVotes.totalXP;
+      if (breakdown.xpBreakdown.captainPicks.defensiveImpact) total += breakdown.xpBreakdown.captainPicks.defensiveImpact.xp;
+      if (breakdown.xpBreakdown.captainPicks.mentality) total += breakdown.xpBreakdown.captainPicks.mentality.xp;
+      breakdown.calculatedTotalXP = total;
+      
+      playerBreakdown.push(breakdown);
+    }
+    
+    // Process away team
+    for (const user of awayUsers as any[]) {
+      const userId = String(user.id);
+      const playerStats = (stats as any[]).find(s => String(s.userId) === userId);
+      const isWinningTeam = matchResult === 'away_win';
+      const isLosingTeam = matchResult === 'home_win';
+      const isDraw = matchResult === 'draw';
+      
+      const breakdown: any = {
+        id: userId,
+        name: `${user.firstName} ${user.lastName}`,
+        team: 'away',
+        currentXP: user.xp,
+        xpAwardedInMatch: playerStats?.xp_awarded || 0,
+        stats: playerStats ? {
+          goals: playerStats.goals || 0,
+          assists: playerStats.assists || 0,
+          cleanSheets: playerStats.cleanSheets || 0
+        } : null,
+        xpBreakdown: {
+          teamResult: {
+            type: isWinningTeam ? 'WIN' : (isDraw ? 'DRAW' : 'LOSS'),
+            xp: isWinningTeam ? xpTable.winningTeam : (isDraw ? xpTable.draw : xpTable.losingTeam)
+          },
+          goals: playerStats ? {
+            count: playerStats.goals || 0,
+            xpPerGoal: isWinningTeam ? xpTable.goal.win : xpTable.goal.lose,
+            totalXP: (playerStats.goals || 0) * (isWinningTeam ? xpTable.goal.win : xpTable.goal.lose)
+          } : null,
+          assists: playerStats ? {
+            count: playerStats.assists || 0,
+            xpPerAssist: isWinningTeam ? xpTable.assist.win : xpTable.assist.lose,
+            totalXP: (playerStats.assists || 0) * (isWinningTeam ? xpTable.assist.win : xpTable.assist.lose)
+          } : null,
+          cleanSheets: playerStats ? {
+            count: playerStats.cleanSheets || 0,
+            xpPerCleanSheet: xpTable.cleanSheet,
+            totalXP: (playerStats.cleanSheets || 0) * xpTable.cleanSheet
+          } : null,
+          motmVotes: {
+            received: voteCountMap[userId] || 0,
+            xpPerVote: isWinningTeam ? xpTable.motmVote.win : xpTable.motmVote.lose,
+            totalXP: (voteCountMap[userId] || 0) * (isWinningTeam ? xpTable.motmVote.win : xpTable.motmVote.lose)
+          },
+          captainPicks: {
+            defensiveImpact: String(matchData.awayDefensiveImpactId) === userId ? {
+              selected: true,
+              xp: isWinningTeam ? xpTable.defensiveImpact.win : xpTable.defensiveImpact.lose
+            } : null,
+            mentality: String(matchData.awayMentalityId) === userId ? {
+              selected: true,
+              xp: isWinningTeam ? xpTable.mentality.win : xpTable.mentality.lose
+            } : null
+          }
+        },
+        calculatedTotalXP: 0
+      };
+      
+      // Calculate total
+      let total = breakdown.xpBreakdown.teamResult.xp;
+      if (breakdown.xpBreakdown.goals) total += breakdown.xpBreakdown.goals.totalXP;
+      if (breakdown.xpBreakdown.assists) total += breakdown.xpBreakdown.assists.totalXP;
+      if (breakdown.xpBreakdown.cleanSheets) total += breakdown.xpBreakdown.cleanSheets.totalXP;
+      total += breakdown.xpBreakdown.motmVotes.totalXP;
+      if (breakdown.xpBreakdown.captainPicks.defensiveImpact) total += breakdown.xpBreakdown.captainPicks.defensiveImpact.xp;
+      if (breakdown.xpBreakdown.captainPicks.mentality) total += breakdown.xpBreakdown.captainPicks.mentality.xp;
+      breakdown.calculatedTotalXP = total;
+      
+      playerBreakdown.push(breakdown);
+    }
+    
+    ctx.body = {
+      success: true,
+      matchId,
+      matchInfo: {
+        homeTeam: matchData.homeTeamName,
+        awayTeam: matchData.awayTeamName,
+        homeGoals,
+        awayGoals,
+        result: matchResult,
+        status: matchData.status,
+        homeCaptainId: matchData.homeCaptainId,
+        awayCaptainId: matchData.awayCaptainId,
+        captainPicks: {
+          homeDefensiveImpactId: matchData.homeDefensiveImpactId,
+          awayDefensiveImpactId: matchData.awayDefensiveImpactId,
+          homeMentalityId: matchData.homeMentalityId,
+          awayMentalityId: matchData.awayMentalityId
+        }
+      },
+      xpPointsTable: xpTable,
+      // motmWinner removed - only individual votes count
+      votes: votes,
+      voteCountByPlayer: voteCountMap,
+      homeTeamPlayers: homeUsers,
+      awayTeamPlayers: awayUsers,
+      playerXPBreakdown: playerBreakdown,
+      summary: {
+        totalPlayersWithStats: stats.length,
+        totalVotes: (votes as any[]).length
+      }
+    };
+    
+  } catch (err) {
+    console.error('📊 [XP DEBUG] Error:', err);
+    ctx.status = 500;
+    ctx.body = { 
+      success: false, 
+      message: 'Failed to get XP breakdown',
+      error: err instanceof Error ? err.message : String(err)
+    };
   }
 };
 

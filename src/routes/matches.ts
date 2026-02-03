@@ -8,6 +8,9 @@ const router = new Router({ prefix: '/matches' });
 // Create new match (automatically assigns to active season)
 router.post('/', required, matchController.createMatch);
 
+// DEBUG: Get XP breakdown for a match (shows who got what XP)
+router.get('/:matchId/xp-breakdown', required, matchController.getMatchXPBreakdown);
+
 // Vote for MOTM
 router.post('/:id/votes', required, matchController.voteForMotm);
 
