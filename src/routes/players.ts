@@ -21,6 +21,8 @@ router.get('/by-league', required, async (ctx) => {
       return;
     }
     const leagueId = typeof ctx.request.query?.leagueId === 'string' ? ctx.request.query.leagueId.trim() : '';
+    const seasonId = typeof ctx.request.query?.seasonId === 'string' ? ctx.request.query.seasonId.trim() : '';
+    
     if (!leagueId) {
       ctx.status = 400;
       ctx.body = { success: false, message: 'leagueId is required' };
@@ -50,7 +52,21 @@ router.get('/by-league', required, async (ctx) => {
       return;
     }
 
-    const members = ((league as any).members || []) as Array<any>;
+    let members = ((league as any).members || []) as Array<any>;
+    
+    // If seasonId is provided, filter members by season
+    if (seasonId && seasonId !== 'all') {
+      const season = await models.Season.findByPk(seasonId, {
+        include: [
+          { model: models.User, as: 'players', attributes: ['id'] }
+        ]
+      });
+      
+      if (season) {
+        const seasonPlayerIds = new Set(((season as any).players || []).map((p: any) => String(p.id)));
+        members = members.filter((m) => seasonPlayerIds.has(String(m.id)));
+      }
+    }
     
     // Filter out guest players (those without proper user accounts)
     // Real players have email and are properly registered users

@@ -3,6 +3,7 @@ import Router from 'koa-router';
 import { required } from '../modules/auth';
 import { upload } from '../middleware/upload';
 import * as leagueController from '../controllers/leagueController.full';
+import * as seasonController from '../controllers/seasonController';
 
 const router = new Router({ prefix: '/leagues' });
 
@@ -23,6 +24,13 @@ router.get('/:id/statistics', required, leagueController.getLeagueStatistics);
 
 // Get league XP for all members
 router.get('/:id/xp', required, leagueController.getLeagueXP);
+
+// Get all seasons for a league
+router.get('/:id/seasons', required, async (ctx) => {
+  // Map :id param to :leagueId for season controller
+  ctx.params.leagueId = ctx.params.id;
+  await seasonController.getAllSeasons(ctx);
+});
 
 // Create league (with optional image upload)
 router.post('/', required, upload.single('image'), leagueController.createLeague);

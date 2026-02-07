@@ -6,12 +6,14 @@ const { User, Match, MatchStatistics, Vote } = models;
 
 export const getDreamTeam = async (ctx: Context) => {
   const leagueId = ctx.query.leagueId as string | undefined;
+  const seasonId = ctx.query.seasonId as string | undefined;
+  
   if (!leagueId) {
     ctx.throw(400, 'leagueId is required');
     return;
   }
 
-  const cacheKey = `dreamteam_${leagueId}`;
+  const cacheKey = `dreamteam_${leagueId}_${seasonId || 'all'}`;
   const cached = cache.get(cacheKey);
   if (cached) { 
     ctx.body = cached; 
@@ -19,9 +21,11 @@ export const getDreamTeam = async (ctx: Context) => {
   }
 
   try {
-    // Get league and its members
+    // Get league and its members (optionally filtered by season)
+    const leagueInclude: any = [{ model: models.User, as: 'members' }];
+    
     const league = await models.League.findByPk(leagueId, {
-      include: [{ model: models.User, as: 'members' }]
+      include: leagueInclude
     });
     
     if (!league) {
@@ -29,9 +33,32 @@ export const getDreamTeam = async (ctx: Context) => {
       return;
     }
     
-    const memberIds = (league as any).members.map((m: any) => m.id);
+    let memberIds: string[];
+    
+    // If seasonId is provided, get members for that season
+    if (seasonId) {
+      const season = await models.Season.findOne({
+        where: { id: seasonId, leagueId },
+        include: [{ model: models.User, as: 'players' }]
+      });
+      
+      if (!season) {
+        ctx.throw(404, 'Season not found');
+        return;
+      }
+      
+      memberIds = (season as any).players?.map((m: any) => m.id) || [];
+    } else {
+      memberIds = (league as any).members.map((m: any) => m.id);
+    }
 
-    // Get users who are members of this league
+    // Build match where clause
+    const matchWhere: any = { status: 'RESULT_PUBLISHED', leagueId };
+    if (seasonId) {
+      matchWhere.seasonId = seasonId;
+    }
+
+    // Get users who are members of this league/season
     const users = await User.findAll({
       where: { id: memberIds },
       include: [
@@ -41,7 +68,7 @@ export const getDreamTeam = async (ctx: Context) => {
           include: [{
             model: Match,
             as: 'match',
-            where: { status: 'RESULT_PUBLISHED', leagueId },
+            where: matchWhere,
             include: [
               { model: User, as: 'homeTeamUsers', attributes: ['id'] },
               { model: User, as: 'awayTeamUsers', attributes: ['id'] }
@@ -50,11 +77,11 @@ export const getDreamTeam = async (ctx: Context) => {
         },
         {
           model: Vote,
-          as: 'votesReceived',
+          as: 'receivedVotes',
           include: [{
             model: Match,
             as: 'votedMatch',
-            where: { leagueId },
+            where: matchWhere,
             attributes: []
           }]
         }
@@ -69,7 +96,7 @@ export const getDreamTeam = async (ctx: Context) => {
       let totalRating = 0;
       let wins = 0;
       let matches = stats.length;
-      let motm = (user.votesReceived || []).length;
+      let motm = (user.receivedVotes || []).length;
 
       stats.forEach((stat: any) => {
         totalGoals += stat.goals || 0;
@@ -93,6 +120,8 @@ export const getDreamTeam = async (ctx: Context) => {
 
       return {
         id: user.id,
+        firstName: user.firstName,
+        lastName: user.lastName,
         name: `${user.firstName} ${user.lastName}`,
         position: user.position,
         positionType: user.positionType,
@@ -109,25 +138,37 @@ export const getDreamTeam = async (ctx: Context) => {
       };
     });
 
-    // Group by position type
-    const positions = {
-      Goalkeeper: playersWithScores.filter(p => p.positionType === 'Goalkeeper').sort((a, b) => b.score - a.score).slice(0, 1),
-      Defender: playersWithScores.filter(p => p.positionType === 'Defender').sort((a, b) => b.score - a.score).slice(0, 4),
-      Midfielder: playersWithScores.filter(p => p.positionType === 'Midfielder').sort((a, b) => b.score - a.score).slice(0, 3),
-      Forward: playersWithScores.filter(p => p.positionType === 'Forward').sort((a, b) => b.score - a.score).slice(0, 3)
+    // Group by position type - 1-1-1-2 formation for 5-a-side (1 GK, 1 defender, 1 midfielder, 2 forwards)
+    // Also check the position field as fallback if positionType is not set
+    const getPositionType = (player: any) => {
+      if (player.positionType) return player.positionType;
+      
+      // Fallback: check position field for keywords
+      const pos = (player.position || '').toLowerCase();
+      if (pos.includes('goalkeeper') || pos.includes('gk')) return 'Goalkeeper';
+      if (pos.includes('back') || pos.includes('defender') || pos.includes('cb') || pos.includes('rb') || pos.includes('lb')) return 'Defender';
+      if (pos.includes('midfield') || pos.includes('cm') || pos.includes('dm') || pos.includes('am') || pos.includes('cdm') || pos.includes('cam')) return 'Midfielder';
+      if (pos.includes('forward') || pos.includes('striker') || pos.includes('winger') || pos.includes('st') || pos.includes('cf') || pos.includes('lw') || pos.includes('rw')) return 'Forward';
+      
+      return 'Forward'; // Default to forward if unknown
     };
 
-    const dreamTeam = [
-      ...positions.Goalkeeper,
-      ...positions.Defender,
-      ...positions.Midfielder,
-      ...positions.Forward
-    ];
+    const positions = {
+      Goalkeeper: playersWithScores.filter(p => getPositionType(p) === 'Goalkeeper').sort((a, b) => b.score - a.score).slice(0, 1), // Top 1 goalkeeper
+      Defender: playersWithScores.filter(p => getPositionType(p) === 'Defender').sort((a, b) => b.score - a.score).slice(0, 1), // Top 1 defender
+      Midfielder: playersWithScores.filter(p => getPositionType(p) === 'Midfielder').sort((a, b) => b.score - a.score).slice(0, 1), // Top 1 midfielder
+      Forward: playersWithScores.filter(p => getPositionType(p) === 'Forward').sort((a, b) => b.score - a.score).slice(0, 2) // Top 2 forwards
+    };
 
     const result = {
       success: true,
-      dreamTeam,
-      formation: '1-4-3-3'
+      dreamTeam: {
+        goalkeeper: positions.Goalkeeper,
+        defenders: positions.Defender,
+        midfielders: positions.Midfielder,
+        forwards: positions.Forward
+      },
+      formation: '1-1-1-2' // 5-a-side: 1 GK, 1 DEF, 1 MID, 2 FWD
     };
 
     cache.set(cacheKey, result, 3600);

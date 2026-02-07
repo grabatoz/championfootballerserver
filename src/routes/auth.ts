@@ -3,6 +3,7 @@ import { transporter } from "../modules/sendEmail"
 import { none, required } from "../modules/auth"
 import models, { MatchAvailability } from "../models"
 import { User } from "../models/User";
+import Season from "../models/Season";
 import { hash, compare } from "bcrypt"
 import { getLoginCode } from "../modules/utils"
 import { Context } from "koa";
@@ -476,6 +477,12 @@ router.get("/auth/data", required, async (ctx: CustomContext) => {
                 as: 'members',
                 attributes: ['id', 'firstName', 'lastName', 'positionType', 'shirtNumber', 'profilePicture'],
                 through: { attributes: [] },
+              },
+              {
+                model: Season,
+                as: 'seasons',
+                attributes: ['id', 'name', 'seasonNumber', 'isActive', 'startDate', 'endDate', 'createdAt'],
+                required: false
               }
             ],
           },
@@ -490,6 +497,12 @@ router.get("/auth/data", required, async (ctx: CustomContext) => {
                 as: 'members',
                 attributes: ['id', 'firstName', 'lastName', 'positionType', 'shirtNumber', 'profilePicture'],
                 through: { attributes: [] },
+              },
+              {
+                model: Season,
+                as: 'seasons',
+                attributes: ['id', 'name', 'seasonNumber', 'isActive', 'startDate', 'endDate', 'createdAt'],
+                required: false
               }
             ],
           },
@@ -819,13 +832,29 @@ router.get("/auth/status", required, async (ctx: CustomContext) => {
             model: League,
             as: 'leagues',
             attributes: ['id', 'name', 'inviteCode', 'createdAt', 'updatedAt'],
-            through: { attributes: [] }
+            through: { attributes: [] },
+            include: [
+              {
+                model: Season,
+                as: 'seasons',
+                attributes: ['id', 'name', 'seasonNumber', 'isActive', 'startDate', 'endDate', 'createdAt'],
+                required: false
+              }
+            ]
           },
           {
             model: League,
             as: 'administeredLeagues',
             attributes: ['id', 'name', 'inviteCode', 'createdAt', 'updatedAt'],
-            through: { attributes: [] }
+            through: { attributes: [] },
+            include: [
+              {
+                model: Season,
+                as: 'seasons',
+                attributes: ['id', 'name', 'seasonNumber', 'isActive', 'startDate', 'endDate', 'createdAt'],
+                required: false
+              }
+            ]
           }
         ]
       }) as any;
