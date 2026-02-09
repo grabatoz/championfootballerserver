@@ -1,6 +1,6 @@
 import Router from '@koa/router';
 import { required } from '../modules/auth';
-import { getAllPlayers, getPlayerById, getPlayerStats, searchPlayers } from '../controllers/playerController';
+import { getAllPlayers, getPlayerById, getPlayerStats, searchPlayers, getPlayerProfile } from '../controllers/playerController';
 import models from '../models';
 import { Op } from 'sequelize';
 import sequelize from '../config/database';
@@ -169,6 +169,9 @@ router.get('/played-with', required, async (ctx) => {
     ctx.throw(500, 'Failed to fetch players.');
   }
 });
+
+// Get complete player profile (leagues, matches, stats)
+router.get('/:id/profile', required, getPlayerProfile);
 
 // Get player by ID
 router.get('/:id', required, getPlayerById);

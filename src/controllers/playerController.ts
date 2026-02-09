@@ -80,7 +80,7 @@ export const getPlayerById = async (ctx: Context) => {
 
 export const getPlayerStats = async (ctx: Context) => {
   const { id } = ctx.params;
-  const { leagueId } = ctx.query;
+  const { leagueId, year } = ctx.query;
 
   try {
     const statsQuery: any = {
@@ -89,11 +89,19 @@ export const getPlayerStats = async (ctx: Context) => {
         as: 'match',
         where: { status: 'RESULT_PUBLISHED' }
       }],
-      where: { userId: id }
+      where: { user_id: id }
     };
 
-    if (leagueId) {
+    // Only filter by leagueId if it's not "all" and is provided
+    if (leagueId && leagueId !== 'all') {
       statsQuery.include[0].where.leagueId = leagueId;
+    }
+
+    // Only filter by year if it's not "all" and is provided
+    if (year && year !== 'all') {
+      // Assuming match has a year field or we need to extract from date
+      // This can be refined based on your actual schema
+      statsQuery.include[0].where.year = year;
     }
 
     const stats = await MatchStatistics.findAll(statsQuery);
@@ -161,5 +169,117 @@ export const searchPlayers = async (ctx: Context) => {
   } catch (error) {
     console.error('Error searching players:', error);
     ctx.throw(500, 'Failed to search players.');
+  }
+};
+
+// GET COMPLETE PLAYER PROFILE WITH LEAGUES, MATCHES AND STATS
+export const getPlayerProfile = async (ctx: Context) => {
+  const { id } = ctx.params;
+  const { leagueId, year } = ctx.query;
+
+  try {
+    // 1. Get player basic info
+    const player = await UserModel.findByPk(id, {
+      attributes: ['id', 'firstName', 'lastName', 'profilePicture', 'xp', 'position', 'positionType', 'shirtNumber', 'email'],
+      include: [{
+        model: LeagueModel,
+        as: 'leagues',
+        attributes: ['id', 'name', 'image']
+      }]
+    });
+
+    if (!player) {
+      ctx.throw(404, 'Player not found');
+      return;
+    }
+
+    // 2. Get all match stats for this player
+    const statsQuery: any = {
+      include: [{
+        model: MatchModel,
+        as: 'match',
+        where: { status: 'RESULT_PUBLISHED' },
+        attributes: ['id', 'date', 'homeTeamName', 'awayTeamName', 'location', 'leagueId', 'end']
+      }],
+      where: { user_id: id },
+      attributes: ['id', 'goals', 'assists', 'cleanSheets', 'penalties', 'freeKicks', 'defence', 'impact', 'rating', 'match_id']
+    };
+
+    const allStats = await MatchStatistics.findAll(statsQuery);
+
+    // 3. Group matches by league
+    const leaguesMap = new Map();
+    const playerLeagues = (player as any).leagues || [];
+    
+    playerLeagues.forEach((league: any) => {
+      leaguesMap.set(league.id, {
+        id: league.id,
+        name: league.name,
+        matches: []
+      });
+    });
+
+    // Add matches with player stats to respective leagues
+    allStats.forEach((stat: any) => {
+      const match = stat.match;
+      if (!match) return;
+      
+      const leagueId = match.leagueId;
+      if (!leaguesMap.has(leagueId)) {
+        leaguesMap.set(leagueId, {
+          id: leagueId,
+          name: 'League',
+          matches: []
+        });
+      }
+
+      leaguesMap.get(leagueId).matches.push({
+        id: match.id,
+        date: match.date,
+        homeTeamName: match.homeTeamName,
+        awayTeamName: match.awayTeamName,
+        location: match.location,
+        end: match.end,
+        playerStats: {
+          goals: stat.goals || 0,
+          assists: stat.assists || 0,
+          cleanSheets: stat.cleanSheets || 0,
+          penalties: stat.penalties || 0,
+          freeKicks: stat.freeKicks || 0,
+          defence: stat.defence || 0,
+          impact: stat.impact || 0,
+          rating: stat.rating || 0
+        }
+      });
+    });
+
+    const leagues = Array.from(leaguesMap.values());
+
+    // 4. Build response
+    const response = {
+      success: true,
+      data: {
+        player: {
+          id: player.id,
+          name: `${player.firstName} ${player.lastName}`,
+          avatar: player.profilePicture,
+          profilePicture: player.profilePicture,
+          position: player.position,
+          positionType: player.positionType,
+          shirtNo: player.shirtNumber,
+          rating: player.xp || 0
+        },
+        leagues: leagues,
+        years: [...new Set(allStats.map((s: any) => new Date(s.match?.date).getFullYear()))].filter(Boolean),
+        currentStats: {},
+        accumulativeStats: {},
+        trophies: {}
+      }
+    };
+
+    ctx.body = response;
+  } catch (error) {
+    console.error('Error fetching player profile:', error);
+    ctx.throw(500, 'Failed to fetch player profile.');
   }
 };
