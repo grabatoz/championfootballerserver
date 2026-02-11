@@ -199,7 +199,26 @@ export const getPlayerProfile = async (ctx: Context) => {
         model: MatchModel,
         as: 'match',
         where: { status: 'RESULT_PUBLISHED' },
-        attributes: ['id', 'date', 'homeTeamName', 'awayTeamName', 'location', 'leagueId', 'end']
+        attributes: [
+          'id', 
+          'date', 
+          'homeTeamName', 
+          'awayTeamName', 
+          'location', 
+          'leagueId', 
+          'end',
+          'homeDefensiveImpactId',
+          'awayDefensiveImpactId',
+          'homeMentalityId',
+          'awayMentalityId',
+          'homeTeamGoals',
+          'awayTeamGoals'
+        ],
+        include: [{
+          model: Vote,
+          as: 'votes',
+          attributes: ['voterId', 'votedForId', 'matchId']
+        }]
       }],
       where: { user_id: id },
       attributes: ['id', 'goals', 'assists', 'cleanSheets', 'penalties', 'freeKicks', 'defence', 'impact', 'rating', 'match_id']
@@ -233,6 +252,13 @@ export const getPlayerProfile = async (ctx: Context) => {
         });
       }
 
+      console.log(`🔍 Match ${match.id} data:`, {
+        homeDefensiveImpactId: match.homeDefensiveImpactId,
+        awayDefensiveImpactId: match.awayDefensiveImpactId,
+        votesCount: match.votes?.length || 0,
+        votes: match.votes
+      });
+
       leaguesMap.get(leagueId).matches.push({
         id: match.id,
         date: match.date,
@@ -240,6 +266,13 @@ export const getPlayerProfile = async (ctx: Context) => {
         awayTeamName: match.awayTeamName,
         location: match.location,
         end: match.end,
+        homeDefensiveImpactId: match.homeDefensiveImpactId,
+        awayDefensiveImpactId: match.awayDefensiveImpactId,
+        homeMentalityId: match.homeMentalityId,
+        awayMentalityId: match.awayMentalityId,
+        homeTeamGoals: match.homeTeamGoals,
+        awayTeamGoals: match.awayTeamGoals,
+        votes: match.votes || [],
         playerStats: {
           goals: stat.goals || 0,
           assists: stat.assists || 0,
