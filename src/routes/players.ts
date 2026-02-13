@@ -448,16 +448,19 @@ router.get('/:id/xp', required, async (ctx) => {
   }
 });
 
-// Accumulative trophies for a player (normalized titles), optional league/year filters
-// GET /players/:id/trophies?leagueId=...&year=...
+// Accumulative trophies for a player (normalized titles), optional league/year/season filters
+// GET /players/:id/trophies?leagueId=...&year=...&seasonId=...
 router.get('/:id/trophies', required, async (ctx) => {
   try {
     const { id: playerId } = ctx.params as { id: string };
-    const { leagueId, year } = ctx.query as { leagueId?: string; year?: string };
+    const { leagueId, year, seasonId } = ctx.query as { leagueId?: string; year?: string; seasonId?: string };
 
-    const cacheKey = `player_trophies_${playerId}_${leagueId || 'all'}_${year || 'all'}`;
+    console.log('🏆 [Trophies] Request:', { playerId, leagueId: leagueId || 'all', year: year || 'all', seasonId: seasonId || 'all' });
+
+    const cacheKey = `player_trophies_${playerId}_${leagueId || 'all'}_${year || 'all'}_${seasonId || 'all'}`;
     const cached = cache.get(cacheKey);
     if (cached) {
+      console.log('✅ [Trophies] Returning cached data');
       ctx.body = cached;
       return;
     }
@@ -638,10 +641,27 @@ router.get('/:id/trophies', required, async (ctx) => {
 
     // Apply filters and compute winners per league
     const selectedYear = year && year !== 'all' ? Number(year) : null;
+    const selectedSeasonId = seasonId && seasonId !== 'all' ? String(seasonId) : null;
+    
+    console.log('🔍 [Trophies] Applying filters:', { selectedYear, selectedSeasonId, leagueId: leagueId || 'all' });
+    
     const leagues = allLeagues
       .filter((l: any) => !leagueId || leagueId === 'all' || String(l.id) === String(leagueId))
       .map((l: any) => {
-        const matches = (l.matches || []).filter((m: any) => !selectedYear || new Date(m.date).getFullYear() === selectedYear);
+        let matches = (l.matches || []);
+        
+        // Filter by year if specified
+        if (selectedYear) {
+          matches = matches.filter((m: any) => new Date(m.date).getFullYear() === selectedYear);
+        }
+        
+        // Filter by season if specified (only when league is also specified)
+        if (selectedSeasonId && leagueId && leagueId !== 'all') {
+          matches = matches.filter((m: any) => String(m.seasonId) === selectedSeasonId);
+        }
+        
+        console.log(`📊 [Trophies] League ${l.name}: ${matches.length} matches after filtering`);
+        
         return {
           id: l.id,
           name: l.name,
@@ -676,6 +696,9 @@ router.get('/:id/trophies', required, async (ctx) => {
 // GET /players/:id/achievements - compute achievements/badges for a specific player
 router.get('/:id/achievements', required, async (ctx) => {
   const { id: playerId } = ctx.params as { id: string };
+  const { leagueId, year, seasonId } = ctx.query as { leagueId?: string; year?: string; seasonId?: string };
+  
+  console.log('🎖️ [Achievements] Request:', { playerId, leagueId: leagueId || 'all', year: year || 'all', seasonId: seasonId || 'all' });
   
   if (!playerId) {
     ctx.status = 400;
@@ -684,6 +707,15 @@ router.get('/:id/achievements', required, async (ctx) => {
   }
 
   try {
+    // Check cache first
+    const cacheKey = `achievements:${playerId}:${leagueId || 'all'}:${year || 'all'}:${seasonId || 'all'}`;
+    const cached = cache.get(cacheKey);
+    if (cached) {
+      console.log('✅ [Achievements] Returning cached data');
+      ctx.body = cached;
+      return;
+    }
+
     const user = await UserModel.findByPk(playerId, { attributes: ['id', 'xp'] });
     if (!user) {
       ctx.status = 404;
@@ -706,7 +738,7 @@ router.get('/:id/achievements', required, async (ctx) => {
     matchIds = Array.from(new Set(matchIds));
 
     if (matchIds.length === 0) {
-      ctx.body = {
+      const emptyResult = {
         success: true,
         userId: playerId,
         totalXP: Number(user.xp || 0),
@@ -714,14 +746,34 @@ router.get('/:id/achievements', required, async (ctx) => {
           { id: 'rising_xp', title: 'Rising Star', count: 0, xp: Number(user.xp || 0), unlocked: true },
         ],
       };
+      cache.set(cacheKey, emptyResult, 300);
+      ctx.body = emptyResult;
       return;
     }
 
-    // Load RESULT_PUBLISHED matches the user played in
+    // Load RESULT_PUBLISHED matches the user played in with filters
     const Match = models.Match;
+    const matchWhere: any = { id: { [Op.in]: matchIds as any }, status: 'RESULT_PUBLISHED' };
+    
+    // Apply league filter
+    if (leagueId && leagueId !== 'all') {
+      console.log('[Achievements] 🏆 Applying league filter:', leagueId);
+      matchWhere.leagueId = leagueId;
+    }
+    
+    // Apply season filter (only if league is also specified)
+    if (seasonId && seasonId !== 'all' && leagueId && leagueId !== 'all') {
+      console.log('[Achievements] 📅 Applying season filter:', seasonId);
+      matchWhere.seasonId = seasonId;
+    } else if (seasonId && seasonId !== 'all') {
+      console.log('[Achievements] ⚠️ Season filter ignored (league not specified):', seasonId);
+    }
+    
+    console.log('[Achievements] 🔎 Match where clause:', JSON.stringify(matchWhere));
+    
     const matches = await Match.findAll({
-      where: { id: { [Op.in]: matchIds as any }, status: 'RESULT_PUBLISHED' },
-      attributes: ['id','leagueId','homeTeamGoals','awayTeamGoals','date','start','createdAt'],
+      where: matchWhere,
+      attributes: ['id','leagueId','seasonId','homeTeamGoals','awayTeamGoals','date','start','createdAt'],
       include: [
         { model: UserModel, as: 'homeTeamUsers', attributes: ['id'] },
         { model: UserModel, as: 'awayTeamUsers', attributes: ['id'] },
@@ -729,13 +781,30 @@ router.get('/:id/achievements', required, async (ctx) => {
       ],
       order: [['date','ASC'], ['start','ASC'], ['createdAt','ASC']],
     });
+    
+    // Apply year filter (post-fetch)
+    let filteredMatches = matches;
+    if (year && year !== 'all') {
+      const yearNum = parseInt(year);
+      if (!isNaN(yearNum)) {
+        filteredMatches = matches.filter((m: any) => {
+          const matchYear = new Date(m.date || m.start || m.createdAt).getFullYear();
+          return matchYear === yearNum;
+        });
+        console.log('[Achievements] 📊 Year filter applied:', yearNum, '| Matches:', filteredMatches.length, '/', matches.length);
+      }
+    }
+    
+    const matchesToProcess = filteredMatches;
 
-    // Load user stats for those matches
+    // Load user stats for filtered matches
     const statsRows = await MatchStatistics.findAll({
-      where: { user_id: playerId, match_id: { [Op.in]: matches.map((m: any) => m.id) as any } },
+      where: { user_id: playerId, match_id: { [Op.in]: matchesToProcess.map((m: any) => m.id) as any } },
       attributes: ['match_id','goals','assists','cleanSheets'],
       raw: true,
     });
+    
+    console.log('[Achievements] 📈 Stats rows found:', statsRows.length, '| Filtered matches:', matchesToProcess.length);
     const statsByMatch = new Map<string, { goals: number; assists: number; cleanSheets: number }>();
     for (const r of statsRows as any[]) {
       statsByMatch.set(String(r.match_id), {
@@ -753,7 +822,9 @@ router.get('/:id/achievements', required, async (ctx) => {
       const t = new Date(d).getTime();
       return Number.isFinite(t) ? t : 0;
     };
-    const sortedMatches = [...matches].sort((a: any, b: any) => timeOf(a) - timeOf(b));
+    const sortedMatches = [...matchesToProcess].sort((a: any, b: any) => timeOf(a) - timeOf(b));
+
+    console.log('[Achievements] 🎯 Processing', sortedMatches.length, 'filtered matches for badge calculations');
 
     for (const m of sortedMatches as any[]) {
       const isHome = ((m.homeTeamUsers || []).some((u: any) => String(u.id) === playerId));
@@ -834,7 +905,14 @@ router.get('/:id/achievements', required, async (ctx) => {
       },
     ];
 
-    ctx.body = { success: true, userId: playerId, totalXP: Number(user.xp || 0), badges };
+    const response = { success: true, userId: playerId, totalXP: Number(user.xp || 0), badges };
+    
+    // Cache for 5 minutes
+    cache.set(cacheKey, response, 300);
+    
+    console.log('[Achievements] ✅ Computed badges:', badges.filter(b => b.unlocked).length, 'unlocked');
+    
+    ctx.body = response;
   } catch (e) {
     console.error('GET /players/:id/achievements failed', e);
     ctx.status = 500;
@@ -1106,6 +1184,286 @@ router.get('/:playerId/simple-synergy', async (ctx) => {
     console.error('Synergy league logic error', err);
     ctx.status = 500;
     ctx.body = { error: 'Internal error computing league synergy' };
+  }
+});
+
+// History & Records endpoint - returns player's best records across all leagues
+router.get('/:playerId/history-records', async (ctx) => {
+  const { playerId } = ctx.params;
+  const leagueId = typeof ctx.request.query?.leagueId === 'string' ? ctx.request.query.leagueId.trim() : '';
+  const year = typeof ctx.request.query?.year === 'string' ? ctx.request.query.year.trim() : '';
+  const seasonId = typeof ctx.request.query?.seasonId === 'string' ? ctx.request.query.seasonId.trim() : '';
+
+  console.log('[history-records] 🔍 Request received:', { playerId, leagueId: leagueId || 'all', year: year || 'all', seasonId: seasonId || 'all' });
+
+  if (!playerId) {
+    ctx.status = 400;
+    ctx.body = { success: false, message: 'playerId required' };
+    return;
+  }
+
+  try {
+    // Check cache first (include filters in cache key)
+    const cacheKey = `history-records:${playerId}:${leagueId || 'all'}:${year || 'all'}:${seasonId || 'all'}`;
+    const cachedData = await cache.get(cacheKey);
+    if (cachedData) {
+      console.log('[history-records] Returning cached data for', playerId, 'league:', leagueId || 'all', 'year:', year || 'all', 'season:', seasonId || 'all');
+      ctx.body = { success: true, data: cachedData };
+      return;
+    }
+
+    // Get all match IDs from MatchStatistics (most reliable way)
+    const statsMatches = await MatchStatistics.findAll({
+      where: { user_id: playerId },
+      attributes: ['match_id'],
+      raw: true,
+    });
+    let matchIds = (statsMatches as any[]).map(s => String(s.match_id));
+    matchIds = Array.from(new Set(matchIds));
+
+    console.log('[history-records] playerId:', playerId, '| matchIds from stats:', matchIds.length, '| filters - league:', leagueId || 'all', 'year:', year || 'all', 'season:', seasonId || 'all');
+
+    if (matchIds.length === 0) {
+      const emptyData = {
+        longestWinStreak: 0,
+        mostGoalsInLeague: 0,
+        mostMotmInLeague: 0,
+        longestWinMargin: '0-0',
+        highestXpInLeague: 0
+      };
+      ctx.body = { success: true, data: emptyData };
+      return;
+    }
+
+    // Load RESULT_PUBLISHED matches with filters
+    const Match = models.Match;
+    const matchWhere: any = { id: { [Op.in]: matchIds as any }, status: 'RESULT_PUBLISHED' };
+    
+    // Apply league filter
+    if (leagueId && leagueId !== 'all') {
+      console.log('[history-records] 🏆 Applying league filter:', leagueId);
+      matchWhere.leagueId = leagueId;
+    }
+    
+    // Apply season filter (only if league is also specified)
+    if (seasonId && seasonId !== 'all' && leagueId && leagueId !== 'all') {
+      console.log('[history-records] 📅 Applying season filter:', seasonId);
+      matchWhere.seasonId = seasonId;
+    } else if (seasonId && seasonId !== 'all') {
+      console.log('[history-records] ⚠️ Season filter ignored (league not specified):', seasonId);
+    }
+    
+    console.log('[history-records] 🔎 Final match where clause:', JSON.stringify(matchWhere, null, 2));
+    
+    const matches = await Match.findAll({
+      where: matchWhere,
+      attributes: ['id', 'leagueId', 'homeTeamGoals', 'awayTeamGoals', 'date', 'start', 'createdAt'],
+      include: [
+        { model: UserModel, as: 'homeTeamUsers', attributes: ['id'] },
+        { model: UserModel, as: 'awayTeamUsers', attributes: ['id'] },
+        { model: Vote, as: 'votes', attributes: ['votedForId'] },
+      ],
+      order: [['date', 'ASC'], ['start', 'ASC'], ['createdAt', 'ASC']],
+    });
+
+    // Apply year filter if needed (after fetching since year is not a column)
+    let filteredMatches = matches;
+    if (year && year !== 'all') {
+      const yearNum = parseInt(year);
+      if (!isNaN(yearNum)) {
+        filteredMatches = matches.filter((m: any) => {
+          const matchYear = new Date(m.date || m.start || m.createdAt).getFullYear();
+          return matchYear === yearNum;
+        });
+      }
+    }
+
+    console.log('[history-records] 📊 Match counts - Total:', matches.length, '| After year filter:', filteredMatches.length);
+    if (filteredMatches.length > 0) {
+      console.log('[history-records] 📋 Sample filtered match:', {
+        id: (filteredMatches[0] as any).id,
+        leagueId: (filteredMatches[0] as any).leagueId,
+        seasonId: (filteredMatches[0] as any).seasonId,
+        date: (filteredMatches[0] as any).date
+      });
+    }
+
+    // Load user stats for filtered matches
+    const statsRows = await MatchStatistics.findAll({
+      where: { user_id: playerId, match_id: { [Op.in]: filteredMatches.map((m: any) => m.id) as any } },
+      attributes: ['match_id', 'goals', 'assists', 'cleanSheets', 'xpAwarded'],
+      raw: true,
+    });
+
+    console.log('[history-records] stats rows found:', statsRows.length);
+
+    const statsByMatch = new Map<string, { goals: number; assists: number; cleanSheets: number; xpAwarded: number }>();
+    for (const r of statsRows as any[]) {
+      statsByMatch.set(String(r.match_id), {
+        goals: Number(r.goals || 0),
+        assists: Number(r.assists || 0),
+        cleanSheets: Number(r.cleanSheets || 0),
+        xpAwarded: Number(r.xpAwarded || 0),
+      });
+    }
+
+    // Build per-league data
+    type MatchSummary = { 
+      goals: number; 
+      assists: number; 
+      result: 'W' | 'D' | 'L'; 
+      motmVotes: number;
+      xpAwarded: number;
+      teamGoals: number;
+      oppGoals: number;
+    };
+    const byLeague: Record<string, MatchSummary[]> = {};
+
+    const timeOf = (m: any) => {
+      const d = m?.date ?? m?.start ?? m?.createdAt;
+      const t = new Date(d).getTime();
+      return Number.isFinite(t) ? t : 0;
+    };
+    const sortedMatches = [...matches].sort((a: any, b: any) => timeOf(a) - timeOf(b));
+
+    let processedMatchCount = 0;
+    let skippedNoTeam = 0;
+    
+    // Build a map of which team the player was on for each match using raw SQL
+    const teamMap = new Map<string, 'home' | 'away'>();
+    try {
+      const homeRows = await sequelize.query(
+        `SELECT "matchId" FROM "UserHomeMatches" WHERE "userId" = :playerId`,
+        { replacements: { playerId }, type: 'SELECT' as any }
+      );
+      for (const r of (homeRows as any[]) || []) {
+        teamMap.set(String(r.matchId), 'home');
+      }
+      
+      const awayRows = await sequelize.query(
+        `SELECT "matchId" FROM "UserAwayMatches" WHERE "userId" = :playerId`,
+        { replacements: { playerId }, type: 'SELECT' as any }
+      );
+      for (const r of (awayRows as any[]) || []) {
+        teamMap.set(String(r.matchId), 'away');
+      }
+      console.log('[history-records] teamMap built:', teamMap.size, 'entries');
+    } catch (e) {
+      console.error('[history-records] Failed to build teamMap:', e);
+    }
+    
+    for (const m of sortedMatches as any[]) {
+      const matchId = String(m.id);
+      const team = teamMap.get(matchId);
+      
+      // Fallback: try using included associations
+      let isHome = team === 'home';
+      let isAway = team === 'away';
+      
+      if (!team) {
+        // Try included associations as fallback
+        const homeUsers = m.homeTeamUsers || [];
+        const awayUsers = m.awayTeamUsers || [];
+        isHome = homeUsers.some((u: any) => String(u.id) === playerId);
+        isAway = awayUsers.some((u: any) => String(u.id) === playerId);
+      }
+      
+      // Debug: Log first few matches
+      if (processedMatchCount < 3) {
+        console.log('[history-records] Match', matchId.substring(0,8), '| team from map:', team, '| isHome:', isHome, '| isAway:', isAway);
+      }
+      
+      if (!isHome && !isAway) {
+        skippedNoTeam++;
+        continue;
+      }
+
+      processedMatchCount++;
+      const s = statsByMatch.get(String(m.id)) || { goals: 0, assists: 0, cleanSheets: 0, xpAwarded: 0 };
+      const teamGoals = isHome ? Number(m.homeTeamGoals || 0) : Number(m.awayTeamGoals || 0);
+      const oppGoals = isHome ? Number(m.awayTeamGoals || 0) : Number(m.homeTeamGoals || 0);
+      const res: 'W' | 'D' | 'L' = teamGoals > oppGoals ? 'W' : teamGoals === oppGoals ? 'D' : 'L';
+      const votes = (m.votes || []) as any[];
+      const motmVotes = votes.filter(v => String(v.votedForId) === playerId).length;
+
+      const leagueKey = String(m.leagueId);
+      if (!byLeague[leagueKey]) byLeague[leagueKey] = [];
+      byLeague[leagueKey].push({ 
+        goals: s.goals, 
+        assists: s.assists, 
+        result: res, 
+        motmVotes,
+        xpAwarded: s.xpAwarded,
+        teamGoals,
+        oppGoals
+      });
+    }
+
+    // Calculate records
+    let longestWinStreak = 0;
+    let mostGoalsInLeague = 0;
+    let mostMotmInLeague = 0;
+    let longestWinMarginValue = 0;
+    let longestWinMarginScore = '0-0';
+    let highestXpInLeague = 0;
+
+    console.log('[history-records] Processing', Object.keys(byLeague).length, 'leagues, processedMatches:', processedMatchCount, ', skippedNoTeam:', skippedNoTeam);
+
+    for (const [leagueId, matchList] of Object.entries(byLeague)) {
+      let leagueGoals = 0;
+      let leagueMotm = 0;
+      let leagueXp = 0;
+      let currentStreak = 0;
+      let maxStreak = 0;
+
+      for (const match of matchList) {
+        leagueGoals += match.goals;
+        leagueMotm += match.motmVotes;
+        leagueXp += match.xpAwarded;
+
+        // Track win streak
+        if (match.result === 'W') {
+          currentStreak++;
+          maxStreak = Math.max(maxStreak, currentStreak);
+
+          // Track win margin
+          const margin = match.teamGoals - match.oppGoals;
+          if (margin > longestWinMarginValue) {
+            longestWinMarginValue = margin;
+            longestWinMarginScore = `${match.teamGoals}-${match.oppGoals}`;
+          }
+        } else {
+          currentStreak = 0;
+        }
+      }
+
+      console.log('[history-records] League', leagueId, '| matches:', matchList.length, '| goals:', leagueGoals, '| motm:', leagueMotm, '| streak:', maxStreak);
+
+      // Update global maximums
+      longestWinStreak = Math.max(longestWinStreak, maxStreak);
+      mostGoalsInLeague = Math.max(mostGoalsInLeague, leagueGoals);
+      mostMotmInLeague = Math.max(mostMotmInLeague, leagueMotm);
+      highestXpInLeague = Math.max(highestXpInLeague, leagueXp);
+    }
+
+    const data = {
+      longestWinStreak,
+      mostGoalsInLeague,
+      mostMotmInLeague,
+      longestWinMargin: longestWinMarginScore,
+      highestXpInLeague
+    };
+
+    console.log('[history-records] Final data:', data);
+
+    // Cache for 5 minutes
+    await cache.set(cacheKey, data, 300);
+
+    ctx.body = { success: true, data };
+  } catch (err) {
+    console.error('GET /players/:playerId/history-records failed', err);
+    ctx.status = 500;
+    ctx.body = { success: false, message: 'Failed to fetch history records' };
   }
 });
 
