@@ -82,13 +82,20 @@ export const getTrophyRoom = async (ctx: Context) => {
   }
   const userId = ctx.state.user.userId;
   const leagueIdQ = typeof ctx.query?.leagueId === 'string' ? ctx.query.leagueId.trim() : '';
+  const seasonIdQ = typeof ctx.query?.seasonId === 'string' ? ctx.query.seasonId.trim() : '';
+
+  console.log('🏆 [Trophy Room] Request:', { 
+    userId, 
+    leagueId: leagueIdQ || 'all', 
+    seasonId: seasonIdQ || 'all' 
+  });
 
   type PlayerStats = { played: number; wins: number; draws: number; losses: number; goals: number; assists: number; motmVotes: number; teamGoalsConceded: number };
 
-  const countCompleted = (league: any) =>
-    (league.matches || []).filter((m: any) => normalizeStatus(m.status) === 'RESULT_PUBLISHED').length;
+  const countCompleted = (matches: any[]) =>
+    matches.filter((m: any) => normalizeStatus(m.status) === 'RESULT_PUBLISHED').length;
 
-  const calcStats = (league: any): Record<string, PlayerStats> => {
+  const calcStats = (matches: any[], members: any[]): Record<string, PlayerStats> => {
     const stats: Record<string, PlayerStats> = {};
     const ensure = (pid: string) => {
       if (!stats[pid]) {
@@ -96,13 +103,13 @@ export const getTrophyRoom = async (ctx: Context) => {
       }
     };
 
-    (league.members || []).forEach((p: any) => ensure(String(p.id)));
-    (league.matches || []).forEach((m: any) => {
+    members.forEach((p: any) => ensure(String(p.id)));
+    matches.forEach((m: any) => {
       (m.homeTeamUsers || []).forEach((p: any) => ensure(String(p.id)));
       (m.awayTeamUsers || []).forEach((p: any) => ensure(String(p.id)));
     });
 
-    (league.matches || [])
+    matches
       .filter((m: any) => normalizeStatus(m.status) === 'RESULT_PUBLISHED')
       .forEach((m: any) => {
         const home: string[] = (m.homeTeamUsers || []).map((p: any) => String(p.id));
@@ -111,7 +118,21 @@ export const getTrophyRoom = async (ctx: Context) => {
         [...home, ...away].forEach((pid: string) => {
           if (!stats[pid]) return;
           stats[pid].played++;
+
+          // Add goals and assists from playerStats
+          if (m.playerStats && m.playerStats[pid]) {
+            stats[pid].goals += Number(m.playerStats[pid].goals || 0);
+            stats[pid].assists += Number(m.playerStats[pid].assists || 0);
+          }
         });
+
+        // Count MOTM votes
+        if (m.manOfTheMatchVotes) {
+          Object.values(m.manOfTheMatchVotes).forEach((votedForId: any) => {
+            const id = String(votedForId);
+            if (stats[id]) stats[id].motmVotes++;
+          });
+        }
 
         const homeWon = (m.homeTeamGoals ?? 0) > (m.awayTeamGoals ?? 0);
         const awayWon = (m.awayTeamGoals ?? 0) > (m.homeTeamGoals ?? 0);
@@ -143,6 +164,7 @@ export const getTrophyRoom = async (ctx: Context) => {
         as: 'leagues',
         include: [
           { model: User, as: 'members' },
+          { model: Season, as: 'seasons' },
           {
             model: Match,
             as: 'matches',
@@ -162,11 +184,35 @@ export const getTrophyRoom = async (ctx: Context) => {
     }
 
     const all = (memberOf as any).leagues || [];
-    const leagues = leagueIdQ ? all.filter((l: any) => String(l.id) === leagueIdQ) : all;
+    let leagues = leagueIdQ && leagueIdQ !== 'all' ? all.filter((l: any) => String(l.id) === leagueIdQ) : all;
 
-    const response = leagues.map((league: any) => {
-      const stats = calcStats(league);
-      const playerIds = Object.keys(stats);
+    const trophyWinners: any[] = [];
+
+    leagues.forEach((league: any) => {
+      const allMatches = league.matches || [];
+      const seasons = league.seasons || [];
+      
+      // Filter matches by season if seasonId is provided
+      let matchesToUse = allMatches;
+      let currentSeasonId = seasonIdQ;
+      let currentSeasonName = '';
+      
+      if (seasonIdQ && seasonIdQ !== 'all') {
+        matchesToUse = allMatches.filter((m: any) => String(m.seasonId) === seasonIdQ);
+        const season = seasons.find((s: any) => String(s.id) === seasonIdQ);
+        currentSeasonName = season?.name || `Season ${season?.seasonNumber || 1}`;
+        console.log(`🔍 [Trophy Room] Filtered ${matchesToUse.length} matches for season ${currentSeasonName}`);
+      } else if (seasons.length > 0) {
+        // Use active season if no specific season is selected
+        const activeSeason = seasons.find((s: any) => s.isActive) || seasons[0];
+        currentSeasonId = String(activeSeason.id);
+        currentSeasonName = activeSeason.name || `Season ${activeSeason.seasonNumber}`;
+        matchesToUse = allMatches.filter((m: any) => String(m.seasonId) === currentSeasonId);
+        console.log(`🔍 [Trophy Room] Using active season ${currentSeasonName} with ${matchesToUse.length} matches`);
+      }
+
+      const stats = calcStats(matchesToUse, league.members || []);
+      const playerIds = Object.keys(stats).filter(id => stats[id].played > 0);
 
       const sortByPoints = (a: string, b: string) => {
         const aPts = stats[a].wins * 3 + stats[a].draws;
@@ -177,85 +223,96 @@ export const getTrophyRoom = async (ctx: Context) => {
       const sortByGoals = (a: string, b: string) => stats[b].goals - stats[a].goals;
       const sortByAssists = (a: string, b: string) => stats[b].assists - stats[a].assists;
       const sortByMotm = (a: string, b: string) => stats[b].motmVotes - stats[a].motmVotes;
-      const sortByWinPct = (a: string, b: string) => {
-        const aPct = stats[a].played > 0 ? stats[a].wins / stats[a].played : 0;
-        const bPct = stats[b].played > 0 ? stats[b].wins / stats[b].played : 0;
-        if (Math.abs(bPct - aPct) < 0.001) return stats[b].motmVotes - stats[a].motmVotes;
-        return bPct - aPct;
-      };
-
-      const sortByDefense = (defenderIds: string[]) => (a: string, b: string) => {
-        const aConceded = stats[a].played > 0 ? stats[a].teamGoalsConceded / stats[a].played : Infinity;
-        const bConceded = stats[b].played > 0 ? stats[b].teamGoalsConceded / stats[b].played : Infinity;
-        return aConceded - bConceded;
-      };
 
       const leagueTable = [...playerIds].sort(sortByPoints);
-      const defenderIds = (league.members || []).filter((p: any) =>
-        String(p.position || '').toLowerCase().includes('def') ||
-        String(p.position || '').toLowerCase().includes('goal')
-      ).map((p: any) => String(p.id));
+      
+      // Calculate GK-specific stats for Star Keeper
+      const gkIds: string[] = (league.members || [])
+        .filter((p: any) => String(p.positionType || p.position || '').toLowerCase().includes('goalkeeper'))
+        .map((p: any) => String(p.id));
 
-      const winnerObj = (arr: string[], reason: string, label: string) => ({
-        winnerId: arr[0] || null,
-        reason,
-        label,
-        userId
-      });
+      const cleanSheets: Record<string, number> = {};
+      gkIds.forEach(id => (cleanSheets[id] = 0));
 
-      const completedCount = countCompleted(league);
-      const isTBC = completedCount === 0;
-      const isPending = completedCount > 0 && completedCount < (league.maxGames ?? 0);
-
-      const trophies: any[] = [];
-
-      if (isTBC || isPending) {
-        trophies.push({
-          winnerId: null,
-          reason: isTBC ? 'No completed matches yet' : `Only ${completedCount}/${league.maxGames} matches completed`,
-          label: isTBC ? 'TBC' : 'In Progress',
-          userId
+      matchesToUse
+        .filter((m: any) => normalizeStatus(m.status) === 'RESULT_PUBLISHED')
+        .forEach((m: any) => {
+          const homeGk: string[] = (m.homeTeamUsers || []).filter((u: any) => gkIds.includes(String(u.id))).map((u: any) => String(u.id));
+          const awayGk: string[] = (m.awayTeamUsers || []).filter((u: any) => gkIds.includes(String(u.id))).map((u: any) => String(u.id));
+          if (Number(m.awayTeamGoals || 0) === 0) homeGk.forEach(id => (cleanSheets[id] = (cleanSheets[id] || 0) + 1));
+          if (Number(m.homeTeamGoals || 0) === 0) awayGk.forEach(id => (cleanSheets[id] = (cleanSheets[id] || 0) + 1));
         });
-      } else {
-        if (leagueTable[0]) trophies.push(winnerObj([leagueTable[0]], 'Most points', "Champion Footballer"));
-        if (leagueTable[1]) trophies.push(winnerObj([leagueTable[1]], '2nd place', "Runner Up"));
 
-        const sortedByMotm = [...playerIds].sort(sortByMotm);
-        if (sortedByMotm[0]) trophies.push(winnerObj([sortedByMotm[0]], 'Most MOTM votes', "Ballon d'Or"));
+      const defenderIds: string[] = (league.members || [])
+        .filter((p: any) => ['defender', 'goalkeeper'].includes(String(p.positionType || p.position || '').toLowerCase()))
+        .map((p: any) => String(p.id))
+        .filter((id: any) => stats[id]?.played > 0);
 
-        const sortedByGoals = [...playerIds].sort(sortByGoals);
-        if (sortedByGoals[0]) trophies.push(winnerObj([sortedByGoals[0]], 'Most goals', "Golden Boot"));
-
-        const sortedByAssists = [...playerIds].sort(sortByAssists);
-        if (sortedByAssists[0]) trophies.push(winnerObj([sortedByAssists[0]], 'Most assists', "King Playmaker"));
-
-        const sortedByWinPct = [...playerIds].sort(sortByWinPct);
-        if (sortedByWinPct[0]) trophies.push(winnerObj([sortedByWinPct[0]], 'Highest win %', "GOAT"));
-
-        if (defenderIds.length > 0) {
-          const sortedDef = [...defenderIds].sort(sortByDefense(defenderIds));
-          if (sortedDef[0]) trophies.push(winnerObj([sortedDef[0]], 'Best defense', "Legendary Shield"));
-        }
-
-        const bottom = leagueTable.slice(3);
-        if (bottom.length > 0) {
-          const darkHorse = [...bottom].sort(sortByMotm)[0];
-          if (darkHorse) trophies.push(winnerObj([darkHorse], 'Most MOTM from bottom half', "The Dark Horse"));
-        }
-      }
-
-      return {
-        leagueId: String(league.id),
-        leagueName: league.name,
-        completedMatches: completedCount,
-        maxGames: league.maxGames ?? 0,
-        trophies
+      const getPlayerName = (pid: string) => {
+        const player = (league.members || []).find((p: any) => String(p.id) === pid);
+        return player ? `${player.firstName || ''} ${player.lastName || ''}`.trim() : 'Unknown';
       };
+
+      const completedCount = countCompleted(matchesToUse);
+
+      // Build trophy winners matching frontend expectations
+      const awards = [
+        { title: 'League Champion', winnerId: leagueTable[0] || null },
+        { title: 'Runner-Up', winnerId: leagueTable[1] || null },
+        { title: "Ballon D'or", winnerId: [...playerIds].sort(sortByMotm)[0] || null },
+        { title: 'Golden Boot', winnerId: [...playerIds].sort(sortByGoals)[0] || null },
+        { title: 'King Playmaker', winnerId: [...playerIds].sort(sortByAssists)[0] || null },
+        {
+          title: 'Legendary Shield',
+          winnerId: defenderIds.length > 0
+            ? defenderIds.sort((a, b) => {
+                const avgA = stats[a].teamGoalsConceded / stats[a].played;
+                const avgB = stats[b].teamGoalsConceded / stats[b].played;
+                return avgA - avgB;
+              })[0] || null
+            : null
+        },
+        {
+          title: 'Dark Horse',
+          winnerId: leagueTable.length > 3
+            ? leagueTable.slice(3).sort(sortByMotm)[0] || null
+            : null
+        },
+        {
+          title: 'Star Keeper',
+          winnerId: gkIds.filter(id => stats[id]?.played > 0).sort((a, b) => {
+            const csA = cleanSheets[a] || 0;
+            const csB = cleanSheets[b] || 0;
+            if (csB !== csA) return csB - csA;
+            const gaA = stats[a]?.teamGoalsConceded ?? Infinity;
+            const gaB = stats[b]?.teamGoalsConceded ?? Infinity;
+            return gaA - gaB;
+          })[0] || null
+        }
+      ];
+
+      awards.forEach(award => {
+        trophyWinners.push({
+          title: award.title,
+          winnerId: award.winnerId,
+          winner: award.winnerId ? getPlayerName(award.winnerId) : null,
+          leagueId: String(league.id),
+          leagueName: league.name,
+          seasonId: currentSeasonId || undefined,
+          seasonName: currentSeasonName || undefined,
+        });
+      });
     });
 
-    ctx.body = { success: true, data: response };
+    console.log(`✅ [Trophy Room] Returning ${trophyWinners.length} trophy winners`);
+    
+    ctx.body = { 
+      success: true, 
+      trophyWinners,
+      backendTotalXP: (memberOf as any).xp || 0
+    };
   } catch (err) {
-    console.error('Trophy room error', err);
+    console.error('❌ [Trophy Room] Error:', err);
     ctx.status = 500;
     ctx.body = { success: false, message: 'Failed to fetch trophy room' };
   }
