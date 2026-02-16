@@ -465,33 +465,133 @@ router.get('/:id/trophies', required, async (ctx) => {
       return;
     }
 
-    // Load leagues the player has ever joined, including members and matches with teams
-    const playerWithLeagues = await models.User.findByPk(playerId, {
-      include: [
-        {
-          model: LeagueModel,
-          as: 'leagues',
-          include: [
-            { model: models.User, as: 'members', attributes: ['id', 'firstName', 'lastName', 'position', 'positionType'] },
-            {
-              model: MatchModel,
-              as: 'matches',
-              include: [
-                { model: models.User, as: 'homeTeamUsers', attributes: ['id', 'firstName', 'lastName', 'position', 'positionType'] },
-                { model: models.User, as: 'awayTeamUsers', attributes: ['id', 'firstName', 'lastName', 'position', 'positionType'] },
-              ],
-            },
-          ],
-        },
-      ],
-    });
+    // Load leagues + members + matches (optimized: only completed matches, limited attributes)
+    let allLeagues: any[];
 
-    const allLeagues: any[] = (playerWithLeagues as any)?.leagues || [];
+    if (leagueId && leagueId !== 'all') {
+      // FAST PATH: fetch only the specific league directly
+      const league = await LeagueModel.findByPk(leagueId, {
+        attributes: ['id', 'name', 'maxGames'],
+        include: [
+          { model: models.User, as: 'members', attributes: ['id', 'firstName', 'lastName', 'position', 'positionType'] },
+          {
+            model: MatchModel,
+            as: 'matches',
+            where: { status: { [Op.in]: ['RESULT_PUBLISHED', 'RESULT_UPLOADED'] } },
+            required: false,
+            attributes: ['id', 'seasonId', 'status', 'date', 'homeTeamGoals', 'awayTeamGoals'],
+            include: [
+              { model: models.User, as: 'homeTeamUsers', attributes: ['id', 'firstName', 'lastName', 'position', 'positionType'] },
+              { model: models.User, as: 'awayTeamUsers', attributes: ['id', 'firstName', 'lastName', 'position', 'positionType'] },
+            ],
+          },
+        ],
+      });
+      allLeagues = league ? [league] : [];
+    } else {
+      // ALL leagues: split into lightweight queries to avoid cartesian-product timeout
+      // Step 1: get league IDs for this player
+      const memberRows: any[] = await sequelize.query(
+        `SELECT "leagueId" FROM "LeagueMember" WHERE "userId" = :uid`,
+        { replacements: { uid: playerId }, type: (sequelize as any).constructor.QueryTypes.SELECT }
+      );
+      const userLeagueIds = memberRows.map((r: any) => r.leagueId);
+      if (!userLeagueIds.length) {
+        const payload = { success: true, data: { trophies: {}, counts: {} as Record<string, number> } };
+        cache.set(cacheKey, payload, 300);
+        ctx.body = payload;
+        return;
+      }
+      // Step 2: fetch leagues with members + completed matches (no User root = no cartesian)
+      const fetchedLeagues = await LeagueModel.findAll({
+        where: { id: { [Op.in]: userLeagueIds } },
+        attributes: ['id', 'name', 'maxGames'],
+        include: [
+          { model: models.User, as: 'members', attributes: ['id', 'firstName', 'lastName', 'position', 'positionType'] },
+          {
+            model: MatchModel,
+            as: 'matches',
+            where: { status: { [Op.in]: ['RESULT_PUBLISHED', 'RESULT_UPLOADED'] } },
+            required: false,
+            attributes: ['id', 'seasonId', 'status', 'date', 'homeTeamGoals', 'awayTeamGoals'],
+            include: [
+              { model: models.User, as: 'homeTeamUsers', attributes: ['id', 'firstName', 'lastName', 'position', 'positionType'] },
+              { model: models.User, as: 'awayTeamUsers', attributes: ['id', 'firstName', 'lastName', 'position', 'positionType'] },
+            ],
+          },
+        ],
+      });
+      allLeagues = fetchedLeagues || [];
+    }
     if (!allLeagues.length) {
       const payload = { success: true, data: { trophies: {}, counts: {} as Record<string, number> } };
       cache.set(cacheKey, payload, 300);
       ctx.body = payload;
       return;
+    }
+
+    // Fetch seasons separately (lightweight query, avoids timeout)
+    const leagueIds = allLeagues.map((l: any) => String(l.id));
+    const allSeasons = await models.Season.findAll({
+      where: { leagueId: { [Op.in]: leagueIds } },
+      attributes: ['id', 'leagueId', 'seasonNumber', 'name', 'isActive'],
+      raw: true,
+    });
+    // Group seasons by leagueId
+    const seasonsByLeague: Record<string, any[]> = {};
+    (allSeasons || []).forEach((s: any) => {
+      const lid = String(s.leagueId);
+      if (!seasonsByLeague[lid]) seasonsByLeague[lid] = [];
+      seasonsByLeague[lid].push(s);
+    });
+
+    // Fetch goals/assists from MatchStatistics and MOTM votes from Vote table
+    const allMatchIds: string[] = [];
+    allLeagues.forEach((l: any) => {
+      (l.matches || []).forEach((m: any) => allMatchIds.push(String(m.id)));
+    });
+    if (allMatchIds.length > 0) {
+      const [matchStatRows, voteRows] = await Promise.all([
+        MatchStatistics.findAll({
+          where: { match_id: { [Op.in]: allMatchIds } },
+          attributes: ['match_id', 'user_id', 'goals', 'assists'],
+          raw: true,
+        }),
+        Vote.findAll({
+          where: { matchId: { [Op.in]: allMatchIds } },
+          attributes: ['matchId', 'voterId', 'votedForId'],
+          raw: true,
+        }),
+      ]);
+      // Build playerStats map: { matchId -> { playerId -> { goals, assists } } }
+      const psMap: Record<string, Record<string, { goals: number; assists: number }>> = {};
+      (matchStatRows || []).forEach((ms: any) => {
+        const mid = String(ms.match_id);
+        if (!psMap[mid]) psMap[mid] = {};
+        const uid = String(ms.user_id);
+        const existing = psMap[mid][uid];
+        if (existing) {
+          existing.goals += Number(ms.goals || 0);
+          existing.assists += Number(ms.assists || 0);
+        } else {
+          psMap[mid][uid] = { goals: Number(ms.goals || 0), assists: Number(ms.assists || 0) };
+        }
+      });
+      // Build MOTM votes map: { matchId -> { voterId -> votedForId } }
+      const motmMap: Record<string, Record<string, string>> = {};
+      (voteRows || []).forEach((v: any) => {
+        const mid = String(v.matchId);
+        if (!motmMap[mid]) motmMap[mid] = {};
+        motmMap[mid][String(v.voterId)] = String(v.votedForId);
+      });
+      // Attach to match objects so calcStats can read them
+      allLeagues.forEach((l: any) => {
+        (l.matches || []).forEach((m: any) => {
+          const mid = String(m.id);
+          (m as any).playerStats = psMap[mid] || {};
+          (m as any).manOfTheMatchVotes = motmMap[mid] || {};
+        });
+      });
     }
 
     // Normalizers (borrowed from leagues trophy-room)
@@ -639,48 +739,72 @@ router.get('/:id/trophies', required, async (ctx) => {
       }));
     };
 
-    // Apply filters and compute winners per league
+    // Apply filters and compute winners per league PER SEASON (like trophy room)
     const selectedYear = year && year !== 'all' ? Number(year) : null;
     const selectedSeasonId = seasonId && seasonId !== 'all' ? String(seasonId) : null;
     
     console.log('🔍 [Trophies] Applying filters:', { selectedYear, selectedSeasonId, leagueId: leagueId || 'all' });
     
-    const leagues = allLeagues
-      .filter((l: any) => !leagueId || leagueId === 'all' || String(l.id) === String(leagueId))
-      .map((l: any) => {
-        let matches = (l.matches || []);
-        
-        // Filter by year if specified
-        if (selectedYear) {
-          matches = matches.filter((m: any) => new Date(m.date).getFullYear() === selectedYear);
-        }
-        
-        // Filter by season if specified (only when league is also specified)
-        if (selectedSeasonId && leagueId && leagueId !== 'all') {
-          matches = matches.filter((m: any) => String(m.seasonId) === selectedSeasonId);
-        }
-        
-        console.log(`📊 [Trophies] League ${l.name}: ${matches.length} matches after filtering`);
-        
-        return {
+    const filteredLeagues = allLeagues
+      .filter((l: any) => !leagueId || leagueId === 'all' || String(l.id) === String(leagueId));
+
+    // Aggregate trophies for this player — iterate per season within each league
+    const trophyMap: Record<string, { leagueId: string; leagueName: string; seasonId?: string; seasonName?: string }[]> = {};
+
+    filteredLeagues.forEach((l: any) => {
+      let allMatches = (l.matches || []);
+      const seasons: any[] = seasonsByLeague[String(l.id)] || [];
+
+      // Filter by year if specified
+      if (selectedYear) {
+        allMatches = allMatches.filter((m: any) => new Date(m.date).getFullYear() === selectedYear);
+      }
+
+      // Helper to process one batch of matches (one season or whole league)
+      const processMatches = (matches: any[], seasonId?: string, seasonName?: string) => {
+        const leagueForCalc = {
           id: l.id,
           name: l.name,
           members: (l.members || []),
           matches,
         };
-      });
+        const stats = calcStats(leagueForCalc);
+        const winners = calcWinners(leagueForCalc, stats);
+        winners.forEach((w) => {
+          if (w.winnerId && String(w.winnerId) === String(playerId)) {
+            if (!trophyMap[w.title]) trophyMap[w.title] = [];
+            trophyMap[w.title].push({ leagueId: w.leagueId, leagueName: w.leagueName, seasonId, seasonName });
+          }
+        });
+        console.log(`📊 [Trophies] League ${l.name}${seasonName ? ` / ${seasonName}` : ''}: ${matches.length} matches, player wins: ${winners.filter((w) => w.winnerId && String(w.winnerId) === String(playerId)).length}`);
+      };
 
-    // Aggregate trophies for this player
-    const trophyMap: Record<string, { leagueId: string; leagueName: string }[]> = {};
-    leagues.forEach((lg: any) => {
-      const stats = calcStats(lg);
-      const winners = calcWinners(lg, stats);
-      winners.forEach((w) => {
-        if (w.winnerId && String(w.winnerId) === String(playerId)) {
-          if (!trophyMap[w.title]) trophyMap[w.title] = [];
-          trophyMap[w.title].push({ leagueId: w.leagueId, leagueName: w.leagueName });
+      if (selectedSeasonId) {
+        // Specific season requested — filter matches for that season only
+        const seasonMatches = allMatches.filter((m: any) => String(m.seasonId) === selectedSeasonId);
+        const season = seasons.find((s: any) => String(s.id) === selectedSeasonId);
+        const seasonName = season?.name || `Season ${season?.seasonNumber || '?'}`;
+        processMatches(seasonMatches, selectedSeasonId, seasonName);
+      } else if (seasons.length > 0) {
+        // No specific season requested — iterate ALL seasons individually
+        seasons.forEach((season: any) => {
+          const sid = String(season.id);
+          const sName = season.name || `Season ${season.seasonNumber || '?'}`;
+          const seasonMatches = allMatches.filter((m: any) => String(m.seasonId) === sid);
+          if (seasonMatches.length > 0) {
+            processMatches(seasonMatches, sid, sName);
+          }
+        });
+        // Also process any matches NOT assigned to a season (orphaned matches)
+        const seasonIds = new Set(seasons.map((s: any) => String(s.id)));
+        const orphanMatches = allMatches.filter((m: any) => !m.seasonId || !seasonIds.has(String(m.seasonId)));
+        if (orphanMatches.length > 0) {
+          processMatches(orphanMatches, undefined, undefined);
         }
-      });
+      } else {
+        // No seasons exist — use all matches as one block (legacy)
+        processMatches(allMatches, undefined, undefined);
+      }
     });
 
     const counts: Record<string, number> = Object.fromEntries(Object.entries(trophyMap).map(([k, v]) => [k, v.length]));
