@@ -50,6 +50,8 @@ export const getAllSeasons = async (ctx: Context) => {
         isActive: season.isActive,
         startDate: season.startDate,
         endDate: season.endDate,
+        maxGames: season.maxGames,
+        showPoints: season.showPoints,
         playerCount: players.length,
         createdAt: season.createdAt,
         isMember: isPlayerInSeason
@@ -78,6 +80,8 @@ export const getAllSeasons = async (ctx: Context) => {
           isActive: season.isActive,
           startDate: season.startDate,
           endDate: season.endDate,
+          maxGames: season.maxGames,
+          showPoints: season.showPoints,
           playerCount: players.length,
           createdAt: season.createdAt,
           isMember: true
@@ -145,6 +149,8 @@ export const getActiveSeason = async (ctx: Context) => {
         isActive: activeSeason.isActive,
         startDate: activeSeason.startDate,
         endDate: activeSeason.endDate,
+        maxGames: activeSeason.maxGames,
+        showPoints: activeSeason.showPoints,
         players: (activeSeason as any).players,
         createdAt: activeSeason.createdAt
       }
@@ -167,6 +173,8 @@ export const getActiveSeason = async (ctx: Context) => {
         isActive: activeSeason.isActive,
         startDate: activeSeason.startDate,
         endDate: activeSeason.endDate,
+        maxGames: activeSeason.maxGames,
+        showPoints: activeSeason.showPoints,
         players: (activeSeason as any).players,
         createdAt: activeSeason.createdAt
       }
@@ -199,6 +207,8 @@ export const getActiveSeason = async (ctx: Context) => {
         isActive: false, // Previous season is not active
         startDate: previousSeason.startDate,
         endDate: previousSeason.endDate,
+        maxGames: previousSeason.maxGames,
+        showPoints: previousSeason.showPoints,
         players: (previousSeason as any).players,
         createdAt: previousSeason.createdAt
       }
@@ -440,5 +450,61 @@ export const removePlayerFromSeason = async (ctx: Context) => {
   ctx.body = {
     success: true,
     message: `Player removed from ${activeSeason.name}`
+  };
+};
+
+export const updateSeason = async (ctx: Context) => {
+  const { seasonId } = ctx.params;
+  const { maxGames, showPoints } = ctx.request.body as { maxGames?: number; showPoints?: boolean };
+
+  // Find the season and its league
+  const season = await Season.findByPk(seasonId, {
+    include: [
+      {
+        model: League,
+        as: 'league',
+        include: [
+          {
+            model: User,
+            as: 'administeredLeagues',
+            attributes: ['id']
+          }
+        ]
+      }
+    ]
+  });
+
+  if (!season) {
+    ctx.throw(404, 'Season not found');
+    return;
+  }
+
+  // Verify user is league admin
+  const league = (season as any).league;
+  const isAdmin = league?.administeredLeagues?.some((admin: any) => String(admin.id) === String(ctx.state.user.userId));
+
+  if (!isAdmin) {
+    ctx.throw(403, 'You are not an administrator of this league');
+    return;
+  }
+
+  // Update season settings
+  if (maxGames !== undefined) {
+    season.maxGames = maxGames;
+  }
+  if (showPoints !== undefined) {
+    season.showPoints = showPoints;
+  }
+
+  await season.save();
+
+  ctx.body = {
+    success: true,
+    message: 'Season settings updated',
+    season: {
+      id: season.id,
+      maxGames: season.maxGames,
+      showPoints: season.showPoints
+    }
   };
 };

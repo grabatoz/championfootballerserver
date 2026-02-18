@@ -12,6 +12,8 @@ interface SeasonAttributes {
   isActive: boolean;
   startDate: Date;
   endDate?: Date;
+  maxGames?: number;
+  showPoints?: boolean;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -26,6 +28,8 @@ class Season extends Model<SeasonAttributes, SeasonCreationAttributes> {
   declare isActive: boolean;
   declare startDate: Date;
   declare endDate?: Date;
+  declare maxGames?: number;
+  declare showPoints?: boolean;
   declare readonly createdAt: Date;
   declare readonly updatedAt: Date;
 
@@ -90,6 +94,15 @@ Season.init(
     endDate: {
       type: DataTypes.DATE,
       allowNull: true,
+    },
+    maxGames: {
+      type: DataTypes.INTEGER,
+      allowNull: true,
+    },
+    showPoints: {
+      type: DataTypes.BOOLEAN,
+      allowNull: true,
+      defaultValue: false,
     },
     createdAt: {
       type: DataTypes.DATE,

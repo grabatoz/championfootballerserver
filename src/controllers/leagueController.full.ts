@@ -230,7 +230,7 @@ export const getTrophyRoom = async (ctx: Context) => {
     const leagueIds = leagues.map((l: any) => String(l.id));
     const allSeasons = leagueIds.length > 0 ? await Season.findAll({
       where: { leagueId: { [Op.in]: leagueIds } },
-      attributes: ['id', 'leagueId', 'seasonNumber', 'name', 'isActive'],
+      attributes: ['id', 'leagueId', 'seasonNumber', 'name', 'isActive', 'maxGames', 'showPoints'],
       raw: true,
     }) : [];
     const seasonsByLeague: Record<string, any[]> = {};
@@ -570,7 +570,7 @@ export const getLeagueById = async (ctx: Context) => {
         {
           model: Season,
           as: 'seasons',
-          attributes: ['id', 'seasonNumber', 'name', 'isActive', 'startDate', 'endDate', 'createdAt'],
+          attributes: ['id', 'seasonNumber', 'name', 'isActive', 'startDate', 'endDate', 'maxGames', 'showPoints', 'createdAt'],
           include: [
             {
               model: User,

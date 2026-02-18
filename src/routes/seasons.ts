@@ -19,4 +19,12 @@ router.post('/players/:userId', required, seasonController.addPlayerToSeason);
 // Remove player from current active season
 router.delete('/players/:userId', required, seasonController.removePlayerFromSeason);
 
+// Direct season access router (for updating seasons by ID)
+const directSeasonRouter = new Router({ prefix: '/api/seasons' });
+
+// Update season settings (maxGames, showPoints)
+directSeasonRouter.patch('/:seasonId', required, seasonController.updateSeason);
+
+// Export both routers
 export default router;
+export { directSeasonRouter };
