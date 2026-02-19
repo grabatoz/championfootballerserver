@@ -659,25 +659,47 @@ export const getLeagueById = async (ctx: Context) => {
         }
       });
 
-      // Add matchNumber and process votes for each match
-      const matchesWithNumbers = matches.map((match: any, index: number) => {
-        const matchJson = match.toJSON();
-        
-        // Convert votes array to manOfTheMatchVotes object format
-        const manOfTheMatchVotes: Record<string, string> = {};
-        if (matchJson.votes && Array.isArray(matchJson.votes)) {
-          matchJson.votes.forEach((vote: any) => {
-            manOfTheMatchVotes[vote.voterId] = vote.votedForId;
-          });
+      // Group matches by seasonId and assign seasonMatchNumber
+      const matchesBySeasonMap: Record<string, any[]> = {};
+      matches.forEach((match: any) => {
+        const seasonId = match.seasonId || 'no-season';
+        if (!matchesBySeasonMap[seasonId]) {
+          matchesBySeasonMap[seasonId] = [];
         }
-        delete matchJson.votes; // Remove votes array
+        matchesBySeasonMap[seasonId].push(match);
+      });
+
+      // Sort matches within each season by date and assign seasonMatchNumber
+      const matchesWithNumbers: any[] = [];
+      Object.keys(matchesBySeasonMap).forEach(seasonId => {
+        const seasonMatches = matchesBySeasonMap[seasonId]
+          .sort((a: any, b: any) => {
+            const dateA = new Date(a.date || a.createdAt).getTime();
+            const dateB = new Date(b.date || b.createdAt).getTime();
+            return dateA - dateB; // Ascending order (oldest first)
+          })
+          .map((match: any, index: number) => {
+            const matchJson = match.toJSON();
+            
+            // Convert votes array to manOfTheMatchVotes object format
+            const manOfTheMatchVotes: Record<string, string> = {};
+            if (matchJson.votes && Array.isArray(matchJson.votes)) {
+              matchJson.votes.forEach((vote: any) => {
+                manOfTheMatchVotes[vote.voterId] = vote.votedForId;
+              });
+            }
+            delete matchJson.votes; // Remove votes array
+            
+            return {
+              ...matchJson,
+              seasonMatchNumber: index + 1, // Season-specific match number
+              matchNumber: index + 1, // Keep for backward compatibility
+              manOfTheMatchVotes,
+              availableUsers: matchAvailabilityMap[match.id] || []
+            };
+          });
         
-        return {
-          ...matchJson,
-          matchNumber: index + 1,
-          manOfTheMatchVotes,
-          availableUsers: matchAvailabilityMap[match.id] || [] // Add available users
-        };
+        matchesWithNumbers.push(...seasonMatches);
       });
 
       // Format seasons with members instead of players for frontend compatibility
@@ -818,25 +840,47 @@ export const getLeagueById = async (ctx: Context) => {
       }
     });
 
-    // Add matchNumber and process votes for each match
-    const matchesWithNumbers = matches.map((match: any, index: number) => {
-      const matchJson = match.toJSON();
-      
-      // Convert votes array to manOfTheMatchVotes object format
-      const manOfTheMatchVotes: Record<string, string> = {};
-      if (matchJson.votes && Array.isArray(matchJson.votes)) {
-        matchJson.votes.forEach((vote: any) => {
-          manOfTheMatchVotes[vote.voterId] = vote.votedForId;
-        });
+    // Group matches by seasonId and assign seasonMatchNumber
+    const matchesBySeasonMap: Record<string, any[]> = {};
+    matches.forEach((match: any) => {
+      const seasonId = match.seasonId || 'no-season';
+      if (!matchesBySeasonMap[seasonId]) {
+        matchesBySeasonMap[seasonId] = [];
       }
-      delete matchJson.votes; // Remove votes array
+      matchesBySeasonMap[seasonId].push(match);
+    });
+
+    // Sort matches within each season by date and assign seasonMatchNumber
+    const matchesWithNumbers: any[] = [];
+    Object.keys(matchesBySeasonMap).forEach(seasonId => {
+      const seasonMatches = matchesBySeasonMap[seasonId]
+        .sort((a: any, b: any) => {
+          const dateA = new Date(a.date || a.createdAt).getTime();
+          const dateB = new Date(b.date || b.createdAt).getTime();
+          return dateA - dateB; // Ascending order (oldest first)
+        })
+        .map((match: any, index: number) => {
+          const matchJson = match.toJSON();
+          
+          // Convert votes array to manOfTheMatchVotes object format
+          const manOfTheMatchVotes: Record<string, string> = {};
+          if (matchJson.votes && Array.isArray(matchJson.votes)) {
+            matchJson.votes.forEach((vote: any) => {
+              manOfTheMatchVotes[vote.voterId] = vote.votedForId;
+            });
+          }
+          delete matchJson.votes; // Remove votes array
+          
+          return {
+            ...matchJson,
+            seasonMatchNumber: index + 1, // Season-specific match number
+            matchNumber: index + 1, // Keep for backward compatibility
+            manOfTheMatchVotes,
+            availableUsers: matchAvailabilityMap[match.id] || []
+          };
+        });
       
-      return {
-        ...matchJson,
-        matchNumber: index + 1,
-        manOfTheMatchVotes,
-        availableUsers: matchAvailabilityMap[match.id] || [] // Add available users
-      };
+      matchesWithNumbers.push(...seasonMatches);
     });
 
     // Filter seasons - only show seasons where user is a member, sorted by seasonNumber DESC
