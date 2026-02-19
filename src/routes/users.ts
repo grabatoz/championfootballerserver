@@ -133,7 +133,112 @@ router.delete("/:id", required, async (ctx) => {
   ctx.response.status = 200;
 })
 
-export default router;
+// --- Global Stats API ---
+// GET /users/me/global-stats - get user's overall stats across all leagues
+router.get('/me/global-stats', required, async (ctx) => {
+  if (!ctx.state.user?.userId) {
+    ctx.status = 401;
+    ctx.body = { success: false, message: 'Unauthorized' };
+    return;
+  }
+
+  const userId = String(ctx.state.user.userId);
+  try {
+    // Fetch match IDs where user participated via join tables
+    const Home = (sequelize.models as any)?.UserHomeMatches;
+    const Away = (sequelize.models as any)?.UserAwayMatches;
+    let matchIds: string[] = [];
+    if (Home) {
+      const rows = await Home.findAll({ where: { userId }, attributes: ['matchId'], raw: true });
+      matchIds.push(...(rows as any[]).map(r => String(r.matchId)));
+    }
+    if (Away) {
+      const rows = await Away.findAll({ where: { userId }, attributes: ['matchId'], raw: true });
+      matchIds.push(...(rows as any[]).map(r => String(r.matchId)));
+    }
+    matchIds = Array.from(new Set(matchIds));
+
+    if (matchIds.length === 0) {
+      ctx.body = {
+        success: true,
+        stats: {
+          matchesPlayed: 0,
+          motmVotes: 0,
+          goals: 0,
+          assists: 0,
+          cleanSheets: 0,
+          defensiveImpact: 0
+        }
+      };
+      return;
+    }
+
+    // Load RESULT_PUBLISHED matches the user played in
+    const matches = await Match.findAll({
+      where: { id: { [Op.in]: matchIds as any }, status: 'RESULT_PUBLISHED' },
+      attributes: ['id', 'homeTeamGoals', 'awayTeamGoals'],
+      include: [
+        { model: (models as any).User, as: 'homeTeamUsers', attributes: ['id'] },
+        { model: (models as any).User, as: 'awayTeamUsers', attributes: ['id'] },
+        { model: Vote, as: 'votes', attributes: ['votedForId'] },
+      ],
+    });
+
+    // Load user stats for those matches
+    const statsRows = await (models as any).MatchStatistics.findAll({
+      where: { user_id: userId, match_id: { [Op.in]: matches.map((m: any) => m.id) as any } },
+      attributes: ['match_id', 'goals', 'assists', 'cleanSheets'],
+      raw: true,
+    });
+
+    const statsByMatch = new Map<string, { goals: number; assists: number; cleanSheets: number }>();
+    for (const r of statsRows as any[]) {
+      statsByMatch.set(String(r.match_id), {
+        goals: Number(r.goals || 0),
+        assists: Number(r.assists || 0),
+        cleanSheets: Number(r.cleanSheets || 0),
+      });
+    }
+
+    // Aggregate stats
+    let totalGoals = 0;
+    let totalAssists = 0;
+    let totalCleanSheets = 0;
+    let totalMotmVotes = 0;
+
+    for (const m of matches as any[]) {
+      const isHome = ((m.homeTeamUsers || []).some((u: any) => String(u.id) === userId));
+      const isAway = ((m.awayTeamUsers || []).some((u: any) => String(u.id) === userId));
+      if (!isHome && !isAway) continue;
+
+      const s = statsByMatch.get(String(m.id)) || { goals: 0, assists: 0, cleanSheets: 0 };
+      totalGoals += s.goals;
+      totalAssists += s.assists;
+      totalCleanSheets += s.cleanSheets;
+
+      // Count MOTM votes (all votes are MOTM votes in this system)
+      const votes = (m.votes || []) as any[];
+      const motmVotes = votes.filter((v: any) => String(v.votedForId) === userId).length;
+      totalMotmVotes += motmVotes;
+    }
+
+    ctx.body = {
+      success: true,
+      stats: {
+        matchesPlayed: matches.length,
+        motmVotes: totalMotmVotes,
+        goals: totalGoals,
+        assists: totalAssists,
+        cleanSheets: totalCleanSheets,
+        defensiveImpact: 0 // Not tracked in current schema
+      }
+    };
+  } catch (e) {
+    console.error('GET /users/me/global-stats failed', e);
+    ctx.status = 500;
+    ctx.body = { success: false, message: 'Failed to fetch global stats' };
+  }
+});
 
 // --- Achievements API ---
 // GET /users/me/achievements - compute achievements/badges on the server
@@ -347,3 +452,5 @@ router.post('/me/achievements/award', required, async (ctx) => {
     ctx.body = { success: false, message: 'Failed to persist achievements' };
   }
 });
+
+export default router;
