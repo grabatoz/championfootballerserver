@@ -1742,6 +1742,27 @@ export const createMatchInLeague = async (ctx: Context) => {
 
     console.log(`📅 Creating match for league ${leagueId} in active Season ${activeSeason.seasonNumber} (${activeSeason.id})`);
 
+    // 🚫 Check if season has reached maxGames limit
+    if (activeSeason.maxGames && activeSeason.maxGames > 0) {
+      const currentMatchCount = await Match.count({
+        where: {
+          leagueId,
+          seasonId: activeSeason.id
+        }
+      });
+
+      if (currentMatchCount >= activeSeason.maxGames) {
+        ctx.status = 400;
+        ctx.body = {
+          success: false,
+          message: `Maximum match limit reached for Season ${activeSeason.seasonNumber}. Limit: ${activeSeason.maxGames} matches. Please start a new season to create more matches.`
+        };
+        return;
+      }
+
+      console.log(`✅ Season match limit check: ${currentMatchCount}/${activeSeason.maxGames} matches`);
+    }
+
     // Handle image uploads if present
     let homeTeamImage: string | null = null;
     let awayTeamImage: string | null = null;
