@@ -142,7 +142,8 @@ router.post("/auth/register", none, async (ctx: Context) => {
       gender: userData.gender,
       country: userData.country,
       state: userData.state,
-      city: userData.city
+      city: userData.city,
+      phone: userData.phone
     });
 
     // Create user with all required fields
@@ -156,6 +157,7 @@ router.post("/auth/register", none, async (ctx: Context) => {
       country: userData.country ?? null,
       state: userData.state ?? null,
       city: userData.city ?? null,
+      phone: userData.phone ?? null,
       position: userData.position || 'Goalkeeper (GK)',
       positionType: userData.positionType || 'Goalkeeper',
       style: userData.style || 'Axe',
@@ -261,6 +263,7 @@ router.post("/auth/register", none, async (ctx: Context) => {
         country: newUser.country,
         state: newUser.state,
         city: newUser.city,
+        phone: newUser.phone,
         position: newUser.position,
         positionType: newUser.positionType,
         style: newUser.style,

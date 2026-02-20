@@ -84,6 +84,24 @@ async function ensureUserLocationColumns(): Promise<void> {
   }
 }
 
+async function ensureUserPhoneColumn(): Promise<void> {
+  const qi = sequelize.getQueryInterface() as QueryInterface;
+  try {
+    const table = await qi.describeTable('users');
+    if (!table.phone) {
+      await qi.addColumn('users', 'phone', {
+        type: DataTypes.STRING(255),
+        allowNull: true,
+      });
+    }
+  } catch (err: any) {
+    if (err?.message?.includes('does not exist') || err?.original?.code === '42P01') {
+      return;
+    }
+    throw err;
+  }
+}
+
 let initialized = false;
 
 // Initialize database function
@@ -100,6 +118,7 @@ export async function initializeDatabase() {
 
     await ensureUserProviderColumn();
     await ensureUserLocationColumns();
+    await ensureUserPhoneColumn();
 
     // Ensure DB NOTIFY/LISTEN infrastructure and triggers (idempotent)
     try {
@@ -216,6 +235,7 @@ export async function initializeDatabase() {
       console.log('⚠️ Note: Some indexes already exist (this is normal)');
       await ensureUserProviderColumn();
       await ensureUserLocationColumns();
+      await ensureUserPhoneColumn();
       console.log('✅ DB ready');
     } else {
       throw e;
