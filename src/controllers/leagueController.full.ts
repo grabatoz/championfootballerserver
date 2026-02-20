@@ -1930,8 +1930,15 @@ export const updateMatchInLeague = async (ctx: Context) => {
     awayGuests,
     homeCaptainId,
     awayCaptainId,
-    notifyOnly
+    notifyOnly,
+    notificationMessage
   } = body;
+
+  console.log('📢 [SERVER] updateMatchInLeague called');
+  console.log('📢 [SERVER] body keys:', Object.keys(body));
+  console.log('📢 [SERVER] notificationMessage:', JSON.stringify(notificationMessage));
+  console.log('📢 [SERVER] homeTeamUsers:', homeTeamUsers);
+  console.log('📢 [SERVER] awayTeamUsers:', awayTeamUsers);
 
   try {
     // Find the match
@@ -2026,6 +2033,60 @@ export const updateMatchInLeague = async (ctx: Context) => {
       await MatchGuest.bulkCreate(allGuests);
     }
 
+    // Send notification message to all match players if provided
+    let notificationsSent = 0;
+    console.log('📢 [SERVER] Checking notification - notificationMessage:', JSON.stringify(notificationMessage));
+    console.log('📢 [SERVER] notificationMessage truthy?', !!notificationMessage);
+    console.log('📢 [SERVER] notificationMessage trim?', notificationMessage ? notificationMessage.trim() : 'N/A');
+    
+    if (notificationMessage && notificationMessage.trim()) {
+      console.log('📢 [SERVER] INSIDE notification block - will send notifications');
+      try {
+        // Collect all unique player IDs from both teams
+        const allPlayerIds = new Set<string>();
+        const homeIds2: string[] = homeTeamUsers ? JSON.parse(homeTeamUsers) : [];
+        const awayIds2: string[] = awayTeamUsers ? JSON.parse(awayTeamUsers) : [];
+        homeIds2.forEach((id: string) => allPlayerIds.add(id));
+        awayIds2.forEach((id: string) => allPlayerIds.add(id));
+
+        console.log('📢 [SERVER] All player IDs:', Array.from(allPlayerIds));
+        console.log('📢 [SERVER] Current user (admin):', currentUserId);
+
+        // Send to ALL players including admin
+        console.log('📢 [SERVER] Player IDs (including admin):',  Array.from(allPlayerIds));
+        console.log('📢 [SERVER] Players to notify:', allPlayerIds.size);
+
+        if (allPlayerIds.size > 0) {
+          const league = (match as any).league;
+          const leagueName = league?.name || 'League';
+
+          const notificationsToCreate = Array.from(allPlayerIds).map(playerId => ({
+            user_id: playerId,
+            type: 'MATCH_NOTIFICATION',
+            title: `Match Update - ${leagueName}`,
+            body: notificationMessage.trim(),
+            meta: {
+              matchId: matchId,
+              leagueId: leagueId,
+              leagueName: leagueName,
+              sentBy: currentUserId,
+              homeTeamName: homeTeamName || match.homeTeamName,
+              awayTeamName: awayTeamName || match.awayTeamName,
+              matchDate: date || match.date
+            },
+            read: false,
+            created_at: new Date()
+          }));
+
+          await Notification.bulkCreate(notificationsToCreate);
+          notificationsSent = notificationsToCreate.length;
+          console.log(`📢 Sent match notification to ${notificationsSent} players: "${notificationMessage.trim().substring(0, 50)}..."`);
+        }
+      } catch (notifError) {
+        console.warn('Failed to send match notification:', notifError);
+      }
+    }
+
     ctx.body = {
       success: true,
       match: {
@@ -2042,7 +2103,8 @@ export const updateMatchInLeague = async (ctx: Context) => {
         notes: (match as any).notes,
         status: match.status
       },
-      message: 'Match updated successfully'
+      message: notificationsSent > 0 ? `Match updated & notification sent to ${notificationsSent} players` : 'Match updated successfully',
+      notificationsSent
     };
   } catch (err) {
     console.error('Update match in league error:', err);
