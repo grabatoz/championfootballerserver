@@ -102,6 +102,30 @@ async function ensureUserPhoneColumn(): Promise<void> {
   }
 }
 
+async function ensureResetCodeColumns(): Promise<void> {
+  const qi = sequelize.getQueryInterface() as QueryInterface;
+  try {
+    const table = await qi.describeTable('users');
+    if (!table.resetCode) {
+      await qi.addColumn('users', 'resetCode', {
+        type: DataTypes.STRING(255),
+        allowNull: true,
+      });
+    }
+    if (!table.resetCodeExpiry) {
+      await qi.addColumn('users', 'resetCodeExpiry', {
+        type: DataTypes.DATE,
+        allowNull: true,
+      });
+    }
+  } catch (err: any) {
+    if (err?.message?.includes('does not exist') || err?.original?.code === '42P01') {
+      return;
+    }
+    throw err;
+  }
+}
+
 let initialized = false;
 
 // Initialize database function
@@ -119,6 +143,7 @@ export async function initializeDatabase() {
     await ensureUserProviderColumn();
     await ensureUserLocationColumns();
     await ensureUserPhoneColumn();
+    await ensureResetCodeColumns();
 
     // Ensure DB NOTIFY/LISTEN infrastructure and triggers (idempotent)
     try {
@@ -236,6 +261,7 @@ export async function initializeDatabase() {
       await ensureUserProviderColumn();
       await ensureUserLocationColumns();
       await ensureUserPhoneColumn();
+      await ensureResetCodeColumns();
       console.log('✅ DB ready');
     } else {
       throw e;

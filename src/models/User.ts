@@ -29,6 +29,8 @@ export interface UserAttributes {
     physical: number;
   };
   xp?: number;
+  resetCode?: string | null;
+  resetCodeExpiry?: Date | null;
   provider: string | null;
   providerId: string | null;
   achievements?: string[];
@@ -63,6 +65,8 @@ export class User extends Model<UserAttributes> implements UserAttributes {
     physical: number;
   };
   public xp!: number;
+  public resetCode!: string | null;
+  public resetCodeExpiry!: Date | null;
   public provider!: string | null;
   public providerId!: string | null;
   public achievements!: string[];
@@ -160,6 +164,14 @@ User.init(
     },
     phone: {
       type: DataTypes.STRING,
+      allowNull: true,
+    },
+    resetCode: {
+      type: DataTypes.STRING,
+      allowNull: true,
+    },
+    resetCodeExpiry: {
+      type: DataTypes.DATE,
       allowNull: true,
     },
     position: {

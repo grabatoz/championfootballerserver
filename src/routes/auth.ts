@@ -299,28 +299,124 @@ router.post("/auth/register", none, async (ctx: Context) => {
 });
 
 router.post("/auth/reset-password", none, async (ctx: CustomContext) => {
-  const { email } = ctx.request.body.user as UserInput;
+  const { email } = ctx.request.body.user || ctx.request.body;
   if (!email) {
     ctx.throw(400, "Email is required");
   }
   
   const userEmail = email.toLowerCase();
-  const password = getLoginCode();
+  const otpCode = getLoginCode(); // 5-digit OTP
 
   const user = await User.findOne({ where: { email: userEmail } });
   if (!user) {
     ctx.throw(404, "We can't find a user with that email.");
   }
 
-  await user.update({ password: await hash(password, 10) });
+  // Store OTP code (hashed) with 10 minute expiry — don't change the actual password yet
+  const resetCodeExpiry = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
+  await user.update({
+    resetCode: await hash(otpCode, 10),
+    resetCodeExpiry,
+  });
 
   await transporter.sendMail({
     to: userEmail,
-    subject: `Password reset for Champion Footballer`,
-    html: `Please use the new password ${password} to login.`,
+    subject: `Your Champion Footballer verification code`,
+    html: `
+      <div style="font-family:Arial,sans-serif;line-height:1.6;color:#111;background:#f7f7f9;padding:24px">
+        <div style="max-width:480px;margin:0 auto;background:#ffffff;border:1px solid #e5e7eb;border-radius:8px;padding:32px;text-align:center">
+          <h1 style="margin:0 0 8px;font-size:22px;color:#111;">Password Reset</h1>
+          <p style="margin:0 0 24px;color:#6b7280;">Use the code below to reset your password. It expires in 10 minutes.</p>
+          <div style="background:#f0fdf4;border:2px solid #00a77f;border-radius:8px;padding:16px 24px;display:inline-block;margin:0 0 24px">
+            <span style="font-size:32px;font-weight:bold;letter-spacing:8px;color:#00a77f">${otpCode}</span>
+          </div>
+          <p style="margin:0;font-size:13px;color:#9ca3af;">If you didn't request this, you can safely ignore this email.</p>
+        </div>
+      </div>
+    `,
   });
 
-  ctx.response.status = 200;
+  ctx.status = 200;
+  ctx.body = { success: true, message: "Verification code sent to your email." };
+});
+
+router.post("/auth/verify-reset-code", none, async (ctx: CustomContext) => {
+  const { email, code, newPassword } = ctx.request.body.user || ctx.request.body;
+
+  if (!email || !code || !newPassword) {
+    ctx.throw(400, "Email, verification code, and new password are required.");
+  }
+
+  if (newPassword.length < 6) {
+    ctx.throw(400, "Password must be at least 6 characters long.");
+  }
+
+  const userEmail = email.toLowerCase();
+  const user = await User.findOne({ where: { email: userEmail } });
+
+  if (!user) {
+    ctx.throw(404, "We can't find a user with that email.");
+  }
+
+  // Check if reset code exists
+  if (!user.resetCode || !user.resetCodeExpiry) {
+    ctx.throw(400, "No verification code was requested. Please request a new one.");
+  }
+
+  // Check if code is expired
+  if (new Date() > new Date(user.resetCodeExpiry)) {
+    await user.update({ resetCode: null, resetCodeExpiry: null });
+    ctx.throw(400, "Verification code has expired. Please request a new one.");
+  }
+
+  // Verify the OTP code
+  const codeMatch = await compare(code, user.resetCode);
+  if (!codeMatch) {
+    ctx.throw(400, "Invalid verification code.");
+  }
+
+  // Code is valid — update the password and clear the reset code
+  await user.update({
+    password: await hash(newPassword, 10),
+    resetCode: null,
+    resetCodeExpiry: null,
+  });
+
+  ctx.status = 200;
+  ctx.body = { success: true, message: "Password has been reset successfully. You can now log in with your new password." };
+});
+
+// Verify OTP code only (without setting new password)
+router.post("/auth/verify-otp", none, async (ctx: CustomContext) => {
+  const { email, code } = ctx.request.body.user || ctx.request.body;
+
+  if (!email || !code) {
+    ctx.throw(400, "Email and verification code are required.");
+  }
+
+  const userEmail = email.toLowerCase();
+  const user = await User.findOne({ where: { email: userEmail } });
+
+  if (!user) {
+    ctx.throw(404, "We can't find a user with that email.");
+  }
+
+  if (!user.resetCode || !user.resetCodeExpiry) {
+    ctx.throw(400, "No verification code was requested. Please request a new one.");
+  }
+
+  if (new Date() > new Date(user.resetCodeExpiry)) {
+    await user.update({ resetCode: null, resetCodeExpiry: null });
+    ctx.throw(400, "Verification code has expired. Please request a new one.");
+  }
+
+  const codeMatch = await compare(code, user.resetCode);
+  if (!codeMatch) {
+    ctx.throw(400, "Invalid verification code.");
+  }
+
+  ctx.status = 200;
+  ctx.body = { success: true, message: "Code verified successfully." };
 });
 
 router.post("/auth/login", none, async (ctx: CustomContext) => {
