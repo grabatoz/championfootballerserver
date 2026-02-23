@@ -176,7 +176,7 @@ router.get('/me/global-stats', required, async (ctx) => {
     // Load RESULT_PUBLISHED matches the user played in
     const matches = await Match.findAll({
       where: { id: { [Op.in]: matchIds as any }, status: 'RESULT_PUBLISHED' },
-      attributes: ['id', 'homeTeamGoals', 'awayTeamGoals'],
+      attributes: ['id', 'homeTeamGoals', 'awayTeamGoals', 'homeDefensiveImpactId', 'awayDefensiveImpactId'],
       include: [
         { model: (models as any).User, as: 'homeTeamUsers', attributes: ['id'] },
         { model: (models as any).User, as: 'awayTeamUsers', attributes: ['id'] },
@@ -187,16 +187,17 @@ router.get('/me/global-stats', required, async (ctx) => {
     // Load user stats for those matches
     const statsRows = await (models as any).MatchStatistics.findAll({
       where: { user_id: userId, match_id: { [Op.in]: matches.map((m: any) => m.id) as any } },
-      attributes: ['match_id', 'goals', 'assists', 'cleanSheets'],
+      attributes: ['match_id', 'goals', 'assists', 'cleanSheets', 'defence'],
       raw: true,
     });
 
-    const statsByMatch = new Map<string, { goals: number; assists: number; cleanSheets: number }>();
+    const statsByMatch = new Map<string, { goals: number; assists: number; cleanSheets: number; defence: number }>();
     for (const r of statsRows as any[]) {
       statsByMatch.set(String(r.match_id), {
         goals: Number(r.goals || 0),
         assists: Number(r.assists || 0),
         cleanSheets: Number(r.cleanSheets || 0),
+        defence: Number(r.defence || 0),
       });
     }
 
@@ -205,16 +206,23 @@ router.get('/me/global-stats', required, async (ctx) => {
     let totalAssists = 0;
     let totalCleanSheets = 0;
     let totalMotmVotes = 0;
+    let totalDefensiveImpact = 0;
 
     for (const m of matches as any[]) {
       const isHome = ((m.homeTeamUsers || []).some((u: any) => String(u.id) === userId));
       const isAway = ((m.awayTeamUsers || []).some((u: any) => String(u.id) === userId));
       if (!isHome && !isAway) continue;
 
-      const s = statsByMatch.get(String(m.id)) || { goals: 0, assists: 0, cleanSheets: 0 };
+      const s = statsByMatch.get(String(m.id)) || { goals: 0, assists: 0, cleanSheets: 0, defence: 0 };
       totalGoals += s.goals;
       totalAssists += s.assists;
       totalCleanSheets += s.cleanSheets;
+      totalDefensiveImpact += s.defence;
+
+      // Also count captain picks for Defensive Impact
+      if (String(m.homeDefensiveImpactId) === userId || String(m.awayDefensiveImpactId) === userId) {
+        totalDefensiveImpact += 1;
+      }
 
       // Count MOTM votes (all votes are MOTM votes in this system)
       const votes = (m.votes || []) as any[];
@@ -230,7 +238,7 @@ router.get('/me/global-stats', required, async (ctx) => {
         goals: totalGoals,
         assists: totalAssists,
         cleanSheets: totalCleanSheets,
-        defensiveImpact: 0 // Not tracked in current schema
+        defensiveImpact: totalDefensiveImpact
       }
     };
   } catch (e) {
