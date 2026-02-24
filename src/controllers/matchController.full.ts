@@ -1165,6 +1165,7 @@ export const getMatchStats = async (ctx: Context) => {
             freeKicks: stat.freeKicks,
             defence: stat.defence,
             impact: stat.impact,
+            xpAwarded: (stat as any).xpAwarded || 0,
             user: (stat as any).user
           }
         };
@@ -1194,6 +1195,7 @@ export const getMatchStats = async (ctx: Context) => {
         freeKicks: s.freeKicks,
         defence: s.defence,
         impact: s.impact,
+        xpAwarded: (s as any).xpAwarded || 0,
         user: (s as any).user
       }))
     };
