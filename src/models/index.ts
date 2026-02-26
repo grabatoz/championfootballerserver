@@ -9,6 +9,7 @@ import Session from './Session';
 import Vote from './Vote';
 import MatchGuest from './MatchGuest';
 import  Notification  from './Notification';
+import { MatchPlayerLayout } from './MatchPlayerLayout';
 import { realtime } from '../services/realtime';
 import { invalidateCache as invalidateServerCache } from '../middleware/memoryCache';
 
@@ -21,7 +22,7 @@ Notification.initModel(sequelize);
 Match.hasMany(MatchGuest, { as: 'guestPlayers', foreignKey: 'matchId', onDelete: 'CASCADE' });
 MatchGuest.belongsTo(Match, { as: 'match', foreignKey: 'matchId' });
 
-const models = { User, League, Match, Season, MatchGuest, MatchStatistics, Session, Vote, MatchAvailability, Notification };
+const models = { User, League, Match, Season, MatchGuest, MatchStatistics, Session, Vote, MatchAvailability, Notification, MatchPlayerLayout };
 
 // MINIMAL associations to avoid conflicts
 Match.hasMany(MatchAvailability, { as: 'availabilityRecords', foreignKey: 'match_id' });
@@ -36,8 +37,7 @@ Object.values(models).forEach((model: any) => {
 });
 
 export default models;
-export { User, League, Match, Season, MatchGuest, MatchStatistics, Session, Vote, MatchAvailability, Notification };
-export { default as MatchPlayerLayout } from './MatchPlayerLayout';
+export { User, League, Match, Season, MatchGuest, MatchStatistics, Session, Vote, MatchAvailability, Notification, MatchPlayerLayout };
 
 // Root-level realtime hooks (non-destructive): broadcast key entity changes
 try {

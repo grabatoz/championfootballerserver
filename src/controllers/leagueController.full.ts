@@ -10,6 +10,7 @@ import Notification from '../models/Notification';
 import Vote from '../models/Vote';
 import MatchStatistics from '../models/MatchStatistics';
 import { MatchAvailability } from '../models/MatchAvailability';
+import { MatchPlayerLayout } from '../models/MatchPlayerLayout';
 
 const { League, Match, User, MatchGuest } = models;
 
@@ -469,6 +470,281 @@ export const getLeagueMatch = async (ctx: Context) => {
     console.error('Get league match error', err);
     ctx.status = 500;
     ctx.body = { success: false, message: 'Failed to fetch match' };
+  }
+};
+
+// ── Team-view endpoint for the pitch formation screen ────────────────────
+export const getTeamView = async (ctx: Context) => {
+  const { id, matchId } = ctx.params;
+  try {
+    const match = await Match.findOne({
+      where: { id: matchId, leagueId: id },
+      include: [
+        { model: User, as: 'homeTeamUsers', attributes: ['id', 'firstName', 'lastName', 'profilePicture', 'shirtNumber', 'position'] },
+        { model: User, as: 'awayTeamUsers', attributes: ['id', 'firstName', 'lastName', 'profilePicture', 'shirtNumber', 'position'] },
+        { model: MatchGuest, as: 'guestPlayers', attributes: ['id', 'firstName', 'lastName', 'shirtNumber', 'team'] },
+      ],
+    });
+
+    if (!match) {
+      ctx.status = 404;
+      ctx.body = { success: false, message: 'Match not found' };
+      return;
+    }
+
+    // Map users → shape the client expects (role instead of position)
+    const mapUser = (u: any) => ({
+      id: String(u.id),
+      firstName: u.firstName,
+      lastName: u.lastName,
+      shirtNumber: u.shirtNumber || null,
+      role: u.position || null,
+    });
+
+    const homeTeam = ((match as any).homeTeamUsers || []).map(mapUser);
+    const awayTeam = ((match as any).awayTeamUsers || []).map(mapUser);
+    const guests   = ((match as any).guestPlayers  || []).map((g: any) => ({
+      id: String(g.id),
+      firstName: g.firstName,
+      lastName: g.lastName,
+      shirtNumber: g.shirtNumber || null,
+      team: g.team,
+    }));
+
+    // Load saved pitch positions
+    let positions: { home: Record<string, { x: number; y: number }>; away: Record<string, { x: number; y: number }> } = { home: {}, away: {} };
+    try {
+      // Ensure table exists before querying
+      await MatchPlayerLayout.sequelize!.query(`
+        CREATE TABLE IF NOT EXISTS match_player_layouts (
+          "matchId" VARCHAR(255) NOT NULL,
+          "userId" VARCHAR(255) NOT NULL,
+          team VARCHAR(10) NOT NULL,
+          x FLOAT NOT NULL,
+          y FLOAT NOT NULL,
+          "createdAt" TIMESTAMPTZ DEFAULT NOW(),
+          "updatedAt" TIMESTAMPTZ DEFAULT NOW(),
+          PRIMARY KEY ("matchId","userId")
+        );
+      `);
+      const layouts = await MatchPlayerLayout.findAll({ where: { matchId } });
+      console.log(`[getTeamView] Loaded ${layouts.length} layout positions for match ${matchId}`);
+      for (const l of layouts) {
+        const side = l.team === 'away' ? 'away' : 'home';
+        positions[side][String(l.userId)] = { x: l.x, y: l.y };
+      }
+    } catch (posErr) {
+      console.error('[getTeamView] Failed to load positions:', posErr);
+    }
+
+    // Removed players from match JSON column
+    const removed = (match as any).removed || { home: [], away: [] };
+
+    ctx.body = {
+      success: true,
+      match: {
+        homeTeamName: match.homeTeamName || 'Home',
+        awayTeamName: match.awayTeamName || 'Away',
+        status: normalizeStatus(match.status),
+        homeCaptainId: match.homeCaptainId || null,
+        awayCaptainId: match.awayCaptainId || null,
+        homeTeamGoals: match.homeTeamGoals ?? null,
+        awayTeamGoals: match.awayTeamGoals ?? null,
+        homeTeam,
+        awayTeam,
+        guests,
+        positions,
+        removed,
+      },
+    };
+  } catch (err) {
+    console.error('getTeamView error', err);
+    ctx.status = 500;
+    ctx.body = { success: false, message: 'Failed to load team view' };
+  }
+};
+
+// ── Save pitch layout positions ──────────────────────────────────────────
+export const saveLayout = async (ctx: Context) => {
+  const { matchId } = ctx.params;
+  const { team, positions } = ctx.request.body as { team?: string; positions?: Record<string, { x: number; y: number }> };
+
+  if (!team || !positions || typeof positions !== 'object') {
+    ctx.status = 400;
+    ctx.body = { success: false, message: 'team and positions required' };
+    return;
+  }
+
+  const side = team === 'away' ? 'away' : 'home';
+
+  try {
+    const sequelizeInstance = MatchPlayerLayout.sequelize!;
+
+    // Ensure table exists (createIfNotExists)
+    await sequelizeInstance.query(`
+      CREATE TABLE IF NOT EXISTS match_player_layouts (
+        "matchId" VARCHAR(255) NOT NULL,
+        "userId" VARCHAR(255) NOT NULL,
+        team VARCHAR(10) NOT NULL,
+        x FLOAT NOT NULL,
+        y FLOAT NOT NULL,
+        "createdAt" TIMESTAMPTZ DEFAULT NOW(),
+        "updatedAt" TIMESTAMPTZ DEFAULT NOW(),
+        PRIMARY KEY ("matchId","userId")
+      );
+    `);
+
+    // Upsert each player position
+    for (const [userId, pos] of Object.entries(positions)) {
+      if (pos && typeof pos.x === 'number' && typeof pos.y === 'number') {
+        await MatchPlayerLayout.upsert({ matchId, userId, team: side, x: pos.x, y: pos.y });
+      }
+    }
+
+    ctx.body = { success: true };
+  } catch (err) {
+    console.error('saveLayout error', err);
+    ctx.status = 500;
+    ctx.body = { success: false, message: 'Failed to save layout' };
+  }
+};
+
+// ── Remove player from match team ────────────────────────────────────────
+export const removePlayerFromTeam = async (ctx: Context) => {
+  const { matchId } = ctx.params;
+  const { team, userId } = ctx.request.body as { team?: string; userId?: string };
+  if (!team || !userId) {
+    ctx.status = 400;
+    ctx.body = { success: false, message: 'team and userId required' };
+    return;
+  }
+  const side = team === 'away' ? 'away' : 'home';
+
+  try {
+    const match = await Match.findByPk(matchId);
+    if (!match) { ctx.status = 404; ctx.body = { success: false }; return; }
+
+    const removed: { home: string[]; away: string[] } = (match as any).removed || { home: [], away: [] };
+    if (!removed[side].includes(String(userId))) {
+      removed[side].push(String(userId));
+    }
+    await match.update({ removed } as any);
+    ctx.body = { success: true, removed };
+  } catch (err) {
+    console.error('removePlayerFromTeam error', err);
+    ctx.status = 500;
+    ctx.body = { success: false, message: 'Failed to remove player' };
+  }
+};
+
+// ── Make captain ─────────────────────────────────────────────────────────
+export const makeCaptain = async (ctx: Context) => {
+  const { matchId } = ctx.params;
+  const { team, userId } = ctx.request.body as { team?: string; userId?: string };
+  if (!team || !userId) {
+    ctx.status = 400;
+    ctx.body = { success: false, message: 'team and userId required' };
+    return;
+  }
+
+  try {
+    const match = await Match.findByPk(matchId);
+    if (!match) { ctx.status = 404; ctx.body = { success: false }; return; }
+
+    const field = team === 'away' ? 'awayCaptainId' : 'homeCaptainId';
+    await match.update({ [field]: userId } as any);
+    ctx.body = { success: true };
+  } catch (err) {
+    console.error('makeCaptain error', err);
+    ctx.status = 500;
+    ctx.body = { success: false, message: 'Failed to set captain' };
+  }
+};
+
+// ── Switch player between teams ──────────────────────────────────────────
+export const switchPlayerTeam = async (ctx: Context) => {
+  const { id, matchId } = ctx.params;
+  const { userId, from } = ctx.request.body as { userId?: string; from?: string };
+  if (!userId || !from) {
+    ctx.status = 400;
+    ctx.body = { success: false, message: 'userId and from required' };
+    return;
+  }
+  const fromSide = from === 'away' ? 'away' : 'home';
+  const toSide = fromSide === 'home' ? 'away' : 'home';
+
+  try {
+    const match = await Match.findOne({
+      where: { id: matchId, leagueId: id },
+    });
+    if (!match) { ctx.status = 404; ctx.body = { success: false }; return; }
+
+    const sequelizeInst = Match.sequelize!;
+    const homeJoin = 'MatchHomeTeamUsers';
+    const awayJoin = 'MatchAwayTeamUsers';
+    const removeTable = fromSide === 'home' ? homeJoin : awayJoin;
+    const addTable = toSide === 'home' ? homeJoin : awayJoin;
+
+    // Remove from current team
+    await sequelizeInst.query(
+      `DELETE FROM "${removeTable}" WHERE "matchId" = :matchId AND "userId" = :userId`,
+      { replacements: { matchId, userId }, type: QueryTypes.DELETE }
+    );
+    // Add to other team
+    await sequelizeInst.query(
+      `INSERT INTO "${addTable}" ("matchId","userId","createdAt","updatedAt") VALUES (:matchId, :userId, NOW(), NOW()) ON CONFLICT DO NOTHING`,
+      { replacements: { matchId, userId }, type: QueryTypes.INSERT }
+    );
+
+    ctx.body = { success: true };
+  } catch (err) {
+    console.error('switchPlayerTeam error', err);
+    ctx.status = 500;
+    ctx.body = { success: false, message: 'Failed to switch player' };
+  }
+};
+
+// ── Replace player (remove one, add another) ─────────────────────────────
+export const replacePlayer = async (ctx: Context) => {
+  const { id, matchId } = ctx.params;
+  const { team, removedId, replacementId } = ctx.request.body as { team?: string; removedId?: string; replacementId?: string };
+  if (!team || !removedId || !replacementId) {
+    ctx.status = 400;
+    ctx.body = { success: false, message: 'team, removedId and replacementId required' };
+    return;
+  }
+  const side = team === 'away' ? 'away' : 'home';
+  const joinTable = side === 'home' ? 'MatchHomeTeamUsers' : 'MatchAwayTeamUsers';
+
+  try {
+    const match = await Match.findOne({ where: { id: matchId, leagueId: id } });
+    if (!match) { ctx.status = 404; ctx.body = { success: false }; return; }
+
+    const sequelizeInst = Match.sequelize!;
+
+    // Remove old player from join table
+    await sequelizeInst.query(
+      `DELETE FROM "${joinTable}" WHERE "matchId" = :matchId AND "userId" = :removedId`,
+      { replacements: { matchId, removedId }, type: QueryTypes.DELETE }
+    );
+    // Add replacement
+    await sequelizeInst.query(
+      `INSERT INTO "${joinTable}" ("matchId","userId","createdAt","updatedAt") VALUES (:matchId, :replacementId, NOW(), NOW()) ON CONFLICT DO NOTHING`,
+      { replacements: { matchId, replacementId }, type: QueryTypes.INSERT }
+    );
+
+    // Mark old player as removed in JSON
+    const removed: { home: string[]; away: string[] } = (match as any).removed || { home: [], away: [] };
+    if (!removed[side].includes(String(removedId))) {
+      removed[side].push(String(removedId));
+    }
+    await match.update({ removed } as any);
+
+    ctx.body = { success: true };
+  } catch (err) {
+    console.error('replacePlayer error', err);
+    ctx.status = 500;
+    ctx.body = { success: false, message: 'Failed to replace player' };
   }
 };
 

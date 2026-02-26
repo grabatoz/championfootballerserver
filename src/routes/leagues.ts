@@ -62,6 +62,24 @@ router.post('/:id/matches', required, upload.fields([
 // Get specific match in league
 router.get('/:id/matches/:matchId', required, leagueController.getLeagueMatch);
 
+// Team-view (pitch formation screen)
+router.get('/:id/matches/:matchId/team-view', required, leagueController.getTeamView);
+
+// Save pitch layout positions
+router.patch('/:id/matches/:matchId/layout', required, leagueController.saveLayout);
+
+// Remove player from match team
+router.post('/:id/matches/:matchId/remove', required, leagueController.removePlayerFromTeam);
+
+// Make captain
+router.post('/:id/matches/:matchId/make-captain', required, leagueController.makeCaptain);
+
+// Switch player between teams
+router.post('/:id/matches/:matchId/switch', required, leagueController.switchPlayerTeam);
+
+// Replace player in match
+router.post('/:id/matches/:matchId/replace', required, leagueController.replacePlayer);
+
 // Update match in league
 router.patch('/:id/matches/:matchId', required, upload.fields([
   { name: 'homeTeamImage', maxCount: 1 },

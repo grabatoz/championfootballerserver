@@ -1460,7 +1460,7 @@ export const submitCaptainPicks = async (ctx: Context) => {
   }
 };
 
-// Get match prediction
+// Get match prediction — team strength analysis based on player XP
 export const getMatchPrediction = async (ctx: Context) => {
   const { matchId } = ctx.params;
 
@@ -1469,30 +1469,114 @@ export const getMatchPrediction = async (ctx: Context) => {
     return;
   }
 
-  const userId = ctx.state.user.userId;
-
   try {
-    const MatchPrediction = (models as any).MatchPrediction;
-    if (!MatchPrediction) {
-      ctx.throw(404, 'MatchPrediction model not found');
-      return;
-    }
-    const prediction = await MatchPrediction.findOne({
-      where: { matchId, userId }
+    // Load match with team players
+    const match = await Match.findByPk(matchId, {
+      include: [
+        { model: User, as: 'homeTeamUsers', attributes: ['id', 'xp'] },
+        { model: User, as: 'awayTeamUsers', attributes: ['id', 'xp'] },
+      ],
     });
 
-    if (!prediction) {
-      ctx.body = { success: true, prediction: null };
+    if (!match) {
+      ctx.body = { success: true, available: false, reason: 'MATCH_NOT_FOUND' };
       return;
     }
+
+    const homePlayers: any[] = (match as any).homeTeamUsers || [];
+    const awayPlayers: any[] = (match as any).awayTeamUsers || [];
+
+    // Match number within the league
+    let matchNumber: number | null = null;
+    if (match.leagueId) {
+      const leagueMatches = await Match.findAll({
+        where: { leagueId: match.leagueId },
+        attributes: ['id'],
+        order: [['createdAt', 'ASC']],
+      });
+      const idx = leagueMatches.findIndex((m: any) => String(m.id) === String(matchId));
+      if (idx >= 0) matchNumber = idx + 1;
+    }
+
+    // Need at least 1 player on each side
+    if (homePlayers.length === 0 || awayPlayers.length === 0) {
+      ctx.body = {
+        success: true,
+        available: false,
+        matchNumber,
+        reason: 'NO_SELECTED_PLAYERS',
+      };
+      return;
+    }
+
+    // Compute XP sums and averages
+    const homeXpSum = homePlayers.reduce((s: number, p: any) => s + (Number(p.xp) || 0), 0);
+    const awayXpSum = awayPlayers.reduce((s: number, p: any) => s + (Number(p.xp) || 0), 0);
+    const homeAvg = homePlayers.length > 0 ? homeXpSum / homePlayers.length : 0;
+    const awayAvg = awayPlayers.length > 0 ? awayXpSum / awayPlayers.length : 0;
+    const totalAvg = homeAvg + awayAvg;
+
+    // If both teams have 0 XP total, not enough data
+    if (totalAvg === 0) {
+      ctx.body = {
+        success: true,
+        available: false,
+        matchNumber,
+        reason: 'FIRST_MATCH_NO_STATS',
+      };
+      return;
+    }
+
+    // Home win %, clamped between 20-80 to avoid extreme predictions
+    const rawHomePct = (homeAvg / totalAvg) * 100;
+    const matchupPct = Math.round(Math.max(20, Math.min(80, rawHomePct)));
+
+    // Determine predicted winner
+    const diff = homeAvg - awayAvg;
+    const drawThreshold = totalAvg * 0.05; // within 5% is a draw
+    let predicted: 'home' | 'away' | 'draw';
+    if (Math.abs(diff) < drawThreshold) {
+      predicted = 'draw';
+    } else if (diff > 0) {
+      predicted = 'home';
+    } else {
+      predicted = 'away';
+    }
+
+    // Generate predicted score based on strength ratio
+    // Base goals ~ 1-4, scaled by team player count and XP ratio
+    const playerCountFactor = Math.min(homePlayers.length, awayPlayers.length);
+    const baseGoals = Math.max(1, Math.min(4, Math.round(playerCountFactor / 3)));
+    const ratio = totalAvg > 0 ? homeAvg / totalAvg : 0.5;
+
+    let homeGoals: number;
+    let awayGoals: number;
+    if (predicted === 'draw') {
+      homeGoals = baseGoals;
+      awayGoals = baseGoals;
+    } else {
+      const strongerGoals = baseGoals + Math.round(Math.abs(ratio - 0.5) * 4);
+      const weakerGoals = Math.max(0, baseGoals - Math.round(Math.abs(ratio - 0.5) * 3));
+      if (predicted === 'home') {
+        homeGoals = strongerGoals;
+        awayGoals = weakerGoals;
+      } else {
+        homeGoals = weakerGoals;
+        awayGoals = strongerGoals;
+      }
+    }
+
+    const predictedScore = `${homeGoals} - ${awayGoals}`;
 
     ctx.body = {
       success: true,
-      prediction: {
-        homeGoals: prediction.homeGoals,
-        awayGoals: prediction.awayGoals,
-        correct: prediction.correct
-      }
+      available: true,
+      matchNumber,
+      home: { average: Math.round(homeAvg), total: homeXpSum, count: homePlayers.length },
+      away: { average: Math.round(awayAvg), total: awayXpSum, count: awayPlayers.length },
+      matchupPct,
+      predicted,
+      predictedScore,
     };
   } catch (err) {
     console.error('Get prediction error', err);
