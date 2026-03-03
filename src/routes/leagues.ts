@@ -25,6 +25,9 @@ router.get('/:id/statistics', required, leagueController.getLeagueStatistics);
 // Get league XP for all members
 router.get('/:id/xp', required, leagueController.getLeagueXP);
 
+// Get league-wide player averages (for career page influence radar)
+router.get('/:id/player-averages', required, leagueController.getLeaguePlayerAverages);
+
 // Get all seasons for a league
 router.get('/:id/seasons', required, async (ctx) => {
   // Map :id param to :leagueId for season controller

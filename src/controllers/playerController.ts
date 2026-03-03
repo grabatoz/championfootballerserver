@@ -259,6 +259,10 @@ export const getPlayerProfile = async (ctx: Context) => {
         votes: match.votes
       });
 
+      // Count MOTM votes for this player in this match
+      const matchVotes = match.votes || [];
+      const motmVotesCount = matchVotes.filter((v: any) => String(v.votedForId) === String(id)).length;
+
       leaguesMap.get(leagueId).matches.push({
         id: match.id,
         date: match.date,
@@ -281,7 +285,8 @@ export const getPlayerProfile = async (ctx: Context) => {
           freeKicks: stat.freeKicks || 0,
           defence: stat.defence || 0,
           impact: stat.impact || 0,
-          rating: stat.rating || 0
+          rating: stat.rating || 0,
+          motmVotes: motmVotesCount
         }
       });
     });

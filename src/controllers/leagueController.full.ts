@@ -1647,7 +1647,7 @@ export const updateLeagueStatus = async (ctx: Context) => {
 // Update league
 export const updateLeague = async (ctx: Context) => {
   const { id } = ctx.params;
-  const { name, maxGames } = ctx.request.body as any;
+  const { name, maxGames, active, showPoints, admins, seasonId, seasonMaxGames, seasonShowPoints } = ctx.request.body as any;
 
   if (!ctx.state.user) {
     ctx.throw(401, 'Unauthorized');
@@ -1664,7 +1664,28 @@ export const updateLeague = async (ctx: Context) => {
       return;
     }
 
-    const isAdmin = (league as any).administeredLeagues?.some((a: any) => String(a.id) === String(ctx.state.user.userId));
+    const userId = ctx.state.user.userId || ctx.state.user.id;
+    
+    // Check admin via association first, then fallback to direct DB query
+    const adminList = (league as any).administeredLeagues || [];
+    console.log('🔍 updateLeague admin check:', {
+      userId,
+      leagueId: id,
+      adminIds: adminList.map((a: any) => a.id),
+      adminCount: adminList.length
+    });
+    let isAdmin = adminList.some((a: any) => String(a.id) === String(userId));
+    
+    if (!isAdmin) {
+      // Fallback: direct query on LeagueAdmin table
+      const directResult = await (League as any).sequelize.query(
+        'SELECT "userId" FROM "LeagueAdmin" WHERE "leagueId" = :leagueId AND "userId" = :userId LIMIT 1',
+        { replacements: { leagueId: id, userId }, type: (League as any).sequelize.QueryTypes.SELECT }
+      );
+      console.log('🔍 updateLeague fallback query result:', JSON.stringify(directResult));
+      isAdmin = Array.isArray(directResult) && directResult.length > 0;
+    }
+    
     if (!isAdmin) {
       ctx.throw(403, 'Only league admins can update');
       return;
@@ -1672,16 +1693,53 @@ export const updateLeague = async (ctx: Context) => {
 
     const updateData: any = {};
     if (name) updateData.name = name;
-    if (maxGames) updateData.maxGames = Number(maxGames);
+    if (maxGames !== undefined) updateData.maxGames = Number(maxGames);
+    if (active !== undefined) updateData.active = Boolean(active);
+    if (showPoints !== undefined) updateData.showPoints = Boolean(showPoints);
 
     await league.update(updateData);
+
+    // Update admin(s) if provided
+    if (Array.isArray(admins) && admins.length > 0) {
+      // Verify all new admins are valid user IDs that exist
+      const validAdmins = await User.findAll({
+        where: { id: { [Op.in]: admins } },
+        attributes: ['id']
+      });
+      const validAdminIds = validAdmins.map((u: any) => u.id);
+
+      if (validAdminIds.length > 0) {
+        // Replace all current admins with the new admin(s)
+        await (league as any).setAdministeredLeagues(validAdminIds);
+        console.log(`✅ League ${id} admin(s) updated to:`, validAdminIds);
+      }
+    }
+
+    // Update season settings if provided (handled here to avoid separate request + admin re-check)
+    if (seasonId) {
+      const season = await Season.findByPk(seasonId);
+      if (season) {
+        if (seasonMaxGames !== undefined) season.maxGames = Number(seasonMaxGames);
+        if (seasonShowPoints !== undefined) season.showPoints = Boolean(seasonShowPoints);
+        await season.save();
+        console.log(`✅ Season ${seasonId} settings updated: maxGames=${season.maxGames}, showPoints=${season.showPoints}`);
+      }
+    }
+
+    // Fetch updated admin list
+    const updatedLeague = await League.findByPk(id, {
+      include: [{ model: User, as: 'administeredLeagues', attributes: ['id', 'firstName', 'lastName'] }]
+    });
 
     ctx.body = {
       success: true,
       league: {
         id: league.id,
-        name: league.name,
-        maxGames: league.maxGames
+        name: (updatedLeague as any)?.name || league.name,
+        maxGames: (updatedLeague as any)?.maxGames || league.maxGames,
+        active: (updatedLeague as any)?.active ?? league.active,
+        showPoints: (updatedLeague as any)?.showPoints ?? league.showPoints,
+        administrators: (updatedLeague as any)?.administeredLeagues || []
       }
     };
   } catch (err) {
@@ -2386,6 +2444,152 @@ export const updateMatchInLeague = async (ctx: Context) => {
     console.error('Update match in league error:', err);
     ctx.status = 500;
     ctx.body = { success: false, message: 'Failed to update match' };
+  }
+};
+
+// Get league-wide player averages (for career page influence radar & charts)
+export const getLeaguePlayerAverages = async (ctx: Context) => {
+  const { id } = ctx.params;
+
+  if (!ctx.state.user || !ctx.state.user.userId) {
+    ctx.status = 401;
+    ctx.body = { success: false, message: 'Unauthorized' };
+    return;
+  }
+
+  try {
+    // Get all completed matches in this league
+    const completedMatches = await Match.findAll({
+      where: {
+        leagueId: id,
+        status: { [Op.in]: ['RESULT_PUBLISHED', 'RESULT_UPLOADED'] }
+      },
+      attributes: ['id', 'homeTeamGoals', 'awayTeamGoals', 'homeDefensiveImpactId', 'awayDefensiveImpactId']
+    });
+
+    const matchIds = completedMatches.map((m: any) => m.id);
+
+    if (matchIds.length === 0) {
+      ctx.body = {
+        success: true,
+        totalMatches: 0,
+        totalPlayers: 0,
+        leagueAvg: { goals: 0, assists: 0, cleanSheets: 0, defence: 0, motmVotes: 0, defensiveImpactVotes: 0, impact: 0 },
+        players: {}
+      };
+      return;
+    }
+
+    // Get all match statistics for these matches
+    const allStats = await MatchStatistics.findAll({
+      where: { match_id: { [Op.in]: matchIds } },
+      attributes: ['user_id', 'goals', 'assists', 'cleanSheets', 'defence', 'impact'],
+      raw: true
+    }) as any[];
+
+    // Get MOTM vote counts per player for these matches
+    const motmVotes = await (Vote as any).findAll({
+      where: { matchId: { [Op.in]: matchIds } },
+      attributes: ['votedForId'],
+      raw: true
+    }) as any[];
+
+    // Count defensive impact votes per player from match fields
+    const defImpactVoteMap: Record<string, number> = {};
+    for (const m of completedMatches as any[]) {
+      if (m.homeDefensiveImpactId) {
+        const uid = String(m.homeDefensiveImpactId);
+        defImpactVoteMap[uid] = (defImpactVoteMap[uid] || 0) + 1;
+      }
+      if (m.awayDefensiveImpactId) {
+        const uid = String(m.awayDefensiveImpactId);
+        defImpactVoteMap[uid] = (defImpactVoteMap[uid] || 0) + 1;
+      }
+    }
+
+    // Build per-player aggregations
+    const playerMap: Record<string, { goals: number; assists: number; cleanSheets: number; defence: number; impact: number; motmVotes: number; defensiveImpactVotes: number; matches: number }> = {};
+
+    for (const stat of allStats) {
+      const uid = String(stat.user_id);
+      if (!playerMap[uid]) {
+        playerMap[uid] = { goals: 0, assists: 0, cleanSheets: 0, defence: 0, impact: 0, motmVotes: 0, defensiveImpactVotes: 0, matches: 0 };
+      }
+      playerMap[uid].goals += Number(stat.goals) || 0;
+      playerMap[uid].assists += Number(stat.assists) || 0;
+      playerMap[uid].cleanSheets += Number(stat.cleanSheets) || 0;
+      playerMap[uid].defence += Number(stat.defence) || 0;
+      playerMap[uid].impact += Number(stat.impact) || 0;
+      playerMap[uid].matches += 1;
+    }
+
+    // Add MOTM votes
+    for (const vote of motmVotes) {
+      const uid = String(vote.votedForId);
+      if (playerMap[uid]) {
+        playerMap[uid].motmVotes += 1;
+      }
+    }
+
+    // Add defensive impact votes
+    for (const [uid, count] of Object.entries(defImpactVoteMap)) {
+      if (playerMap[uid]) {
+        playerMap[uid].defensiveImpactVotes += count;
+      }
+    }
+
+    // Calculate league-wide averages (per match per player)
+    const playerIds = Object.keys(playerMap);
+    const totalPlayers = playerIds.length;
+
+    let totalGoalsAvg = 0, totalAssistsAvg = 0, totalCSAvg = 0, totalDefAvg = 0, totalMotmAvg = 0, totalDefImpactAvg = 0, totalImpactAvg = 0;
+
+    const playersResult: Record<string, any> = {};
+    for (const uid of playerIds) {
+      const p = playerMap[uid];
+      const mc = Math.max(p.matches, 1);
+      const avg = {
+        goals: +(p.goals / mc).toFixed(2),
+        assists: +(p.assists / mc).toFixed(2),
+        cleanSheets: +(p.cleanSheets / mc).toFixed(2),
+        defence: +(p.defence / mc).toFixed(2),
+        impact: +(p.impact / mc).toFixed(2),
+        motmVotes: +(p.motmVotes / mc).toFixed(2),
+        defensiveImpactVotes: +(p.defensiveImpactVotes / mc).toFixed(2),
+        matches: p.matches
+      };
+      playersResult[uid] = avg;
+      totalGoalsAvg += avg.goals;
+      totalAssistsAvg += avg.assists;
+      totalCSAvg += avg.cleanSheets;
+      totalDefAvg += avg.defence;
+      totalMotmAvg += avg.motmVotes;
+      totalDefImpactAvg += avg.defensiveImpactVotes;
+      totalImpactAvg += avg.impact;
+    }
+
+    const divider = Math.max(totalPlayers, 1);
+    const leagueAvg = {
+      goals: +(totalGoalsAvg / divider).toFixed(2),
+      assists: +(totalAssistsAvg / divider).toFixed(2),
+      cleanSheets: +(totalCSAvg / divider).toFixed(2),
+      defence: +(totalDefAvg / divider).toFixed(2),
+      motmVotes: +(totalMotmAvg / divider).toFixed(2),
+      defensiveImpactVotes: +(totalDefImpactAvg / divider).toFixed(2),
+      impact: +(totalImpactAvg / divider).toFixed(2)
+    };
+
+    ctx.body = {
+      success: true,
+      totalMatches: matchIds.length,
+      totalPlayers,
+      leagueAvg,
+      players: playersResult
+    };
+  } catch (err) {
+    console.error('Get league player averages error:', err);
+    ctx.status = 500;
+    ctx.body = { success: false, message: 'Failed to fetch league player averages' };
   }
 };
 

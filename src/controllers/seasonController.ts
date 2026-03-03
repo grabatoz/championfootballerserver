@@ -481,7 +481,28 @@ export const updateSeason = async (ctx: Context) => {
 
   // Verify user is league admin
   const league = (season as any).league;
-  const isAdmin = league?.administeredLeagues?.some((admin: any) => String(admin.id) === String(ctx.state.user.userId));
+  const userId = ctx.state.user.userId || ctx.state.user.id;
+  
+  const adminList = league?.administeredLeagues || [];
+  console.log('🔍 updateSeason admin check:', {
+    userId,
+    leagueId: league?.id,
+    leagueFound: !!league,
+    adminList: adminList.map((a: any) => a.id),
+    adminCount: adminList.length
+  });
+  
+  let isAdmin = adminList.some((admin: any) => String(admin.id) === String(userId));
+  
+  if (!isAdmin && league?.id) {
+    // Fallback: direct query on LeagueAdmin table
+    const directResult = await (League as any).sequelize.query(
+      'SELECT "userId" FROM "LeagueAdmin" WHERE "leagueId" = :leagueId AND "userId" = :userId LIMIT 1',
+      { replacements: { leagueId: league.id, userId }, type: (League as any).sequelize.QueryTypes.SELECT }
+    );
+    console.log('🔍 updateSeason fallback query result:', JSON.stringify(directResult));
+    isAdmin = Array.isArray(directResult) && directResult.length > 0;
+  }
 
   if (!isAdmin) {
     ctx.throw(403, 'You are not an administrator of this league');
