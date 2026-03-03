@@ -1507,9 +1507,90 @@ export const getPlayerQuickView = async (ctx: Context) => {
       }
     });
 
+    // Fetch last 10 completed matches where this player participated (home or away)
+    const completedStatuses = ['RESULT_PUBLISHED', 'RESULT_UPLOADED'];
+
+    const [homeMatches, awayMatches] = await Promise.all([
+      Match.findAll({
+        where: {
+          leagueId,
+          status: { [Op.in]: completedStatuses },
+        },
+        include: [{
+          model: User,
+          as: 'homeTeamUsers',
+          where: { id: playerId },
+          attributes: ['id'],
+          through: { attributes: [] } as any,
+          required: true,
+        }],
+        attributes: ['id', 'homeTeamGoals', 'awayTeamGoals', 'end', 'resultPublishedAt', 'createdAt'],
+        order: [['end', 'DESC']],
+        limit: 10,
+      } as any),
+      Match.findAll({
+        where: {
+          leagueId,
+          status: { [Op.in]: completedStatuses },
+        },
+        include: [{
+          model: User,
+          as: 'awayTeamUsers',
+          where: { id: playerId },
+          attributes: ['id'],
+          through: { attributes: [] } as any,
+          required: true,
+        }],
+        attributes: ['id', 'homeTeamGoals', 'awayTeamGoals', 'end', 'resultPublishedAt', 'createdAt'],
+        order: [['end', 'DESC']],
+        limit: 10,
+      } as any),
+    ]);
+
+    // Combine, deduplicate, sort by date desc, take last 10
+    const matchMap = new Map<string, { id: string; homeGoals: number; awayGoals: number; team: 'home' | 'away'; date: string }>();
+
+    for (const m of homeMatches) {
+      const mAny = m as any;
+      matchMap.set(String(mAny.id), {
+        id: String(mAny.id),
+        homeGoals: Number(mAny.homeTeamGoals ?? 0),
+        awayGoals: Number(mAny.awayTeamGoals ?? 0),
+        team: 'home',
+        date: mAny.end || mAny.resultPublishedAt || mAny.createdAt || '',
+      });
+    }
+    for (const m of awayMatches) {
+      const mAny = m as any;
+      const id = String(mAny.id);
+      if (!matchMap.has(id)) {
+        matchMap.set(id, {
+          id,
+          homeGoals: Number(mAny.homeTeamGoals ?? 0),
+          awayGoals: Number(mAny.awayTeamGoals ?? 0),
+          team: 'away',
+          date: mAny.end || mAny.resultPublishedAt || mAny.createdAt || '',
+        });
+      }
+    }
+
+    const allMatches = Array.from(matchMap.values())
+      .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
+      .slice(0, 10);
+
+    const lastFive = allMatches.map((m) => {
+      const myGoals = m.team === 'home' ? m.homeGoals : m.awayGoals;
+      const oppGoals = m.team === 'home' ? m.awayGoals : m.homeGoals;
+      let result: 'W' | 'D' | 'L' = 'D';
+      if (myGoals > oppGoals) result = 'W';
+      else if (myGoals < oppGoals) result = 'L';
+      return { result };
+    });
+
     ctx.body = {
       success: true,
-      motmCount: motmCount || 0
+      motmCount: motmCount || 0,
+      lastFive,
     };
   } catch (err) {
     console.error('Get player quick view error:', err);
