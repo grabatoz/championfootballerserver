@@ -128,6 +128,14 @@ router.post("/auth/register", none, async (ctx: Context) => {
       ctx.throw(400, "Password must contain letters and numbers. Consider also using upper and lower case and other characters (-, _, @, ?, etc)");
     }
 
+    // Validate name length
+    if (userData.firstName && userData.firstName.length > 20) {
+      ctx.throw(400, "First name must be 20 characters or less");
+    }
+    if (userData.lastName && userData.lastName.length > 20) {
+      ctx.throw(400, "Last name must be 20 characters or less");
+    }
+
     // Convert email to lowercase
     userData.email = userData.email.toLowerCase();
 
