@@ -31,6 +31,7 @@ export interface UserAttributes {
   xp?: number;
   resetCode?: string | null;
   resetCodeExpiry?: Date | null;
+  isVerified?: boolean;
   provider: string | null;
   providerId: string | null;
   achievements?: string[];
@@ -67,6 +68,7 @@ export class User extends Model<UserAttributes> implements UserAttributes {
   public xp!: number;
   public resetCode!: string | null;
   public resetCodeExpiry!: Date | null;
+  public isVerified!: boolean;
   public provider!: string | null;
   public providerId!: string | null;
   public achievements!: string[];
@@ -173,6 +175,11 @@ User.init(
     resetCodeExpiry: {
       type: DataTypes.DATE,
       allowNull: true,
+    },
+    isVerified: {
+      type: DataTypes.BOOLEAN,
+      allowNull: false,
+      defaultValue: false,
     },
     position: {
       type: DataTypes.STRING,

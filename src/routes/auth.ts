@@ -5,7 +5,7 @@ import models, { MatchAvailability } from "../models"
 import { User } from "../models/User";
 import Season from "../models/Season";
 import { hash, compare } from "bcrypt"
-import { getLoginCode } from "../modules/utils"
+import { getLoginCode, getVerificationCode } from "../modules/utils"
 import { Context } from "koa";
 import jwt from 'jsonwebtoken';
 import cache from '../utils/cache'; // ensure this exists and has get/set
@@ -120,9 +120,12 @@ router.post("/auth/register", none, async (ctx: Context) => {
       ctx.throw(400, "Invalid email format");
     }
 
-    // Validate password strength
-    if (userData.password.length < 6) {
-      ctx.throw(400, "Password must be at least 6 characters long");
+    // Validate password strength - min 7 chars, must contain letters and digits
+    if (userData.password.length < 7) {
+      ctx.throw(400, "Password must be at least 7 characters long");
+    }
+    if (!/[a-zA-Z]/.test(userData.password) || !/[0-9]/.test(userData.password)) {
+      ctx.throw(400, "Password must contain letters and numbers. Consider also using upper and lower case and other characters (-, _, @, ?, etc)");
     }
 
     // Convert email to lowercase
@@ -131,6 +134,47 @@ router.post("/auth/register", none, async (ctx: Context) => {
     // Check if user already exists
     const existingUser = await User.findOne({ where: { email: userData.email } });
     if (existingUser) {
+      // If user exists but is not verified, resend verification code
+      if (!existingUser.isVerified) {
+        const verificationCode = getVerificationCode(); // 6-digit code
+        const codeExpiry = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
+
+        await existingUser.update({
+          resetCode: await hash(verificationCode, 10),
+          resetCodeExpiry: codeExpiry,
+        });
+
+        // Send verification email
+        try {
+          await transporter.sendMail({
+            to: existingUser.email,
+            subject: `Your Champion Footballer Verification Code`,
+            html: `
+              <div style="font-family:Arial,sans-serif;line-height:1.6;color:#111;background:#f7f7f9;padding:24px">
+                <div style="max-width:480px;margin:0 auto;background:#ffffff;border:1px solid #e5e7eb;border-radius:8px;padding:32px;text-align:center">
+                  <h1 style="margin:0 0 8px;font-size:22px;color:#111;">Welcome to Champion Footballer! ⚽</h1>
+                  <p style="margin:0 0 24px;color:#6b7280;">Use the 6-digit code below to verify your account. It expires in 10 minutes.</p>
+                  <div style="background:#f0fdf4;border:2px solid #00a77f;border-radius:8px;padding:16px 24px;display:inline-block;margin:0 0 24px">
+                    <span style="font-size:32px;font-weight:bold;letter-spacing:8px;color:#00a77f">${verificationCode}</span>
+                  </div>
+                  <p style="margin:0;font-size:13px;color:#9ca3af;">If you didn't request this, you can safely ignore this email.</p>
+                </div>
+              </div>
+            `,
+          });
+        } catch (emailError) {
+          console.error('Error sending verification email:', emailError);
+        }
+
+        ctx.status = 200;
+        ctx.body = {
+          success: true,
+          requiresVerification: true,
+          email: existingUser.email,
+          message: "Registration Successful! Welcome to CF.\nHead over to your email and enter the 6-digit verification key to complete your sign-up and start playing."
+        };
+        return;
+      }
       ctx.throw(409, "User with that email already exists");
     }
 
@@ -146,7 +190,7 @@ router.post("/auth/register", none, async (ctx: Context) => {
       phone: userData.phone
     });
 
-    // Create user with all required fields
+    // Create user with isVerified = false (requires email verification)
     const newUser = await User.create({
       email: userData.email,
       password: await hash(userData.password, 10),
@@ -164,6 +208,7 @@ router.post("/auth/register", none, async (ctx: Context) => {
       preferredFoot: userData.preferredFoot || 'Right',
       shirtNumber: userData.shirtNumber || 1,
       profilePicture: userData.profilePicture,
+      isVerified: false,
       skills: {
         dribbling: 50,
         shooting: 50,
@@ -176,44 +221,33 @@ router.post("/auth/register", none, async (ctx: Context) => {
 
     console.log('User created successfully:', newUser.id);
 
-    // Generate JWT
-    const token = jwt.sign({ userId: newUser.id, email: newUser.email }, JWT_SECRET, { expiresIn: '7d' });
+    // Generate 6-digit verification code
+    const verificationCode = getVerificationCode();
+    const codeExpiry = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
 
-    console.log('JWT generated for new user');
+    await newUser.update({
+      resetCode: await hash(verificationCode, 10),
+      resetCodeExpiry: codeExpiry,
+    });
 
-    // Send welcome email
+    // Send verification email with 6-digit code
     try {
       if (newUser.email) {
         await transporter.sendMail({
           to: newUser.email,
-          subject: `Welcome to Champion Footballer!`,
+          subject: `Your Champion Footballer Verification Code`,
           html: `
             <div style="font-family:Arial,sans-serif;line-height:1.6;color:#111;background:#f7f7f9;padding:24px">
-              <div style="max-width:560px;margin:0 auto;background:#ffffff;border:1px solid #e5e7eb;border-radius:8px;padding:24px">
-                <h1 style="margin:0 0 12px;font-size:22px;color:#111;">Welcome, ${newUser.firstName || 'Player'}! ⚽</h1>
-                <p style="margin:0 0 8px;">Your account has been created successfully.</p>
-
-                <p style="margin:0 0 8px;">Quick start:</p>
-                <ol style="padding-left:18px;margin:0 0 16px;">
-                  <li>Click the button below to open Champion Footballer.</li>
-                  <li>Sign in with your email: <b>${newUser.email}</b>.</li>
-                  <li>Complete your profile and join/create a league.</li>
-                </ol>
-
-                <a href="${process.env.CLIENT_URL ?? 'https://championfootballer-client.vercel.app'}"
-                   style="display:inline-block;background:#16a34a;color:#fff;text-decoration:none;padding:12px 18px;border-radius:6px;font-weight:600">
-                  Login to Champion Footballer
-                </a>
-
-                <p style="margin:12px 0 0;font-size:12px;color:#6b7280;">
-                  If the button doesn’t work, copy and paste this link:<br/>
-                  <span style="word-break:break-all;">${process.env.CLIENT_URL ?? 'https://championfootballer-client.vercel.app'}</span>
-                </p>
-
+              <div style="max-width:480px;margin:0 auto;background:#ffffff;border:1px solid #e5e7eb;border-radius:8px;padding:32px;text-align:center">
+                <h1 style="margin:0 0 8px;font-size:22px;color:#111;">Welcome to Champion Footballer! ⚽</h1>
+                <p style="margin:0 0 8px;color:#6b7280;">Hi ${newUser.firstName || 'Player'}, thanks for signing up!</p>
+                <p style="margin:0 0 24px;color:#6b7280;">Use the 6-digit code below to verify your account. It expires in 10 minutes.</p>
+                <div style="background:#f0fdf4;border:2px solid #00a77f;border-radius:8px;padding:16px 24px;display:inline-block;margin:0 0 24px">
+                  <span style="font-size:32px;font-weight:bold;letter-spacing:8px;color:#00a77f">${verificationCode}</span>
+                </div>
+                <p style="margin:0 0 8px;font-size:13px;color:#9ca3af;">If you didn't request this, you can safely ignore this email.</p>
                 <hr style="border:none;border-top:1px solid #e5e7eb;margin:20px 0" />
-
-                <p style="margin:0 0 8px;">Need help? Reply to this email any time.</p>
-                <p style="margin:0 0 6px;">Follow us for updates:</p>
+                <p style="margin:0 0 6px;font-size:12px;color:#6b7280;">Follow us for updates:</p>
                 <p style="margin:0;">
                   <a href="${process.env.SOCIAL_X_URL  ?? 'https://x.com/champf2baller'}" style="color:#0ea5e9;text-decoration:none;margin-right:12px;">X (Twitter)</a>
                   <a href="${process.env.SOCIAL_FB_URL ?? 'https://facebook.com/championfootballer'}" style="color:#0ea5e9;text-decoration:none;margin-right:12px;">Facebook</a>
@@ -224,61 +258,19 @@ router.post("/auth/register", none, async (ctx: Context) => {
           `,
         });
       } else {
-        console.warn('Welcome email skipped: user has no email');
+        console.warn('Verification email skipped: user has no email');
       }
     } catch (emailError) {
-      console.error('Error sending welcome email:', emailError);
+      console.error('Error sending verification email:', emailError);
     }
 
-    // Update cache with new user data
-    const newUserData = {
-      id: newUser.id,
-      firstName: newUser.firstName,
-      lastName: newUser.lastName,
-      profilePicture: newUser.profilePicture,
-      position: newUser.position,
-      positionType: newUser.positionType,
-      xp: newUser.xp || 0
-    };
-
-    // Update players cache with new user
-    cache.updateArray('players_all', newUserData);
-    
-    // Clear any user-specific caches
-    cache.clearPattern(`user_leagues_${newUser.id}`);
-
-    // Return success response with token and user data
+    // Return success - requiresVerification flag tells client to show OTP dialog
     ctx.status = 200;
-    ctx.body = { 
+    ctx.body = {
       success: true,
-      token: token,
-      redirectTo: '/home',
-      user: {
-        id: newUser.id,
-        firstName: newUser.firstName,
-        lastName: newUser.lastName,
-        email: newUser.email,
-        age: newUser.age,
-        gender: newUser.gender,
-        country: newUser.country,
-        state: newUser.state,
-        city: newUser.city,
-        phone: newUser.phone,
-        position: newUser.position,
-        positionType: newUser.positionType,
-        style: newUser.style,
-        preferredFoot: newUser.preferredFoot,
-        shirtNumber: newUser.shirtNumber,
-        profilePicture: newUser.profilePicture,
-        skills: newUser.skills,
-        xp: newUser.xp || 0,
-        joinedLeagues: [],
-        managedLeagues: [],
-        homeTeamMatches: [],
-        awayTeamMatches: [],
-        availableMatches: []
-      },
-      message: "Registration successful"
+      requiresVerification: true,
+      email: newUser.email,
+      message: "Registration Successful! Welcome to CF.\nHead over to your email and enter the 6-digit verification key to complete your sign-up and start playing."
     };
   } catch (error: any) {
     console.error('Registration error:', error);
@@ -298,6 +290,201 @@ router.post("/auth/register", none, async (ctx: Context) => {
   }
 });
 
+// Verify registration email with 6-digit code
+router.post("/auth/verify-registration", none, async (ctx: CustomContext) => {
+  try {
+    const { email, code } = ctx.request.body.user || ctx.request.body;
+
+    if (!email || !code) {
+      ctx.throw(400, "Email and verification code are required.");
+    }
+
+    const userEmail = email.toLowerCase();
+    const user = await User.findOne({ where: { email: userEmail } });
+
+    if (!user) {
+      ctx.throw(404, "We can't find a user with that email.");
+    }
+
+    if (user.isVerified) {
+      ctx.throw(400, "This account is already verified. Please log in.");
+    }
+
+    if (!user.resetCode || !user.resetCodeExpiry) {
+      ctx.throw(400, "No verification code was requested. Please register again.");
+    }
+
+    if (new Date() > new Date(user.resetCodeExpiry)) {
+      await user.update({ resetCode: null, resetCodeExpiry: null });
+      ctx.throw(400, "Verification code has expired. Please request a new one.");
+    }
+
+    const codeMatch = await compare(code, user.resetCode);
+    if (!codeMatch) {
+      ctx.throw(400, "Invalid verification code.");
+    }
+
+    // Code is valid - verify user and clear the reset code
+    await user.update({
+      isVerified: true,
+      resetCode: null,
+      resetCodeExpiry: null,
+    });
+
+    // Generate JWT
+    const token = jwt.sign({ userId: user.id, email: user.email }, JWT_SECRET, { expiresIn: '7d' });
+
+    // Update cache with new user data
+    const newUserData = {
+      id: user.id,
+      firstName: user.firstName,
+      lastName: user.lastName,
+      profilePicture: user.profilePicture,
+      position: user.position,
+      positionType: user.positionType,
+      xp: user.xp || 0
+    };
+    cache.updateArray('players_all', newUserData);
+    cache.clearPattern(`user_leagues_${user.id}`);
+
+    // Send welcome email after successful verification
+    try {
+      await transporter.sendMail({
+        to: user.email,
+        subject: `Welcome to Champion Footballer!`,
+        html: `
+          <div style="font-family:Arial,sans-serif;line-height:1.6;color:#111;background:#f7f7f9;padding:24px">
+            <div style="max-width:560px;margin:0 auto;background:#ffffff;border:1px solid #e5e7eb;border-radius:8px;padding:24px">
+              <h1 style="margin:0 0 12px;font-size:22px;color:#111;">Welcome, ${user.firstName || 'Player'}! ⚽</h1>
+              <p style="margin:0 0 8px;">Your account has been verified and you are all set!</p>
+              <p style="margin:0 0 8px;">Quick start:</p>
+              <ol style="padding-left:18px;margin:0 0 16px;">
+                <li>Sign in with your email: <b>${user.email}</b>.</li>
+                <li>Complete your profile and join/create a league.</li>
+                <li>Start playing and earning XP!</li>
+              </ol>
+              <a href="${process.env.CLIENT_URL ?? 'https://championfootballer-client.vercel.app'}"
+                 style="display:inline-block;background:#16a34a;color:#fff;text-decoration:none;padding:12px 18px;border-radius:6px;font-weight:600">
+                Open Champion Footballer
+              </a>
+              <hr style="border:none;border-top:1px solid #e5e7eb;margin:20px 0" />
+              <p style="margin:0 0 6px;">Follow us for updates:</p>
+              <p style="margin:0;">
+                <a href="${process.env.SOCIAL_X_URL  ?? 'https://x.com/champf2baller'}" style="color:#0ea5e9;text-decoration:none;margin-right:12px;">X (Twitter)</a>
+                <a href="${process.env.SOCIAL_FB_URL ?? 'https://facebook.com/championfootballer'}" style="color:#0ea5e9;text-decoration:none;margin-right:12px;">Facebook</a>
+                <a href="${process.env.SOCIAL_IG_URL ?? 'https://www.instagram.com/champf2baller'}" style="color:#0ea5e9;text-decoration:none;">Instagram</a>
+              </p>
+            </div>
+          </div>
+        `,
+      });
+    } catch (emailError) {
+      console.error('Error sending welcome email:', emailError);
+    }
+
+    ctx.status = 200;
+    ctx.body = {
+      success: true,
+      token: token,
+      redirectTo: '/home',
+      user: {
+        id: user.id,
+        firstName: user.firstName,
+        lastName: user.lastName,
+        email: user.email,
+        age: user.age,
+        gender: user.gender,
+        country: user.country,
+        state: user.state,
+        city: user.city,
+        phone: user.phone,
+        position: user.position,
+        positionType: user.positionType,
+        style: user.style,
+        preferredFoot: user.preferredFoot,
+        shirtNumber: user.shirtNumber,
+        profilePicture: user.profilePicture,
+        skills: user.skills,
+        xp: user.xp || 0,
+        joinedLeagues: [],
+        managedLeagues: [],
+        homeTeamMatches: [],
+        awayTeamMatches: [],
+        availableMatches: []
+      },
+      message: "Email verified successfully! Welcome to Champion Footballer!"
+    };
+  } catch (error: any) {
+    console.error('Verify registration error:', error);
+    if (error.status) {
+      ctx.status = error.status;
+      ctx.body = { success: false, message: error.message };
+    } else {
+      ctx.status = 500;
+      ctx.body = { success: false, message: "Verification failed. Please try again." };
+    }
+  }
+});
+
+// Resend verification code for unverified accounts
+router.post("/auth/resend-verification", none, async (ctx: CustomContext) => {
+  try {
+    const { email } = ctx.request.body.user || ctx.request.body;
+
+    if (!email) {
+      ctx.throw(400, "Email is required.");
+    }
+
+    const userEmail = email.toLowerCase();
+    const user = await User.findOne({ where: { email: userEmail } });
+
+    if (!user) {
+      ctx.throw(404, "We can't find a user with that email.");
+    }
+
+    if (user.isVerified) {
+      ctx.throw(400, "This account is already verified. Please log in.");
+    }
+
+    const verificationCode = getVerificationCode(); // 6-digit code
+    const codeExpiry = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
+
+    await user.update({
+      resetCode: await hash(verificationCode, 10),
+      resetCodeExpiry: codeExpiry,
+    });
+
+    await transporter.sendMail({
+      to: userEmail,
+      subject: `Your Champion Footballer Verification Code`,
+      html: `
+        <div style="font-family:Arial,sans-serif;line-height:1.6;color:#111;background:#f7f7f9;padding:24px">
+          <div style="max-width:480px;margin:0 auto;background:#ffffff;border:1px solid #e5e7eb;border-radius:8px;padding:32px;text-align:center">
+            <h1 style="margin:0 0 8px;font-size:22px;color:#111;">Verification Code</h1>
+            <p style="margin:0 0 24px;color:#6b7280;">Use the 6-digit code below to verify your account. It expires in 10 minutes.</p>
+            <div style="background:#f0fdf4;border:2px solid #00a77f;border-radius:8px;padding:16px 24px;display:inline-block;margin:0 0 24px">
+              <span style="font-size:32px;font-weight:bold;letter-spacing:8px;color:#00a77f">${verificationCode}</span>
+            </div>
+            <p style="margin:0;font-size:13px;color:#9ca3af;">If you didn't request this, you can safely ignore this email.</p>
+          </div>
+        </div>
+      `,
+    });
+
+    ctx.status = 200;
+    ctx.body = { success: true, message: "Verification code sent to your email." };
+  } catch (error: any) {
+    console.error('Resend verification error:', error);
+    if (error.status) {
+      ctx.status = error.status;
+      ctx.body = { success: false, message: error.message };
+    } else {
+      ctx.status = 500;
+      ctx.body = { success: false, message: "Failed to resend code. Please try again." };
+    }
+  }
+});
+
 router.post("/auth/reset-password", none, async (ctx: CustomContext) => {
   const { email } = ctx.request.body.user || ctx.request.body;
   if (!email) {
@@ -312,7 +499,7 @@ router.post("/auth/reset-password", none, async (ctx: CustomContext) => {
     ctx.throw(404, "We can't find a user with that email.");
   }
 
-  // Store OTP code (hashed) with 10 minute expiry — don't change the actual password yet
+  // Store OTP code (hashed) with 10 minute expiry â€” don't change the actual password yet
   const resetCodeExpiry = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
   await user.update({
     resetCode: await hash(otpCode, 10),
@@ -347,8 +534,11 @@ router.post("/auth/verify-reset-code", none, async (ctx: CustomContext) => {
     ctx.throw(400, "Email, verification code, and new password are required.");
   }
 
-  if (newPassword.length < 6) {
-    ctx.throw(400, "Password must be at least 6 characters long.");
+  if (newPassword.length < 7) {
+    ctx.throw(400, "Password must be at least 7 characters long.");
+  }
+  if (!/[a-zA-Z]/.test(newPassword) || !/[0-9]/.test(newPassword)) {
+    ctx.throw(400, "Password must contain letters and numbers.");
   }
 
   const userEmail = email.toLowerCase();
@@ -375,7 +565,7 @@ router.post("/auth/verify-reset-code", none, async (ctx: CustomContext) => {
     ctx.throw(400, "Invalid verification code.");
   }
 
-  // Code is valid — update the password and clear the reset code
+  // Code is valid â€” update the password and clear the reset code
   await user.update({
     password: await hash(newPassword, 10),
     resetCode: null,
@@ -428,7 +618,7 @@ router.post("/auth/login", none, async (ctx: CustomContext) => {
   const userEmail = email.toLowerCase();
   const user = await User.findOne({
     where: { email },
-    attributes: ['id','firstName','lastName','email','password','age','gender','country','state','city','position','positionType','style','preferredFoot','shirtNumber','profilePicture','skills','xp','achievements','provider'] // removed providerId
+    attributes: ['id','firstName','lastName','email','password','age','gender','country','state','city','position','positionType','style','preferredFoot','shirtNumber','profilePicture','skills','xp','achievements','provider','isVerified'] // removed providerId
   });
 
   console.log('first',email,user)
@@ -437,18 +627,57 @@ router.post("/auth/login", none, async (ctx: CustomContext) => {
     ctx.throw(404, "We can't find a user with that email");
   }
 
+  // Check if account is verified
+  if (!user.isVerified) {
+    // Resend verification code automatically
+    const verificationCode = getVerificationCode();
+    const codeExpiry = new Date(Date.now() + 10 * 60 * 1000);
+    await user.update({
+      resetCode: await hash(verificationCode, 10),
+      resetCodeExpiry: codeExpiry,
+    });
+    try {
+      await transporter.sendMail({
+        to: user.email,
+        subject: `Your Champion Footballer Verification Code`,
+        html: `
+          <div style="font-family:Arial,sans-serif;line-height:1.6;color:#111;background:#f7f7f9;padding:24px">
+            <div style="max-width:480px;margin:0 auto;background:#ffffff;border:1px solid #e5e7eb;border-radius:8px;padding:32px;text-align:center">
+              <h1 style="margin:0 0 8px;font-size:22px;color:#111;">Verify Your Account</h1>
+              <p style="margin:0 0 24px;color:#6b7280;">Use the 6-digit code below to verify your account. It expires in 10 minutes.</p>
+              <div style="background:#f0fdf4;border:2px solid #00a77f;border-radius:8px;padding:16px 24px;display:inline-block;margin:0 0 24px">
+                <span style="font-size:32px;font-weight:bold;letter-spacing:8px;color:#00a77f">${verificationCode}</span>
+              </div>
+              <p style="margin:0;font-size:13px;color:#9ca3af;">If you didn't request this, you can safely ignore this email.</p>
+            </div>
+          </div>
+        `,
+      });
+    } catch (emailError) {
+      console.error('Error sending verification email:', emailError);
+    }
+    ctx.status = 403;
+    ctx.body = {
+      success: false,
+      requiresVerification: true,
+      email: user.email,
+      message: "Your account is not verified yet. We've sent a new verification code to your email."
+    };
+    return;
+  }
+
   if (!user.password) {
     ctx.throw(400, "User has no password. Please reset it now.");
   }
 
-  console.log('🔍 Password comparison:', {
+  console.log('ًں”چ Password comparison:', {
     providedPassword: password,
     hashedPassword: user.password,
     passwordLength: user.password?.length
   });
 
   const passwordMatch = await compare(password, user.password);
-  console.log('🔍 Password match result:', passwordMatch);
+  console.log('ًں”چ Password match result:', passwordMatch);
 
   if (!passwordMatch) {
     ctx.throw(401, "Incorrect login details.");
@@ -1061,7 +1290,7 @@ router.get("/me", required, async (ctx: CustomContext) => {
     }
     const userId = ctx.state.user.userId;
     
-    console.log(`📋 Fetching /me for user: ${userId}`);
+    console.log(`ًں“‹ Fetching /me for user: ${userId}`);
     
     // OPTIMIZED: Removed heavy nested includes to prevent timeout
     const user = await User.findOne({ 
@@ -1168,10 +1397,10 @@ router.get("/me", required, async (ctx: CustomContext) => {
     user: user,
   };
   
-  console.log(`✅ /me successful for user: ${userId}`);
+  console.log(`âœ… /me successful for user: ${userId}`);
   
   } catch (error: any) {
-    console.error(`❌ /me endpoint error for user ${ctx.state.user?.userId}:`, error.message);
+    console.error(`â‌Œ /me endpoint error for user ${ctx.state.user?.userId}:`, error.message);
     console.error('Stack:', error.stack);
     ctx.status = 500;
     ctx.body = {

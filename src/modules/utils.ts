@@ -22,6 +22,20 @@ export const getLoginCode = () => {
 }
 
 /**
+ * @returns 6 random numbers (for email verification)
+ */
+export const getVerificationCode = () => {
+    const randomString = (length: number, chars: string) => {
+        let result = ""
+        for (let i = length; i > 0; --i)
+            result += chars[Math.floor(Math.random() * chars.length)]
+        return result
+    }
+
+    return randomString(6, "1234567890")
+}
+
+/**
  * @returns 6 random numbers or letters
  */
 export const getInviteCode = () => {
