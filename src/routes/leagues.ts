@@ -38,8 +38,8 @@ router.get('/:id/seasons', required, async (ctx) => {
 // Create league (with optional image upload)
 router.post('/', required, upload.single('image'), leagueController.createLeague);
 
-// Update league
-router.patch('/:id', required, leagueController.updateLeague);
+// Update league (with optional image upload)
+router.patch('/:id', required, upload.single('image'), leagueController.updateLeague);
 
 // Update league status
 router.patch('/:id/status', required, leagueController.updateLeagueStatus);

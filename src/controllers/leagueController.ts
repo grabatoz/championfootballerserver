@@ -76,7 +76,8 @@ export const joinLeague = async (ctx: Context) => {
   const { inviteCode } = ctx.request.body as { inviteCode: string };
   
   if (!inviteCode) {
-    ctx.throw(400, "Invite code is required");
+    ctx.status = 400;
+    ctx.body = { success: false, message: 'Please enter an invite code' };
     return;
   }
 
@@ -85,7 +86,8 @@ export const joinLeague = async (ctx: Context) => {
   });
 
   if (!league) {
-    ctx.throw(404, "League not found with this invite code");
+    ctx.status = 404;
+    ctx.body = { success: false, message: 'No league found with this invite code. Please check and try again.' };
     return;
   }
 
@@ -93,9 +95,10 @@ export const joinLeague = async (ctx: Context) => {
   const isAlreadyMember = await (league as any).hasMember(ctx.state.user.userId);
 
   if (isAlreadyMember) {
+    ctx.status = 409;
     ctx.body = {
       success: false,
-      message: "You have already joined this league."
+      message: "You are already joined to this league"
     };
     return;
   }

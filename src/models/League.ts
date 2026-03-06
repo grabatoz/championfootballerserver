@@ -9,6 +9,7 @@ interface LeagueAttributes {
   inviteCode: string;
   maxGames?: number;
   active: boolean;
+  archived: boolean;
   showPoints: boolean;
   image?: string; // Added image field
   createdAt: Date;
@@ -22,6 +23,7 @@ class League extends Model<LeagueAttributes> {
   declare inviteCode: string;
   declare maxGames?: number;
   declare active: boolean;
+  declare archived: boolean;
   declare showPoints: boolean;
   declare image?: string; // Added image field
   declare readonly createdAt: Date;
@@ -84,6 +86,10 @@ League.init(
     active: {
       type: DataTypes.BOOLEAN,
       defaultValue: true,
+    },
+    archived: {
+      type: DataTypes.BOOLEAN,
+      defaultValue: false,
     },
     showPoints: {
       type: DataTypes.BOOLEAN,

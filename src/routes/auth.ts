@@ -206,15 +206,15 @@ router.post("/auth/register", none, async (ctx: Context) => {
       lastName: userData.lastName || '',
       age: userData.age ? parseInt(userData.age) : undefined,
       gender: userData.gender,
-      country: userData.country ?? null,
-      state: userData.state ?? null,
-      city: userData.city ?? null,
-      phone: userData.phone ?? null,
-      position: userData.position || 'Goalkeeper (GK)',
-      positionType: userData.positionType || 'Goalkeeper',
-      style: userData.style || 'Axe',
-      preferredFoot: userData.preferredFoot || 'Right',
-      shirtNumber: userData.shirtNumber || 1,
+      country: userData.country ?? undefined,
+      state: userData.state ?? undefined,
+      city: userData.city ?? undefined,
+      phone: userData.phone ?? undefined,
+      position: userData.position || undefined,
+      positionType: userData.positionType || undefined,
+      style: userData.style || undefined,
+      preferredFoot: userData.preferredFoot || undefined,
+      shirtNumber: userData.shirtNumber || undefined,
       profilePicture: userData.profilePicture,
       isVerified: false,
       skills: {
@@ -1167,7 +1167,7 @@ router.get("/auth/status", required, async (ctx: CustomContext) => {
           {
             model: League,
             as: 'leagues',
-            attributes: ['id', 'name', 'inviteCode', 'createdAt', 'updatedAt'],
+            attributes: ['id', 'name', 'inviteCode', 'active', 'archived', 'maxGames', 'createdAt', 'updatedAt'],
             through: { attributes: [] },
             include: [
               {
@@ -1181,7 +1181,7 @@ router.get("/auth/status", required, async (ctx: CustomContext) => {
           {
             model: League,
             as: 'administeredLeagues',
-            attributes: ['id', 'name', 'inviteCode', 'createdAt', 'updatedAt'],
+            attributes: ['id', 'name', 'inviteCode', 'active', 'archived', 'maxGames', 'createdAt', 'updatedAt'],
             through: { attributes: [] },
             include: [
               {

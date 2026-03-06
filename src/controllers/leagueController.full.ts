@@ -11,6 +11,7 @@ import Vote from '../models/Vote';
 import MatchStatistics from '../models/MatchStatistics';
 import { MatchAvailability } from '../models/MatchAvailability';
 import { MatchPlayerLayout } from '../models/MatchPlayerLayout';
+import { checkLeagueCompletion } from '../utils/leagueCompletion';
 
 const { League, Match, User, MatchGuest } = models;
 
@@ -59,11 +60,37 @@ export const getAllLeagues = async (ctx: Context) => {
 
     const map: Record<string, any> = {};
     [...memberLeagues, ...adminLeagues].forEach((l: any) => { map[String(l.id)] = l; });
-    const leagues = Object.values(map).map((l: any) => ({
-      id: String(l.id),
-      name: l.name,
-      active: Boolean(l.active),
-      image: (l as any).image ?? null,
+    
+    // Build leagues with completion info
+    const leagues = await Promise.all(Object.values(map).map(async (l: any) => {
+      const completionInfo = await checkLeagueCompletion(String(l.id));
+      return {
+        id: String(l.id),
+        name: l.name,
+        active: Boolean(l.active),
+        archived: Boolean((l as any).archived),
+        image: (l as any).image ?? null,
+        maxGames: l.maxGames ?? null,
+        computedStatus: {
+          isCompleted: completionInfo.isCompleted,
+          activeSeasonCompleted: completionInfo.activeSeasonCompleted,
+          allStatsSubmitted: completionInfo.allStatsSubmitted,
+          matchesPlayed: completionInfo.totalCompletedMatches,
+          gamesPlayed: completionInfo.totalCompletedMatches,
+          maxGames: l.maxGames ?? 0,
+          totalMaxGames: completionInfo.totalMaxGames,
+          missing: completionInfo.missing,
+          seasons: completionInfo.seasons.map(s => ({
+            seasonId: s.seasonId,
+            seasonName: s.seasonName,
+            maxGames: s.maxGames,
+            completedMatches: s.completedMatches,
+            isCompleted: s.isCompleted,
+            last2MatchesStatsComplete: s.last2MatchesStatsComplete,
+            missingStatsPlayers: s.missingStatsPlayers,
+          })),
+        },
+      };
     }));
 
     ctx.body = { success: true, leagues };
@@ -808,15 +835,39 @@ export const getUserLeagues = async (ctx: Context) => {
 
     const result = {
       success: true,
-      leagues: leagues.map(l => ({
-        id: l.id,
-        name: l.name,
-        active: l.active,
-        image: (l as any).image
+      leagues: await Promise.all(leagues.map(async l => {
+        const completionInfo = await checkLeagueCompletion(String(l.id));
+        return {
+          id: l.id,
+          name: l.name,
+          active: l.active,
+          archived: Boolean((l as any).archived),
+          image: (l as any).image,
+          maxGames: l.maxGames ?? null,
+          computedStatus: {
+            isCompleted: completionInfo.isCompleted,
+            activeSeasonCompleted: completionInfo.activeSeasonCompleted,
+            allStatsSubmitted: completionInfo.allStatsSubmitted,
+            matchesPlayed: completionInfo.totalCompletedMatches,
+            gamesPlayed: completionInfo.totalCompletedMatches,
+            maxGames: l.maxGames ?? 0,
+            totalMaxGames: completionInfo.totalMaxGames,
+            missing: completionInfo.missing,
+            seasons: completionInfo.seasons.map(s => ({
+              seasonId: s.seasonId,
+              seasonName: s.seasonName,
+              maxGames: s.maxGames,
+              completedMatches: s.completedMatches,
+              isCompleted: s.isCompleted,
+              last2MatchesStatsComplete: s.last2MatchesStatsComplete,
+              missingStatsPlayers: s.missingStatsPlayers,
+            })),
+          },
+        };
       }))
     };
 
-    cache.set(cacheKey, result, 600);
+    cache.set(cacheKey, result, 120); // Reduced cache time for more accurate completion status
     ctx.set('X-Cache', 'MISS');
     ctx.body = result;
   } catch (err) {
@@ -991,6 +1042,31 @@ export const getLeagueById = async (ctx: Context) => {
         console.log(`   - Season ${s.seasonNumber}: ${s.members?.length || 0} members`);
       });
 
+      // Compute league/season completion status
+      const completionInfo = await checkLeagueCompletion(String(league.id));
+      const computedStatus = {
+        isCompleted: completionInfo.isCompleted,
+        activeSeasonCompleted: completionInfo.activeSeasonCompleted,
+        allStatsSubmitted: completionInfo.allStatsSubmitted,
+        totalCompletedMatches: completionInfo.totalCompletedMatches,
+        totalMaxGames: completionInfo.totalMaxGames,
+        maxGames: league.maxGames,
+        matchesPlayed: completionInfo.totalCompletedMatches,
+        gamesPlayed: completionInfo.totalCompletedMatches,
+        seasons: completionInfo.seasons.map(s => ({
+          seasonId: s.seasonId,
+          seasonNumber: s.seasonNumber,
+          seasonName: s.seasonName,
+          isActive: s.isActive,
+          maxGames: s.maxGames,
+          completedMatches: s.completedMatches,
+          isCompleted: s.isCompleted,
+          last2MatchesStatsComplete: s.last2MatchesStatsComplete,
+          missingStatsPlayers: s.missingStatsPlayers,
+        })),
+        missing: completionInfo.missing,
+      };
+
       ctx.body = {
         success: true,
         league: {
@@ -998,6 +1074,7 @@ export const getLeagueById = async (ctx: Context) => {
           name: league.name,
           inviteCode: league.inviteCode,
           active: league.active,
+          archived: Boolean((league as any).archived),
           image: (league as any).image,
           maxGames: league.maxGames,
           members: (league as any).members || [],
@@ -1005,7 +1082,8 @@ export const getLeagueById = async (ctx: Context) => {
           seasons: formattedSeasons, // Admin sees ALL seasons with members
           currentSeason: activeSeason || (seasons.length > 0 ? seasons[0] : null), // Admin's current = active season
           administrators: (league as any).administeredLeagues || [],
-          isAdmin
+          isAdmin,
+          computedStatus
         }
       };
       return;
@@ -1180,6 +1258,31 @@ export const getLeagueById = async (ctx: Context) => {
       console.log(`   - Season ${s.seasonNumber}: ${s.members?.length || 0} members`);
     });
 
+    // Compute league/season completion status
+    const completionInfoMember = await checkLeagueCompletion(String(league.id));
+    const computedStatusMember = {
+      isCompleted: completionInfoMember.isCompleted,
+      activeSeasonCompleted: completionInfoMember.activeSeasonCompleted,
+      allStatsSubmitted: completionInfoMember.allStatsSubmitted,
+      totalCompletedMatches: completionInfoMember.totalCompletedMatches,
+      totalMaxGames: completionInfoMember.totalMaxGames,
+      maxGames: league.maxGames,
+      matchesPlayed: completionInfoMember.totalCompletedMatches,
+      gamesPlayed: completionInfoMember.totalCompletedMatches,
+      seasons: completionInfoMember.seasons.map(s => ({
+        seasonId: s.seasonId,
+        seasonNumber: s.seasonNumber,
+        seasonName: s.seasonName,
+        isActive: s.isActive,
+        maxGames: s.maxGames,
+        completedMatches: s.completedMatches,
+        isCompleted: s.isCompleted,
+        last2MatchesStatsComplete: s.last2MatchesStatsComplete,
+        missingStatsPlayers: s.missingStatsPlayers,
+      })),
+      missing: completionInfoMember.missing,
+    };
+
     ctx.body = {
       success: true,
       league: {
@@ -1187,6 +1290,7 @@ export const getLeagueById = async (ctx: Context) => {
         name: league.name,
         inviteCode: league.inviteCode,
         active: league.active,
+        archived: Boolean((league as any).archived),
         image: (league as any).image,
         maxGames: league.maxGames,
         members: (league as any).members || [],
@@ -1194,7 +1298,8 @@ export const getLeagueById = async (ctx: Context) => {
         seasons: filteredSeasons, // Only show seasons user is member of
         currentSeason: userCurrentSeason, // User's current season
         administrators: (league as any).administeredLeagues || [],
-        isAdmin
+        isAdmin,
+        computedStatus: computedStatusMember
       }
     };
   } catch (err) {
@@ -1709,13 +1814,25 @@ export const updateLeagueStatus = async (ctx: Context) => {
       return;
     }
 
-    await league.update({ active: Boolean(active) });
+    const isActive = Boolean(active);
+    // When admin marks league as inactive, also archive it
+    const updateData: any = { active: isActive };
+    if (!isActive) {
+      updateData.archived = true;
+      console.log(`📦 League "${league.name}" archived by admin (marked inactive)`);
+    } else {
+      // If reactivating, un-archive it
+      updateData.archived = false;
+    }
+
+    await league.update(updateData);
 
     ctx.body = {
       success: true,
       league: {
         id: league.id,
-        active: league.active
+        active: league.active,
+        archived: (league as any).archived
       }
     };
   } catch (err) {
@@ -1728,7 +1845,13 @@ export const updateLeagueStatus = async (ctx: Context) => {
 // Update league
 export const updateLeague = async (ctx: Context) => {
   const { id } = ctx.params;
-  const { name, maxGames, active, showPoints, admins, seasonId, seasonMaxGames, seasonShowPoints } = ctx.request.body as any;
+  const { name, maxGames, active, showPoints, removeImage, seasonId, seasonMaxGames, seasonShowPoints } = ctx.request.body as any;
+  let { admins } = ctx.request.body as any;
+
+  // When sent via FormData, admins arrives as a JSON string — parse it
+  if (typeof admins === 'string') {
+    try { admins = JSON.parse(admins); } catch { admins = undefined; }
+  }
 
   if (!ctx.state.user) {
     ctx.throw(401, 'Unauthorized');
@@ -1775,8 +1898,18 @@ export const updateLeague = async (ctx: Context) => {
     const updateData: any = {};
     if (name) updateData.name = name;
     if (maxGames !== undefined) updateData.maxGames = Number(maxGames);
-    if (active !== undefined) updateData.active = Boolean(active);
-    if (showPoints !== undefined) updateData.showPoints = Boolean(showPoints);
+    // Handle boolean fields that may arrive as strings from FormData
+    if (active !== undefined) updateData.active = active === true || active === 'true';
+    if (showPoints !== undefined) updateData.showPoints = showPoints === true || showPoints === 'true';
+
+    // Handle league image upload or removal
+    if ((ctx.request as any).file) {
+      const file = (ctx.request as any).file;
+      const imageUrl = await uploadToCloudinary(file.buffer, 'league-images');
+      updateData.image = imageUrl;
+    } else if (removeImage === 'true' || removeImage === true) {
+      updateData.image = null;
+    }
 
     await league.update(updateData);
 
@@ -1801,7 +1934,7 @@ export const updateLeague = async (ctx: Context) => {
       const season = await Season.findByPk(seasonId);
       if (season) {
         if (seasonMaxGames !== undefined) season.maxGames = Number(seasonMaxGames);
-        if (seasonShowPoints !== undefined) season.showPoints = Boolean(seasonShowPoints);
+        if (seasonShowPoints !== undefined) season.showPoints = seasonShowPoints === true || seasonShowPoints === 'true';
         await season.save();
         console.log(`✅ Season ${seasonId} settings updated: maxGames=${season.maxGames}, showPoints=${season.showPoints}`);
       }
@@ -1820,6 +1953,7 @@ export const updateLeague = async (ctx: Context) => {
         maxGames: (updatedLeague as any)?.maxGames || league.maxGames,
         active: (updatedLeague as any)?.active ?? league.active,
         showPoints: (updatedLeague as any)?.showPoints ?? league.showPoints,
+        image: (updatedLeague as any)?.image ?? (league as any).image ?? null,
         administrators: (updatedLeague as any)?.administeredLeagues || []
       }
     };
@@ -1830,7 +1964,7 @@ export const updateLeague = async (ctx: Context) => {
   }
 };
 
-// Delete league
+// Delete league (soft-delete: archives the league, preserves all player XP)
 export const deleteLeague = async (ctx: Context) => {
   const { id } = ctx.params;
 
@@ -1841,7 +1975,10 @@ export const deleteLeague = async (ctx: Context) => {
 
   try {
     const league = await League.findByPk(id, {
-      include: [{ model: User, as: 'administeredLeagues', attributes: ['id'] }]
+      include: [
+        { model: User, as: 'administeredLeagues', attributes: ['id'] },
+        { model: User, as: 'members', attributes: ['id', 'firstName', 'lastName'] }
+      ]
     });
 
     if (!league) {
@@ -1855,13 +1992,42 @@ export const deleteLeague = async (ctx: Context) => {
       return;
     }
 
-    await league.destroy();
+    // Soft-delete: mark as inactive + archived so XP, stats, and match data are preserved
+    await league.update({ active: false, archived: true });
+
+    // Remove all members and admins from the league (they keep their XP)
+    const members: any[] = (league as any).members || [];
+    if (members.length > 0) {
+      await (league as any).setMembers([]);
+      await (league as any).setAdministeredLeagues([]);
+    }
+
+    // Notify all members the league was deleted
+    try {
+      const notifications = members.map((m: any) => ({
+        user_id: String(m.id),
+        type: 'LEAGUE_DELETED',
+        title: '🗑️ League Deleted',
+        body: `The league "${league.name}" has been deleted by the admin. Your XP points have been preserved.`,
+        meta: {
+          leagueId: id,
+          leagueName: league.name,
+        },
+        read: false,
+        created_at: new Date(),
+      }));
+      if (notifications.length > 0) {
+        await Notification.bulkCreate(notifications);
+      }
+    } catch (notifErr) {
+      console.error('Failed to send league deletion notifications:', notifErr);
+    }
 
     cache.clearPattern(`user_leagues_`);
 
     ctx.body = {
       success: true,
-      message: 'League deleted successfully'
+      message: 'League deleted successfully. All players\' XP points have been preserved.'
     };
   } catch (err) {
     console.error('Delete league error', err);
@@ -1881,7 +2047,8 @@ export const joinLeague = async (ctx: Context) => {
   const { inviteCode } = ctx.request.body as any;
 
   if (!inviteCode) {
-    ctx.throw(400, 'Invite code is required');
+    ctx.status = 400;
+    ctx.body = { success: false, message: 'Please enter an invite code' };
     return;
   }
 
@@ -1895,13 +2062,15 @@ export const joinLeague = async (ctx: Context) => {
     });
 
     if (!league) {
-      ctx.throw(404, 'League not found with this invite code');
+      ctx.status = 404;
+      ctx.body = { success: false, message: 'No league found with this invite code. Please check and try again.' };
       return;
     }
 
     const isMember = (league as any).members?.some((m: any) => String(m.id) === String(userId));
     if (isMember) {
-      ctx.throw(400, 'Already a member of this league');
+      ctx.status = 409;
+      ctx.body = { success: false, message: 'You are already joined to this league' };
       return;
     }
 
@@ -1947,8 +2116,8 @@ export const leaveLeague = async (ctx: Context) => {
   try {
     const league = await League.findByPk(id, {
       include: [
-        { model: User, as: 'members', attributes: ['id'] },
-        { model: User, as: 'administeredLeagues', attributes: ['id'] }
+        { model: User, as: 'members', attributes: ['id', 'firstName', 'lastName'] },
+        { model: User, as: 'administeredLeagues', attributes: ['id', 'firstName', 'lastName'] }
       ]
     });
 
@@ -1957,18 +2126,82 @@ export const leaveLeague = async (ctx: Context) => {
       return;
     }
 
-    const isAdmin = (league as any).administeredLeagues?.some((a: any) => String(a.id) === String(userId));
+    const members: any[] = (league as any).members || [];
+    const admins: any[] = (league as any).administeredLeagues || [];
+    const isAdmin = admins.some((a: any) => String(a.id) === String(userId));
+
+    // If user is an admin, auto-reassign admin to another member before leaving
     if (isAdmin) {
-      ctx.throw(400, 'League admins cannot leave. Delete the league or transfer ownership first.');
-      return;
+      const otherMembers = members.filter((m: any) => String(m.id) !== String(userId));
+
+      if (otherMembers.length === 0) {
+        // No other members — archive the league instead
+        await league.update({ active: false, archived: true });
+        // Remove the last member (admin)
+        const user = await User.findByPk(userId);
+        if (user) {
+          await (league as any).removeMember(user);
+          await (league as any).removeAdministeredLeagues(user);
+        }
+        cache.clearPattern(`user_leagues_`);
+        ctx.body = {
+          success: true,
+          message: 'You were the last member. League has been archived.',
+          archived: true
+        };
+        return;
+      }
+
+      // Pick the first other member as new admin
+      const newAdmin = otherMembers[0];
+      await (league as any).setAdministeredLeagues([newAdmin.id]);
+      console.log(`🔄 Admin reassigned in league "${league.name}": ${newAdmin.firstName} ${newAdmin.lastName} (${newAdmin.id})`);
+
+      // Send notification to ALL members about new admin
+      try {
+        const newAdminName = `${newAdmin.firstName || ''} ${newAdmin.lastName || ''}`.trim() || 'a new player';
+        const notifications = otherMembers.map((m: any) => ({
+          user_id: String(m.id),
+          type: 'ADMIN_REASSIGNED',
+          title: '👑 New Admin Selected',
+          body: `New admin selected, ${newAdminName}.`,
+          meta: {
+            leagueId: id,
+            leagueName: league.name,
+            newAdminId: String(newAdmin.id),
+            newAdminName,
+            previousAdminId: userId,
+          },
+          read: false,
+          created_at: new Date(),
+        }));
+        await Notification.bulkCreate(notifications);
+      } catch (notifErr) {
+        console.error('Failed to send admin reassignment notification:', notifErr);
+      }
     }
 
+    // Remove the user from the league
     const user = await User.findByPk(userId);
     if (user) {
       await (league as any).removeMember(user);
+      if (isAdmin) {
+        await (league as any).removeAdministeredLeagues(user);
+      }
+    }
+
+    // Check if the league is now empty — archive it
+    const remainingMembers = await (League.findByPk(id, {
+      include: [{ model: User, as: 'members', attributes: ['id'] }]
+    }));
+    const remainingCount = ((remainingMembers as any)?.members || []).length;
+    if (remainingCount === 0) {
+      await League.update({ active: false, archived: true }, { where: { id } });
+      console.log(`📦 League "${league.name}" archived — no members remaining`);
     }
 
     cache.clearPattern(`user_leagues_${userId}`);
+    cache.clearPattern(`user_leagues_`);
 
     ctx.body = {
       success: true,
@@ -2009,6 +2242,16 @@ export const removeUserFromLeague = async (ctx: Context) => {
     const user = await User.findByPk(targetUserId);
     if (user) {
       await (league as any).removeMember(user);
+    }
+
+    // Check if league is now empty — if so, archive it
+    const updatedLeague = await League.findByPk(id, {
+      include: [{ model: User, as: 'members', attributes: ['id'] }]
+    });
+    const remainingCount = ((updatedLeague as any)?.members || []).length;
+    if (remainingCount === 0) {
+      await League.update({ active: false, archived: true }, { where: { id } });
+      console.log(`📦 League "${league.name}" archived — no members remaining after removal`);
     }
 
     cache.clearPattern(`user_leagues_`);

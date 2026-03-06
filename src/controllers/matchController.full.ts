@@ -8,6 +8,7 @@ import cache from '../utils/cache';
 import { sendCaptainConfirmations, notifyCaptainConfirmed, notifyCaptainRevision } from '../modules/notifications';
 import Notification from '../models/Notification';
 import Season from '../models/Season';
+import { checkAndCompleteLeagueAfterMatch } from '../utils/leagueCompletion';
 
 const { Match, Vote, User, MatchStatistics, League, MatchGuest, MatchAvailability } = models;
 
@@ -608,6 +609,19 @@ export const confirmMatchResult = async (ctx: Context) => {
       } catch (notifErr) {
         console.error('Failed to send confirmation notification:', notifErr);
       }
+
+      // Check if this match completion triggers season/league completion
+      try {
+        const completionResult = await checkAndCompleteLeagueAfterMatch(matchId);
+        if (completionResult.seasonCompleted) {
+          console.log(`🏆 Season completed after match ${matchId}!`);
+        }
+        if (completionResult.leagueCompleted) {
+          console.log(`🏆🏆 League completed after match ${matchId}! League marked as inactive.`);
+        }
+      } catch (completionErr) {
+        console.error('Failed to check league completion:', completionErr);
+      }
     }
 
     ctx.body = {
@@ -1003,6 +1017,18 @@ export const submitMatchStats = async (ctx: Context) => {
     }
 
     console.log(`✅ Stats submission complete - sending response`);
+    
+    // After stats submitted, re-check if league is now complete
+    // (completion requires last 2 matches to have all players' stats)
+    try {
+      const completionResult = await checkAndCompleteLeagueAfterMatch(matchId);
+      if (completionResult.leagueCompleted) {
+        console.log(`🏆 League completed after stats submission for match ${matchId}!`);
+      }
+    } catch (completionErr) {
+      console.error('Failed to check league completion after stats:', completionErr);
+    }
+
     ctx.body = { success: true, message: 'Stats submitted successfully' };
   } catch (err) {
     console.error('Submit stats error', err);

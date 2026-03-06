@@ -126,6 +126,20 @@ async function ensureResetCodeColumns(): Promise<void> {
   }
 }
 
+async function ensureLeagueArchivedColumn(): Promise<void> {
+  try {
+    const [results] = await sequelize.query(
+      `SELECT column_name FROM information_schema.columns WHERE table_name = 'Leagues' AND column_name = 'archived'`
+    );
+    if (!Array.isArray(results) || results.length === 0) {
+      await sequelize.query(`ALTER TABLE "Leagues" ADD COLUMN "archived" BOOLEAN NOT NULL DEFAULT false`);
+      console.log('✅ Added "archived" column to Leagues table');
+    }
+  } catch (err) {
+    console.warn('⚠️ ensureLeagueArchivedColumn skipped:', (err as any).message);
+  }
+}
+
 let initialized = false;
 
 // Initialize database function
@@ -144,6 +158,7 @@ export async function initializeDatabase() {
     await ensureUserLocationColumns();
     await ensureUserPhoneColumn();
     await ensureResetCodeColumns();
+    await ensureLeagueArchivedColumn();
 
     // Ensure DB NOTIFY/LISTEN infrastructure and triggers (idempotent)
     try {
