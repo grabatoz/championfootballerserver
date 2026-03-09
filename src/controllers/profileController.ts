@@ -69,10 +69,34 @@ export const updateProfile = async (ctx: Context) => {
     return;
   }
 
-  // Don't allow updating email or password through this endpoint
+  // Don't allow updating email or id through this endpoint
   delete updateData.email;
-  delete updateData.password;
   delete updateData.id;
+
+  // If a new password was provided, hash it before saving
+  if (updateData.password && typeof updateData.password === 'string' && updateData.password.trim().length > 0) {
+    const pw = updateData.password.trim();
+    // Validate: 6-16 chars, 1 uppercase, 1 number, 1 special char
+    if (pw.length < 6 || pw.length > 16) {
+      ctx.throw(400, "Password must be 6-16 characters");
+      return;
+    }
+    if (!/[A-Z]/.test(pw)) {
+      ctx.throw(400, "Password must include at least one uppercase letter");
+      return;
+    }
+    if (!/[0-9]/.test(pw)) {
+      ctx.throw(400, "Password must include at least one number");
+      return;
+    }
+    if (!/[^A-Za-z0-9]/.test(pw)) {
+      ctx.throw(400, "Password must include at least one special character");
+      return;
+    }
+    updateData.password = await hash(pw, 10);
+  } else {
+    delete updateData.password;
+  }
 
   await user.update(updateData);
 
@@ -80,15 +104,15 @@ export const updateProfile = async (ctx: Context) => {
   cache.del(`auth_data_${userId}_ultra_fast`);
   cache.del(`auth_status_${userId}_fast`);
 
+  // Return all non-sensitive user fields
+  const updatedUser = user.toJSON() as any;
+  delete updatedUser.password;
+  delete updatedUser.ipAddress;
+
   ctx.body = {
     success: true,
     message: "Profile updated successfully",
-    user: {
-      id: user.id,
-      firstName: user.firstName,
-      lastName: user.lastName,
-      email: user.email
-    }
+    user: updatedUser
   };
 };
 

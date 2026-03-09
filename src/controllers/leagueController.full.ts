@@ -2152,8 +2152,13 @@ export const leaveLeague = async (ctx: Context) => {
         return;
       }
 
-      // Pick the first other member as new admin
-      const newAdmin = otherMembers[0];
+      // Pick new admin: prefer the one specified by frontend, otherwise first other member
+      const body = (ctx.request as any).body || {};
+      const preferredAdminId = body.preferredAdminId ? String(body.preferredAdminId) : null;
+      const preferredAdmin = preferredAdminId
+        ? otherMembers.find((m: any) => String(m.id) === preferredAdminId)
+        : null;
+      const newAdmin = preferredAdmin || otherMembers[0];
       await (league as any).setAdministeredLeagues([newAdmin.id]);
       console.log(`🔄 Admin reassigned in league "${league.name}": ${newAdmin.firstName} ${newAdmin.lastName} (${newAdmin.id})`);
 

@@ -3,7 +3,8 @@ import { required } from '../modules/auth';
 import { CustomContext } from '../types';
 import { 
   getProfile, 
-  updateProfile
+  updateProfile,
+  changePassword
 } from '../controllers/profileController';
 import models from '../models';
 import { upload, uploadToCloudinary } from '../middleware/upload';
@@ -19,6 +20,38 @@ router.get('/', required, getProfile);
 
 // Patch (partial update) user profile
 router.patch('/', required, updateProfile);
+
+// Change password (requires current password verification)
+router.patch('/password', required, changePassword);
+
+// Delete profile picture
+router.delete('/picture', required, async (ctx: CustomContext) => {
+  if (!ctx.state.user?.userId) ctx.throw(401, 'User not authenticated');
+
+  const user = await User.findByPk(ctx.state.user.userId);
+  if (!user) ctx.throw(404, 'User not found');
+
+  (user as any).profilePicture = null;
+  await user.save();
+
+  // Clear user cache
+  cache.del(`auth_data_${ctx.state.user.userId}_ultra_fast`);
+  cache.del(`auth_status_${ctx.state.user.userId}_fast`);
+
+  // Update players cache
+  const updatedUserData = {
+    id: user.id,
+    firstName: user.firstName,
+    lastName: user.lastName,
+    profilePicture: null,
+    position: user.position,
+    positionType: user.positionType,
+    xp: user.xp || 0
+  };
+  cache.updateArray('players_all', updatedUserData);
+
+  ctx.body = { success: true, message: 'Profile picture removed', user: updatedUserData };
+});
 
 // Get user statistics
 router.get('/statistics', required, async (ctx: CustomContext) => {
