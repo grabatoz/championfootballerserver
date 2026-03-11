@@ -340,3 +340,45 @@ export const checkAndCompleteLeagueAfterMatch = async (matchId: string): Promise
     seasonInfo,
   };
 };
+
+/**
+ * Check if a league's points are locked (completed for more than 24 hours).
+ * Uses the latest resultPublishedAt from completed matches as the completion time.
+ * Returns { locked: boolean, hoursRemaining: number }
+ */
+export const isLeagueLocked = async (leagueId: string): Promise<{ locked: boolean; hoursRemaining: number }> => {
+  try {
+    const league = await League.findByPk(leagueId, { attributes: ['id', 'active'] });
+
+    // If league is still active, it's not locked
+    if (!league || league.active) {
+      return { locked: false, hoursRemaining: 0 };
+    }
+
+    // League is inactive (completed). Find the latest resultPublishedAt to determine when it completed.
+    const sequelize = League.sequelize!;
+    const result = await sequelize.query<{ latest: string }>(
+      `SELECT MAX("updatedAt") as latest FROM matches WHERE "leagueId" = $1 AND status IN ('RESULT_PUBLISHED', 'RESULT_UPLOADED')`,
+      { bind: [leagueId], type: QueryTypes.SELECT }
+    );
+
+    if (!result.length || !result[0].latest) {
+      // No completed matches found, not locked
+      return { locked: false, hoursRemaining: 0 };
+    }
+
+    const completionTime = new Date(result[0].latest);
+    const now = new Date();
+    const hoursSinceCompletion = (now.getTime() - completionTime.getTime()) / (1000 * 60 * 60);
+
+    if (hoursSinceCompletion >= 24) {
+      return { locked: true, hoursRemaining: 0 };
+    }
+
+    return { locked: false, hoursRemaining: Math.ceil(24 - hoursSinceCompletion) };
+  } catch (err) {
+    console.error('Error checking league lock status:', err);
+    // Default to not locked on error to avoid blocking users
+    return { locked: false, hoursRemaining: 0 };
+  }
+};

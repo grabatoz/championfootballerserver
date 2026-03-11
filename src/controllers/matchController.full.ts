@@ -8,7 +8,7 @@ import cache from '../utils/cache';
 import { sendCaptainConfirmations, notifyCaptainConfirmed, notifyCaptainRevision } from '../modules/notifications';
 import Notification from '../models/Notification';
 import Season from '../models/Season';
-import { checkAndCompleteLeagueAfterMatch } from '../utils/leagueCompletion';
+import { checkAndCompleteLeagueAfterMatch, isLeagueLocked } from '../utils/leagueCompletion';
 
 const { Match, Vote, User, MatchStatistics, League, MatchGuest, MatchAvailability } = models;
 
@@ -154,6 +154,16 @@ export const voteForMotm = async (ctx: Context) => {
   const voterId = ctx.state.user.userId;
   const { votedForId } = ctx.request.body as { votedForId?: string | null };
 
+  // Check if the league is locked (completed for more than 24 hours)
+  const match = await Match.findByPk(matchId, { attributes: ['id', 'leagueId'] });
+  if (match?.leagueId) {
+    const lockStatus = await isLeagueLocked(match.leagueId);
+    if (lockStatus.locked) {
+      ctx.throw(403, 'This league has been completed for over 24 hours. Points are now locked and cannot be updated.');
+      return;
+    }
+  }
+
   // Get old vote to subtract XP from previous voted player
   const oldVote = await Vote.findOne({ where: { matchId, voterId } });
   const oldVotedForId = oldVote?.votedForId;
@@ -191,6 +201,25 @@ export const voteForMotm = async (ctx: Context) => {
             const newXP = Math.max(0, (user.xp || 0) - voteXP);
             await sequelize.query(`UPDATE users SET xp = $1 WHERE id = $2`, { bind: [newXP, oldVotedForId] });
             console.log(`🗳️ Vote removed - ${user.firstName} lost -${voteXP} XP`);
+
+            // Also subtract from match_statistics.xp_awarded to keep league table in sync
+            try {
+              const existingStats = await sequelize.query(
+                `SELECT xp_awarded FROM match_statistics WHERE match_id = $1 AND user_id = $2`,
+                { bind: [matchId, oldVotedForId], type: QueryTypes.SELECT }
+              );
+              if (existingStats.length > 0) {
+                const prevXpAwarded = (existingStats[0] as any)?.xp_awarded || 0;
+                const newXpAwarded = Math.max(0, prevXpAwarded - voteXP);
+                await sequelize.query(
+                  `UPDATE match_statistics SET xp_awarded = $1 WHERE match_id = $2 AND user_id = $3`,
+                  { bind: [newXpAwarded, matchId, oldVotedForId] }
+                );
+                console.log(`🗳️ match_statistics.xp_awarded reduced: ${prevXpAwarded} → ${newXpAwarded}`);
+              }
+            } catch (statsErr) {
+              console.error('⚠️ Could not update match_statistics.xp_awarded for vote removal:', statsErr);
+            }
           }
         }
       } catch (e) { console.error('Error removing vote XP:', e); }
@@ -238,6 +267,25 @@ export const voteForMotm = async (ctx: Context) => {
           const newXP = Math.max(0, (user.xp || 0) - voteXP);
           await sequelize.query(`UPDATE users SET xp = $1 WHERE id = $2`, { bind: [newXP, oldVotedForId] });
           console.log(`🗳️ Vote changed - ${user.firstName} lost -${voteXP} XP`);
+
+          // Also subtract from match_statistics.xp_awarded to keep league table in sync
+          try {
+            const existingStats = await sequelize.query(
+              `SELECT xp_awarded FROM match_statistics WHERE match_id = $1 AND user_id = $2`,
+              { bind: [matchId, oldVotedForId], type: QueryTypes.SELECT }
+            );
+            if (existingStats.length > 0) {
+              const prevXpAwarded = (existingStats[0] as any)?.xp_awarded || 0;
+              const newXpAwarded = Math.max(0, prevXpAwarded - voteXP);
+              await sequelize.query(
+                `UPDATE match_statistics SET xp_awarded = $1 WHERE match_id = $2 AND user_id = $3`,
+                { bind: [newXpAwarded, matchId, oldVotedForId] }
+              );
+              console.log(`🗳️ match_statistics.xp_awarded reduced (vote change): ${prevXpAwarded} → ${newXpAwarded}`);
+            }
+          } catch (statsErr) {
+            console.error('⚠️ Could not update match_statistics.xp_awarded for vote change:', statsErr);
+          }
         }
       }
     } catch (e) { console.error('Error removing old vote XP:', e); }
@@ -308,6 +356,25 @@ export const voteForMotm = async (ctx: Context) => {
             { bind: [newXP, votedForId], type: QueryTypes.UPDATE }
           );
           console.log(`🗳️ Update result: ${JSON.stringify(updateResult)}`);
+          
+          // Also update match_statistics.xp_awarded to keep league table XP in sync
+          try {
+            const existingStats = await sequelize.query(
+              `SELECT xp_awarded FROM match_statistics WHERE match_id = $1 AND user_id = $2`,
+              { bind: [matchId, votedForId], type: QueryTypes.SELECT }
+            );
+            if (existingStats.length > 0) {
+              const prevXpAwarded = (existingStats[0] as any)?.xp_awarded || 0;
+              const newXpAwarded = prevXpAwarded + voteXP;
+              await sequelize.query(
+                `UPDATE match_statistics SET xp_awarded = $1 WHERE match_id = $2 AND user_id = $3`,
+                { bind: [newXpAwarded, matchId, votedForId] }
+              );
+              console.log(`🗳️ match_statistics.xp_awarded updated: ${prevXpAwarded} → ${newXpAwarded}`);
+            }
+          } catch (statsErr) {
+            console.error('⚠️ Could not update match_statistics.xp_awarded for vote:', statsErr);
+          }
           
           // Verify the update
           const verifyResult = await sequelize.query(
@@ -713,6 +780,15 @@ export const submitMatchStats = async (ctx: Context) => {
     if (!match) {
       ctx.throw(404, 'Match not found');
       return;
+    }
+
+    // Check if the league is locked (completed for more than 24 hours)
+    if (match.leagueId) {
+      const lockStatus = await isLeagueLocked(match.leagueId);
+      if (lockStatus.locked) {
+        ctx.throw(403, 'This league has been completed for over 24 hours. Points are now locked and stats cannot be updated.');
+        return;
+      }
     }
 
     const isAdmin = (match as any).league?.administeredLeagues?.some((a: any) => String(a.id) === String(ctx.state.user.userId));

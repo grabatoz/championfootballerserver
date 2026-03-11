@@ -1481,6 +1481,7 @@ export const getLeagueStatistics = async (ctx: Context) => {
 // Get league XP for all members
 export const getLeagueXP = async (ctx: Context) => {
   const { id } = ctx.params;
+  const { seasonId: querySeasonId } = ctx.query as { seasonId?: string };
 
   if (!ctx.state.user || !ctx.state.user.userId) {
     ctx.status = 401;
@@ -1521,56 +1522,159 @@ export const getLeagueXP = async (ctx: Context) => {
       return;
     }
 
-    // Get active season
+    // Resolve seasonId: use query param if provided, otherwise use active season
     const activeSeason = (league as any).seasons?.[0];
-    const seasonId = activeSeason?.id;
+    const seasonId = querySeasonId || activeSeason?.id;
 
-    // Build XP map from MatchStatistics
+    console.log(`📊 getLeagueXP - leagueId: ${id}, querySeasonId: ${querySeasonId}, activeSeason: ${activeSeason?.id}, resolved seasonId: ${seasonId}`);
+
+    // Compute XP from actual match data using raw SQL to avoid ORM issues
     const xpMap: Record<string, number> = {};
     const avgMap: Record<string, number> = {};
     const matchCountMap: Record<string, number> = {};
+    const sequelize = League.sequelize!;
 
-    if (seasonId) {
-      try {
-        // Get all match statistics for this league's active season
-        const stats = await MatchStatistics.findAll({
-          include: [
-            {
-              model: Match,
-              as: 'match',
-              where: {
-                leagueId: id,
-                seasonId: seasonId,
-                status: { [Op.in]: ['RESULT_PUBLISHED', 'RESULT_UPLOADED'] }
-              },
-              attributes: ['id'],
-              required: true
-            }
-          ],
-          attributes: [['user_id', 'userId'], ['xp_awarded', 'xpAwarded']]
-        });
-
-        // Aggregate XP by user
-        for (const stat of stats) {
-          const statUserId = String((stat as any).userId);
-          const xp = (stat as any).xpAwarded || 0;
-          if (!xpMap[statUserId]) {
-            xpMap[statUserId] = 0;
-            matchCountMap[statUserId] = 0;
-          }
-          xpMap[statUserId] += xp;
-          matchCountMap[statUserId] += 1;
-        }
-
-        // Calculate averages
-        for (const [uid, totalXP] of Object.entries(xpMap)) {
-          const matchCount = matchCountMap[uid] || 1;
-          avgMap[uid] = Math.round(totalXP / matchCount);
-        }
-      } catch (statsErr) {
-        console.log('Could not fetch XP stats:', statsErr);
-        // Non-critical, return empty maps
+    try {
+      // 1. Get all completed matches for this league (optionally filtered by season)
+      let matchQuery = `SELECT id, "homeTeamGoals", "awayTeamGoals" FROM "Matches" WHERE "leagueId" = $1 AND status IN ('RESULT_PUBLISHED', 'RESULT_UPLOADED')`;
+      const matchBinds: any[] = [id];
+      if (seasonId) {
+        matchQuery += ` AND "seasonId" = $2`;
+        matchBinds.push(seasonId);
       }
+
+      const matches = await sequelize.query<{ id: string; homeTeamGoals: number; awayTeamGoals: number }>(
+        matchQuery, { bind: matchBinds, type: QueryTypes.SELECT }
+      );
+
+      console.log(`📊 getLeagueXP - Found ${matches.length} completed matches`);
+
+      if (matches.length === 0) {
+        ctx.body = { success: true, xp: xpMap, avg: avgMap };
+        return;
+      }
+
+      const matchIds = matches.map(m => m.id);
+      const matchIdPlaceholders = matchIds.map((_, i) => `$${i + 1}`).join(',');
+
+      // 2. Get home/away team players for all matches
+      const homePlayers = await sequelize.query<{ matchId: string; userId: string }>(
+        `SELECT "matchId", "userId" FROM "UserHomeMatches" WHERE "matchId" IN (${matchIdPlaceholders})`,
+        { bind: matchIds, type: QueryTypes.SELECT }
+      );
+      const awayPlayers = await sequelize.query<{ matchId: string; userId: string }>(
+        `SELECT "matchId", "userId" FROM "UserAwayMatches" WHERE "matchId" IN (${matchIdPlaceholders})`,
+        { bind: matchIds, type: QueryTypes.SELECT }
+      );
+
+      console.log(`📊 getLeagueXP - Home players: ${homePlayers.length}, Away players: ${awayPlayers.length}`);
+
+      // Build lookup: matchId -> { home: Set<userId>, away: Set<userId> }
+      const matchTeams: Record<string, { home: Set<string>; away: Set<string> }> = {};
+      for (const hp of homePlayers) {
+        if (!matchTeams[hp.matchId]) matchTeams[hp.matchId] = { home: new Set(), away: new Set() };
+        matchTeams[hp.matchId].home.add(hp.userId);
+      }
+      for (const ap of awayPlayers) {
+        if (!matchTeams[ap.matchId]) matchTeams[ap.matchId] = { home: new Set(), away: new Set() };
+        matchTeams[ap.matchId].away.add(ap.userId);
+      }
+
+      // 3. Get match statistics (using DB column names directly)
+      const allStats = await sequelize.query<{
+        match_id: string; user_id: string; goals: number; assists: number;
+        clean_sheets: number; defence: number; impact: number;
+      }>(
+        `SELECT match_id, user_id, goals, assists, clean_sheets, defence, impact FROM match_statistics WHERE match_id IN (${matchIdPlaceholders})`,
+        { bind: matchIds, type: QueryTypes.SELECT }
+      );
+
+      console.log(`📊 getLeagueXP - Stats records: ${allStats.length}`);
+
+      // Index stats by matchId_userId
+      const statsIndex: Record<string, any> = {};
+      for (const s of allStats) {
+        statsIndex[`${s.match_id}_${s.user_id}`] = s;
+      }
+
+      // 4. Get MOTM votes for all matches
+      const allVotes = await sequelize.query<{ matchId: string; votedForId: string }>(
+        `SELECT "matchId", "votedForId" FROM "Votes" WHERE "matchId" IN (${matchIdPlaceholders})`,
+        { bind: matchIds, type: QueryTypes.SELECT }
+      );
+
+      console.log(`📊 getLeagueXP - Votes: ${allVotes.length}`);
+
+      // Index vote counts by matchId_playerId
+      const voteCountIndex: Record<string, number> = {};
+      for (const v of allVotes) {
+        const key = `${v.matchId}_${v.votedForId}`;
+        voteCountIndex[key] = (voteCountIndex[key] || 0) + 1;
+      }
+
+      // 5. Compute XP for each player in each match
+      for (const match of matches) {
+        const homeGoals = match.homeTeamGoals ?? 0;
+        const awayGoals = match.awayTeamGoals ?? 0;
+        const homeWon = homeGoals > awayGoals;
+        const awayWon = awayGoals > homeGoals;
+        const isDraw = homeGoals === awayGoals;
+        const matchId = match.id;
+        const teams = matchTeams[matchId];
+        if (!teams) continue;
+
+        const processPlayer = (playerId: string, isHome: boolean) => {
+          let teamResult: 'win' | 'draw' | 'lose';
+          if (isDraw) teamResult = 'draw';
+          else if ((isHome && homeWon) || (!isHome && awayWon)) teamResult = 'win';
+          else teamResult = 'lose';
+
+          // Base XP
+          let playerXP = 0;
+          if (teamResult === 'win') playerXP += xpPointsTable.winningTeam;
+          else if (teamResult === 'draw') playerXP += xpPointsTable.draw;
+          else playerXP += xpPointsTable.losingTeam;
+
+          // Stats XP (using snake_case DB column names from raw query)
+          const stat = statsIndex[`${matchId}_${playerId}`];
+          if (stat) {
+            const goals = Number(stat.goals) || 0;
+            const assists = Number(stat.assists) || 0;
+            const cleanSheets = Number(stat.clean_sheets) || 0;
+            const defence = Number(stat.defence) || 0;
+            const impact = Number(stat.impact) || 0;
+
+            if (goals > 0) playerXP += goals * (teamResult === 'win' ? xpPointsTable.goal.win : xpPointsTable.goal.lose);
+            if (assists > 0) playerXP += assists * (teamResult === 'win' ? xpPointsTable.assist.win : xpPointsTable.assist.lose);
+            if (cleanSheets > 0) playerXP += cleanSheets * xpPointsTable.cleanSheet;
+            if (defence > 0) playerXP += teamResult === 'win' ? xpPointsTable.defensiveImpact.win : xpPointsTable.defensiveImpact.lose;
+            if (impact > 0) playerXP += teamResult === 'win' ? xpPointsTable.mentality.win : xpPointsTable.mentality.lose;
+          }
+
+          // MOTM vote XP
+          const voteCount = voteCountIndex[`${matchId}_${playerId}`] || 0;
+          if (voteCount > 0) {
+            playerXP += voteCount * (teamResult === 'win' ? xpPointsTable.motmVote.win : xpPointsTable.motmVote.lose);
+          }
+
+          if (!xpMap[playerId]) { xpMap[playerId] = 0; matchCountMap[playerId] = 0; }
+          xpMap[playerId] += playerXP;
+          matchCountMap[playerId] += 1;
+        };
+
+        // Process all players
+        teams.home.forEach(pid => processPlayer(pid, true));
+        teams.away.forEach(pid => processPlayer(pid, false));
+      }
+
+      // Calculate averages
+      for (const [uid, totalXP] of Object.entries(xpMap)) {
+        avgMap[uid] = Math.round(totalXP / (matchCountMap[uid] || 1));
+      }
+
+      console.log(`📊 getLeagueXP - Final XP map:`, JSON.stringify(xpMap));
+    } catch (statsErr) {
+      console.error('❌ Could not compute league XP:', statsErr);
     }
 
     ctx.body = {
@@ -1579,7 +1683,7 @@ export const getLeagueXP = async (ctx: Context) => {
       avg: avgMap
     };
   } catch (err) {
-    console.error('Get league XP error:', err);
+    console.error('❌ Get league XP error:', err);
     ctx.status = 500;
     ctx.body = { success: false, message: 'Failed to fetch league XP' };
   }
@@ -1588,6 +1692,7 @@ export const getLeagueXP = async (ctx: Context) => {
 // Get player quick view (MOTM count for a player in a league)
 export const getPlayerQuickView = async (ctx: Context) => {
   const { id: leagueId, playerId } = ctx.params;
+  const { seasonId: querySeasonId } = ctx.query as { seasonId?: string };
 
   if (!ctx.state.user || !ctx.state.user.userId) {
     ctx.status = 401;
@@ -1596,13 +1701,26 @@ export const getPlayerQuickView = async (ctx: Context) => {
   }
 
   try {
-    // Count MOTM votes for this player in this league
+    // Resolve seasonId: use query param if provided, otherwise find active season
+    let seasonId = querySeasonId;
+    if (!seasonId) {
+      const activeSeason = await Season.findOne({
+        where: { leagueId, isActive: true }
+      });
+      if (activeSeason) seasonId = String((activeSeason as any).id);
+    }
+
+    // Build match filter (league + optional season)
+    const matchWhere: any = { leagueId };
+    if (seasonId) matchWhere.seasonId = seasonId;
+
+    // Count MOTM votes for this player in this league (filtered by season)
     const motmCount = await (Vote as any).count({
       include: [
         {
           model: Match,
           as: 'votedMatch',
-          where: { leagueId },
+          where: matchWhere,
           attributes: [],
           required: true
         }
@@ -1614,13 +1732,15 @@ export const getPlayerQuickView = async (ctx: Context) => {
 
     // Fetch last 10 completed matches where this player participated (home or away)
     const completedStatuses = ['RESULT_PUBLISHED', 'RESULT_UPLOADED'];
+    const matchFilter: any = {
+      leagueId,
+      status: { [Op.in]: completedStatuses },
+    };
+    if (seasonId) matchFilter.seasonId = seasonId;
 
     const [homeMatches, awayMatches] = await Promise.all([
       Match.findAll({
-        where: {
-          leagueId,
-          status: { [Op.in]: completedStatuses },
-        },
+        where: matchFilter,
         include: [{
           model: User,
           as: 'homeTeamUsers',
@@ -1634,10 +1754,7 @@ export const getPlayerQuickView = async (ctx: Context) => {
         limit: 10,
       } as any),
       Match.findAll({
-        where: {
-          leagueId,
-          status: { [Op.in]: completedStatuses },
-        },
+        where: matchFilter,
         include: [{
           model: User,
           as: 'awayTeamUsers',
