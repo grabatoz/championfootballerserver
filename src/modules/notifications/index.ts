@@ -18,8 +18,9 @@ export type NotificationType =
 // Safe helper: returns league admins (no role filter on the pivot)
 async function getLeagueAdmins(leagueId: string): Promise<Array<{ id: string }>> {
   try {
-    // Detect the League↔User association alias once
+    // The League model uses `as: 'administeredLeagues'` for the admin association
     const assoc =
+      (League as any).associations?.administeredLeagues ||
       (League as any).associations?.admins ||
       (League as any).associations?.administrators ||
       (League as any).associations?.members ||
@@ -67,8 +68,8 @@ async function getLeagueAdmins(leagueId: string): Promise<Array<{ id: string }>>
       return byHints.map((u: any) => ({ id: String(u.id) }));
     }
 
-    // If association is explicit admins/administrators, return them directly
-    if (assoc.as === 'admins' || assoc.as === 'administrators') {
+    // If association is explicit admins/administrators/administeredLeagues, return them directly
+    if (assoc.as === 'admins' || assoc.as === 'administrators' || assoc.as === 'administeredLeagues') {
       return related.map((u: any) => ({ id: String(u.id) }));
     }
 

@@ -549,9 +549,14 @@ export const updateMatchGoals = async (ctx: Context) => {
     if (typeof homeTeamGoals === 'number') updateData.homeTeamGoals = homeTeamGoals;
     if (typeof awayTeamGoals === 'number') updateData.awayTeamGoals = awayTeamGoals;
 
-    await match.update(updateData);
+    // Admin-submitted results are published immediately — no captain confirmation required
+    updateData.status = 'RESULT_PUBLISHED';
+    updateData.resultPublishedAt = new Date();
 
-    // Send notification to both team captains after updating goals
+    await match.update(updateData);
+    console.log(`✅ Admin published result for match ${matchId} — status set to RESULT_PUBLISHED`);
+
+    // Send informational notification to captains (optional, no longer gates the result)
     try {
       console.log('📧 Sending captain confirmation notifications for match:', matchId);
       await sendCaptainConfirmations(match, (match as any).league);
@@ -560,12 +565,26 @@ export const updateMatchGoals = async (ctx: Context) => {
       console.error('❌ Failed to send captain notifications:', notifErr);
     }
 
+    // Check if this match completion triggers season/league completion
+    try {
+      const completionResult = await checkAndCompleteLeagueAfterMatch(matchId);
+      if (completionResult.seasonCompleted) {
+        console.log(`🏆 Season completed after match ${matchId}!`);
+      }
+      if (completionResult.leagueCompleted) {
+        console.log(`🏆🏆 League completed after match ${matchId}!`);
+      }
+    } catch (completionErr) {
+      console.error('Failed to check league completion:', completionErr);
+    }
+
     ctx.body = {
       success: true,
       match: {
         id: match.id,
         homeTeamGoals: match.homeTeamGoals,
-        awayTeamGoals: match.awayTeamGoals
+        awayTeamGoals: match.awayTeamGoals,
+        status: match.status
       }
     };
   } catch (err) {
@@ -614,7 +633,9 @@ export const confirmMatchResult = async (ctx: Context) => {
     return;
   }
 
-  const userId = ctx.state.user.userId;
+  const userId = String(ctx.state.user.userId);
+
+  console.log(`🔔 confirmMatchResult called — matchId: ${matchId}, userId: ${userId}`);
 
   try {
     const match = await Match.findByPk(matchId, {
@@ -622,16 +643,65 @@ export const confirmMatchResult = async (ctx: Context) => {
     });
 
     if (!match) {
-      ctx.throw(404, 'Match not found');
+      console.warn(`❌ Match ${matchId} not found`);
+      ctx.status = 404;
+      ctx.body = { success: false, message: 'Match not found' };
       return;
     }
 
-    // Check if user is a captain
-    const isHomeCaptain = match.homeCaptainId === userId;
-    const isAwayCaptain = match.awayCaptainId === userId;
+    // Check if user is a captain (use String() for safe comparison)
+    const isHomeCaptain = String(match.homeCaptainId || '') === userId;
+    const isAwayCaptain = String(match.awayCaptainId || '') === userId;
+
+    console.log(`   homeCaptainId: ${match.homeCaptainId} (${typeof match.homeCaptainId})`);
+    console.log(`   awayCaptainId: ${match.awayCaptainId} (${typeof match.awayCaptainId})`);
+    console.log(`   userId: ${userId} — isHome: ${isHomeCaptain}, isAway: ${isAwayCaptain}`);
 
     if (!isHomeCaptain && !isAwayCaptain) {
-      ctx.throw(403, 'Only team captains can confirm results');
+      console.warn(`❌ User ${userId} is not a captain of match ${matchId}`);
+      ctx.status = 403;
+      ctx.body = { success: false, message: 'Only team captains can confirm results' };
+      return;
+    }
+
+    // Handle rejection / revision suggestion
+    const body = ctx.request.body as any;
+    const decision = body?.decision;
+
+    if (decision === 'NO') {
+      const sugHome = parseInt(String(body?.suggestedHomeGoals), 10);
+      const sugAway = parseInt(String(body?.suggestedAwayGoals), 10);
+
+      const revisionData: any = {
+        status: 'REVISION_REQUESTED',
+        suggestedByCaptainId: userId,
+      };
+      if (Number.isFinite(sugHome) && sugHome >= 0) revisionData.suggestedHomeGoals = sugHome;
+      if (Number.isFinite(sugAway) && sugAway >= 0) revisionData.suggestedAwayGoals = sugAway;
+
+      await match.update(revisionData);
+      console.log(`❌ Captain ${userId} rejected result for match ${matchId} — suggested ${sugHome}-${sugAway}`);
+
+      // Notify league admins about the revision
+      try {
+        await notifyCaptainRevision(match, userId, sugHome, sugAway);
+        console.log(`📨 Admin notified about revision for match ${matchId}`);
+      } catch (notifErr) {
+        console.error('Failed to send revision notification:', notifErr);
+      }
+
+      ctx.body = {
+        success: true,
+        message: 'Revision suggestion submitted',
+        confirmed: false,
+        bothConfirmed: false,
+        match: {
+          id: match.id,
+          status: 'REVISION_REQUESTED',
+          homeCaptainConfirmed: match.homeCaptainConfirmed,
+          awayCaptainConfirmed: match.awayCaptainConfirmed,
+        },
+      };
       return;
     }
 
