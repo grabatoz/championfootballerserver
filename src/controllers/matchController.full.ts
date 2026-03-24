@@ -1433,17 +1433,35 @@ export const getMatchAvailability = async (ctx: Context) => {
       include: [{ model: User, as: 'userRecord', attributes: ['id', 'firstName', 'lastName', 'profilePicture'] }]
     });
 
+    const availableOrderedUserIds = availability
+      .filter(a => a.status === 'available')
+      .sort((a, b) => {
+        const aTime = new Date(((a as any).created_at ?? (a as any).createdAt ?? 0)).getTime();
+        const bTime = new Date(((b as any).created_at ?? (b as any).createdAt ?? 0)).getTime();
+        return aTime - bTime;
+      })
+      .map(a => String(a.user_id));
+
+    const availableOrderMap: Record<string, number> = {};
+    availableOrderedUserIds.forEach((uid, idx) => {
+      availableOrderMap[uid] = idx + 1;
+    });
+
     ctx.body = {
       success: true,
       availability: availability.map(a => ({
         userId: a.user_id,
         available: a.status === 'available',
+        acceptedAt: (a as any).created_at ?? (a as any).createdAt ?? null,
         user: (a as any).userRecord
       })),
       // Also return just the available user IDs for simpler client consumption
       availableUserIds: availability
         .filter(a => a.status === 'available')
-        .map(a => a.user_id)
+        .map(a => a.user_id),
+      // Ordered by acceptance timestamp (first accepted = 1)
+      availableOrderedUserIds,
+      availableOrderMap
     };
   } catch (err) {
     console.error('Get availability error', err);
