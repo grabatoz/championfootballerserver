@@ -31,6 +31,38 @@ const normalizeStatus = (s?: string): ApiMatchStatus => {
   return 'SCHEDULED';
 };
 
+const MIN_TOTAL_PLAYERS_FOR_TEAM_UPLOAD = 8;
+const MIN_REGISTERED_PLAYERS_FOR_TEAM_UPLOAD = 6;
+const MIN_REGISTERED_PLAYERS_MESSAGE = 'A minimum of 6 registered players is required to choose teams';
+const MIN_TOTAL_PLAYERS_MESSAGE = 'A minimum of 8 total players (including at least 6 registered league players) is required to save teams.';
+
+const parseJsonArrayField = (value: unknown, fieldName: string): any[] => {
+  if (value === undefined || value === null || value === '') return [];
+  if (Array.isArray(value)) return value;
+  if (typeof value === 'string') {
+    try {
+      const parsed = JSON.parse(value);
+      if (!Array.isArray(parsed)) {
+        throw new Error(`${fieldName} must be a JSON array`);
+      }
+      return parsed;
+    } catch {
+      throw new Error(`Invalid ${fieldName} payload`);
+    }
+  }
+  throw new Error(`Invalid ${fieldName} payload`);
+};
+
+const validateTeamUploadThresholds = (registeredPlayers: number, totalPlayers: number): string | null => {
+  if (registeredPlayers < MIN_REGISTERED_PLAYERS_FOR_TEAM_UPLOAD) {
+    return MIN_REGISTERED_PLAYERS_MESSAGE;
+  }
+  if (totalPlayers < MIN_TOTAL_PLAYERS_FOR_TEAM_UPLOAD) {
+    return MIN_TOTAL_PLAYERS_MESSAGE;
+  }
+  return null;
+};
+
 const toUserBasic = (p: any) => ({
   id: String(p?.id ?? ''),
   firstName: p?.firstName ?? '',
@@ -2494,6 +2526,18 @@ export const createMatchInLeague = async (ctx: Context) => {
     awayCaptain
   } = body;
 
+  let parsedHomeIds: string[] = [];
+  let parsedAwayIds: string[] = [];
+  try {
+    parsedHomeIds = parseJsonArrayField(homeTeamUsers, 'homeTeamUsers').map((id: unknown) => String(id));
+    parsedAwayIds = parseJsonArrayField(awayTeamUsers, 'awayTeamUsers').map((id: unknown) => String(id));
+  } catch (e) {
+    const message = e instanceof Error ? e.message : 'Invalid team payload';
+    ctx.status = 400;
+    ctx.body = { success: false, message };
+    return;
+  }
+
   if (!date || !start || !end) {
     ctx.throw(400, 'date, start and end times are required');
     return;
@@ -2518,6 +2562,17 @@ export const createMatchInLeague = async (ctx: Context) => {
     if (!activeSeason) {
       ctx.throw(400, 'No active season found for this league. Please create a season first.');
       return;
+    }
+
+    const teamUploadRequested = parsedHomeIds.length > 0 || parsedAwayIds.length > 0;
+    if (teamUploadRequested) {
+      const uniqueRegisteredPlayers = new Set<string>([...parsedHomeIds, ...parsedAwayIds]).size;
+      const validationMessage = validateTeamUploadThresholds(uniqueRegisteredPlayers, uniqueRegisteredPlayers);
+      if (validationMessage) {
+        ctx.status = 400;
+        ctx.body = { success: false, message: validationMessage };
+        return;
+      }
     }
 
     console.log(`📅 Creating match for league ${leagueId} in active Season ${activeSeason.seasonNumber} (${activeSeason.id})`);
@@ -2579,26 +2634,12 @@ export const createMatchInLeague = async (ctx: Context) => {
     console.log(`✅ Match ${match.id} created in Season ${activeSeason.seasonNumber}`);
 
     // Handle team assignments if provided
-    if (homeTeamUsers) {
-      try {
-        const homeIds = JSON.parse(homeTeamUsers);
-        if (Array.isArray(homeIds) && homeIds.length > 0) {
-          await (match as any).setHomeTeamUsers(homeIds);
-        }
-      } catch (e) {
-        console.warn('Failed to parse homeTeamUsers', e);
-      }
+    if (parsedHomeIds.length > 0) {
+      await (match as any).setHomeTeamUsers(parsedHomeIds);
     }
 
-    if (awayTeamUsers) {
-      try {
-        const awayIds = JSON.parse(awayTeamUsers);
-        if (Array.isArray(awayIds) && awayIds.length > 0) {
-          await (match as any).setAwayTeamUsers(awayIds);
-        }
-      } catch (e) {
-        console.warn('Failed to parse awayTeamUsers', e);
-      }
+    if (parsedAwayIds.length > 0) {
+      await (match as any).setAwayTeamUsers(parsedAwayIds);
     }
 
     // Clear league cache
@@ -2714,6 +2755,22 @@ export const updateMatchInLeague = async (ctx: Context) => {
     notificationMessage
   } = body;
 
+  let homeIds: string[] = [];
+  let awayIds: string[] = [];
+  let homeGuestsData: any[] = [];
+  let awayGuestsData: any[] = [];
+  try {
+    homeIds = parseJsonArrayField(homeTeamUsers, 'homeTeamUsers').map((id: unknown) => String(id));
+    awayIds = parseJsonArrayField(awayTeamUsers, 'awayTeamUsers').map((id: unknown) => String(id));
+    homeGuestsData = parseJsonArrayField(homeGuests, 'homeGuests');
+    awayGuestsData = parseJsonArrayField(awayGuests, 'awayGuests');
+  } catch (e) {
+    const message = e instanceof Error ? e.message : 'Invalid team payload';
+    ctx.status = 400;
+    ctx.body = { success: false, message };
+    return;
+  }
+
   console.log('📢 [SERVER] updateMatchInLeague called');
   console.log('📢 [SERVER] body keys:', Object.keys(body));
   console.log('📢 [SERVER] notificationMessage:', JSON.stringify(notificationMessage));
@@ -2748,6 +2805,22 @@ export const updateMatchInLeague = async (ctx: Context) => {
       return;
     }
 
+    const teamUploadRequested =
+      homeTeamUsers !== undefined ||
+      awayTeamUsers !== undefined ||
+      homeGuests !== undefined ||
+      awayGuests !== undefined;
+    if (teamUploadRequested) {
+      const uniqueRegisteredPlayers = new Set<string>([...homeIds, ...awayIds]).size;
+      const totalPlayers = uniqueRegisteredPlayers + homeGuestsData.length + awayGuestsData.length;
+      const validationMessage = validateTeamUploadThresholds(uniqueRegisteredPlayers, totalPlayers);
+      if (validationMessage) {
+        ctx.status = 400;
+        ctx.body = { success: false, message: validationMessage };
+        return;
+      }
+    }
+
     // Handle image uploads if present
     let homeTeamImage: string | null = (match as any).homeTeamImage;
     let awayTeamImage: string | null = (match as any).awayTeamImage;
@@ -2777,10 +2850,6 @@ export const updateMatchInLeague = async (ctx: Context) => {
 
     await match.update(updateData);
 
-    // Parse team user arrays
-    const homeIds: string[] = homeTeamUsers ? JSON.parse(homeTeamUsers) : [];
-    const awayIds: string[] = awayTeamUsers ? JSON.parse(awayTeamUsers) : [];
-
     // Update team associations
     if (homeIds.length > 0 || awayIds.length > 0) {
       // Clear existing team associations
@@ -2795,10 +2864,6 @@ export const updateMatchInLeague = async (ctx: Context) => {
         await (match as any).setAwayTeamUsers(awayIds);
       }
     }
-
-    // Handle guests
-    const homeGuestsData = homeGuests ? JSON.parse(homeGuests) : [];
-    const awayGuestsData = awayGuests ? JSON.parse(awayGuests) : [];
 
     // Delete existing guests for this match
     await MatchGuest.destroy({ where: { matchId } });
@@ -2824,10 +2889,8 @@ export const updateMatchInLeague = async (ctx: Context) => {
       try {
         // Collect all unique player IDs from both teams
         const allPlayerIds = new Set<string>();
-        const homeIds2: string[] = homeTeamUsers ? JSON.parse(homeTeamUsers) : [];
-        const awayIds2: string[] = awayTeamUsers ? JSON.parse(awayTeamUsers) : [];
-        homeIds2.forEach((id: string) => allPlayerIds.add(id));
-        awayIds2.forEach((id: string) => allPlayerIds.add(id));
+        homeIds.forEach((id: string) => allPlayerIds.add(id));
+        awayIds.forEach((id: string) => allPlayerIds.add(id));
 
         console.log('📢 [SERVER] All player IDs:', Array.from(allPlayerIds));
         console.log('📢 [SERVER] Current user (admin):', currentUserId);

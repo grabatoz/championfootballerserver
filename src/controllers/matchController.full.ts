@@ -15,6 +15,38 @@ const { Match, Vote, User, MatchStatistics, League, MatchGuest, MatchAvailabilit
 const normalizeTeam = (t: any): 'home' | 'away' =>
   String(t).toLowerCase() === 'away' ? 'away' : 'home';
 
+const MIN_TOTAL_PLAYERS_FOR_SCORE_UPLOAD = 8;
+const MIN_REGISTERED_PLAYERS_FOR_SCORE_UPLOAD = 6;
+const MIN_REGISTERED_PLAYERS_MESSAGE = 'A minimum of 6 registered players is required to choose teams';
+const MIN_TOTAL_PLAYERS_FOR_SCORE_MESSAGE = 'A minimum of 8 total players (including at least 6 registered league players) is required before uploading match scores.';
+
+const getMatchPlayerCounts = async (matchId: string): Promise<{ registeredPlayers: number; totalPlayers: number }> => {
+  const homeTeamUserIds = await sequelize.query<{ userId: string }>(
+    `SELECT DISTINCT "userId" FROM "UserHomeMatches" WHERE "matchId" = $1`,
+    { bind: [matchId], type: QueryTypes.SELECT }
+  );
+  const awayTeamUserIds = await sequelize.query<{ userId: string }>(
+    `SELECT DISTINCT "userId" FROM "UserAwayMatches" WHERE "matchId" = $1`,
+    { bind: [matchId], type: QueryTypes.SELECT }
+  );
+  const guestCount = await MatchGuest.count({ where: { matchId } });
+  const registeredPlayers = new Set<string>([
+    ...homeTeamUserIds.map((u) => String(u.userId)),
+    ...awayTeamUserIds.map((u) => String(u.userId)),
+  ]).size;
+  return { registeredPlayers, totalPlayers: registeredPlayers + guestCount };
+};
+
+const getScoreUploadValidationMessage = (registeredPlayers: number, totalPlayers: number): string | null => {
+  if (registeredPlayers < MIN_REGISTERED_PLAYERS_FOR_SCORE_UPLOAD) {
+    return MIN_REGISTERED_PLAYERS_MESSAGE;
+  }
+  if (totalPlayers < MIN_TOTAL_PLAYERS_FOR_SCORE_UPLOAD) {
+    return MIN_TOTAL_PLAYERS_FOR_SCORE_MESSAGE;
+  }
+  return null;
+};
+
 // CREATE MATCH - Always assigns to active season
 export const createMatch = async (ctx: Context) => {
   if (!ctx.state.user?.userId) {
@@ -542,6 +574,14 @@ export const updateMatchGoals = async (ctx: Context) => {
     const isAdmin = (match as any).league?.administeredLeagues?.some((a: any) => String(a.id) === String(ctx.state.user.userId));
     if (!isAdmin) {
       ctx.throw(403, 'Only league admins can update goals');
+      return;
+    }
+
+    const { registeredPlayers, totalPlayers } = await getMatchPlayerCounts(matchId);
+    const validationMessage = getScoreUploadValidationMessage(registeredPlayers, totalPlayers);
+    if (validationMessage) {
+      ctx.status = 400;
+      ctx.body = { success: false, message: validationMessage };
       return;
     }
 
@@ -1444,6 +1484,17 @@ export const updateMatch = async (ctx: Context) => {
     if (typeof homeTeamGoals === 'number') updateData.homeTeamGoals = homeTeamGoals;
     if (typeof awayTeamGoals === 'number') updateData.awayTeamGoals = awayTeamGoals;
     if (typeof archived === 'boolean') updateData.archived = archived;
+
+    const includesScoreUpdate = typeof homeTeamGoals === 'number' || typeof awayTeamGoals === 'number';
+    if (includesScoreUpdate) {
+      const { registeredPlayers, totalPlayers } = await getMatchPlayerCounts(id);
+      const validationMessage = getScoreUploadValidationMessage(registeredPlayers, totalPlayers);
+      if (validationMessage) {
+        ctx.status = 400;
+        ctx.body = { success: false, message: validationMessage };
+        return;
+      }
+    }
 
     await match.update(updateData);
 
