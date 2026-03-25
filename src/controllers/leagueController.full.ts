@@ -12,6 +12,7 @@ import MatchStatistics from '../models/MatchStatistics';
 import { MatchAvailability } from '../models/MatchAvailability';
 import { MatchPlayerLayout } from '../models/MatchPlayerLayout';
 import { checkLeagueCompletion } from '../utils/leagueCompletion';
+import { invalidateCache as invalidateServerCache } from '../middleware/memoryCache';
 
 const { League, Match, User, MatchGuest } = models;
 
@@ -61,6 +62,54 @@ const validateTeamUploadThresholds = (registeredPlayers: number, totalPlayers: n
     return MIN_TOTAL_PLAYERS_MESSAGE;
   }
   return null;
+};
+
+const removeUserFromLeagueMatchAssignments = async (leagueId: string, userId: string): Promise<void> => {
+  const sequelize = League.sequelize!;
+  const replacements = { leagueId, userId };
+
+  await sequelize.query(
+    `DELETE FROM "UserHomeMatches" uhm
+     USING "Matches" m
+     WHERE uhm."matchId" = m.id
+       AND m."leagueId" = :leagueId
+       AND uhm."userId" = :userId`,
+    { replacements, type: QueryTypes.DELETE }
+  );
+
+  await sequelize.query(
+    `DELETE FROM "UserAwayMatches" uam
+     USING "Matches" m
+     WHERE uam."matchId" = m.id
+       AND m."leagueId" = :leagueId
+       AND uam."userId" = :userId`,
+    { replacements, type: QueryTypes.DELETE }
+  );
+
+  await sequelize.query(
+    `DELETE FROM match_availabilities ma
+     USING "Matches" m
+     WHERE ma.match_id = m.id
+       AND m."leagueId" = :leagueId
+       AND ma.user_id = :userId`,
+    { replacements, type: QueryTypes.DELETE }
+  );
+
+  await sequelize.query(
+    `UPDATE "Matches"
+     SET "homeCaptainId" = NULL
+     WHERE "leagueId" = :leagueId
+       AND "homeCaptainId" = :userId`,
+    { replacements, type: QueryTypes.UPDATE }
+  );
+
+  await sequelize.query(
+    `UPDATE "Matches"
+     SET "awayCaptainId" = NULL
+     WHERE "leagueId" = :leagueId
+       AND "awayCaptainId" = :userId`,
+    { replacements, type: QueryTypes.UPDATE }
+  );
 };
 
 const toUserBasic = (p: any) => ({
@@ -2344,6 +2393,13 @@ export const leaveLeague = async (ctx: Context) => {
       }
     }
 
+    // Ensure the leaving user is removed from all match/team assignments in this league
+    try {
+      await removeUserFromLeagueMatchAssignments(String(id), String(userId));
+    } catch (cleanupErr) {
+      console.error('Failed to remove user from league match assignments:', cleanupErr);
+    }
+
     // Check if the league is now empty — archive it
     const remainingMembers = await (League.findByPk(id, {
       include: [{ model: User, as: 'members', attributes: ['id'] }]
@@ -2356,6 +2412,12 @@ export const leaveLeague = async (ctx: Context) => {
 
     cache.clearPattern(`user_leagues_${userId}`);
     cache.clearPattern(`user_leagues_`);
+    cache.clearPattern(`league_${id}`);
+    cache.clearPattern(`matches_league_${id}`);
+    try {
+      invalidateServerCache('/leagues');
+      invalidateServerCache('/matches');
+    } catch {}
 
     ctx.body = {
       success: true,
@@ -2398,6 +2460,13 @@ export const removeUserFromLeague = async (ctx: Context) => {
       await (league as any).removeMember(user);
     }
 
+    // Keep match/team selections in sync when admin removes a member
+    try {
+      await removeUserFromLeagueMatchAssignments(String(id), String(targetUserId));
+    } catch (cleanupErr) {
+      console.error('Failed to remove kicked user from league match assignments:', cleanupErr);
+    }
+
     // Check if league is now empty — if so, archive it
     const updatedLeague = await League.findByPk(id, {
       include: [{ model: User, as: 'members', attributes: ['id'] }]
@@ -2409,6 +2478,12 @@ export const removeUserFromLeague = async (ctx: Context) => {
     }
 
     cache.clearPattern(`user_leagues_`);
+    cache.clearPattern(`league_${id}`);
+    cache.clearPattern(`matches_league_${id}`);
+    try {
+      invalidateServerCache('/leagues');
+      invalidateServerCache('/matches');
+    } catch {}
 
     ctx.body = {
       success: true,
