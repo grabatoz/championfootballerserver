@@ -2829,6 +2829,10 @@ export const updateMatchInLeague = async (ctx: Context) => {
     notifyOnly,
     notificationMessage
   } = body;
+  const normalizedNotes = typeof notes === 'string' ? notes.trim().slice(0, 50) : notes;
+  const normalizedNotificationMessage = typeof notificationMessage === 'string'
+    ? notificationMessage.trim().slice(0, 50)
+    : '';
 
   let homeIds: string[] = [];
   let awayIds: string[] = [];
@@ -2848,7 +2852,7 @@ export const updateMatchInLeague = async (ctx: Context) => {
 
   console.log('📢 [SERVER] updateMatchInLeague called');
   console.log('📢 [SERVER] body keys:', Object.keys(body));
-  console.log('📢 [SERVER] notificationMessage:', JSON.stringify(notificationMessage));
+  console.log('📢 [SERVER] notificationMessage:', JSON.stringify(normalizedNotificationMessage));
   console.log('📢 [SERVER] homeTeamUsers:', homeTeamUsers);
   console.log('📢 [SERVER] awayTeamUsers:', awayTeamUsers);
 
@@ -2917,7 +2921,7 @@ export const updateMatchInLeague = async (ctx: Context) => {
     if (start) updateData.start = new Date(start);
     if (end) updateData.end = new Date(end);
     if (location !== undefined) updateData.location = location;
-    if (notes !== undefined) updateData.notes = notes;
+    if (notes !== undefined) updateData.notes = normalizedNotes;
     if (homeTeamImage) updateData.homeTeamImage = homeTeamImage;
     if (awayTeamImage) updateData.awayTeamImage = awayTeamImage;
     if (homeCaptainId !== undefined) updateData.homeCaptainId = homeCaptainId || null;
@@ -2955,11 +2959,11 @@ export const updateMatchInLeague = async (ctx: Context) => {
 
     // Send notification message to all match players if provided
     let notificationsSent = 0;
-    console.log('📢 [SERVER] Checking notification - notificationMessage:', JSON.stringify(notificationMessage));
-    console.log('📢 [SERVER] notificationMessage truthy?', !!notificationMessage);
-    console.log('📢 [SERVER] notificationMessage trim?', notificationMessage ? notificationMessage.trim() : 'N/A');
+    console.log('📢 [SERVER] Checking notification - notificationMessage:', JSON.stringify(normalizedNotificationMessage));
+    console.log('📢 [SERVER] notificationMessage truthy?', !!normalizedNotificationMessage);
+    console.log('📢 [SERVER] notificationMessage trim?', normalizedNotificationMessage || 'N/A');
     
-    if (notificationMessage && notificationMessage.trim()) {
+    if (normalizedNotificationMessage) {
       console.log('📢 [SERVER] INSIDE notification block - will send notifications');
       try {
         // Collect all unique player IDs from both teams
@@ -2982,7 +2986,7 @@ export const updateMatchInLeague = async (ctx: Context) => {
             user_id: playerId,
             type: 'MATCH_NOTIFICATION',
             title: `Match Update - ${leagueName}`,
-            body: notificationMessage.trim(),
+            body: normalizedNotificationMessage,
             meta: {
               matchId: matchId,
               leagueId: leagueId,
@@ -2998,7 +3002,7 @@ export const updateMatchInLeague = async (ctx: Context) => {
 
           await Notification.bulkCreate(notificationsToCreate);
           notificationsSent = notificationsToCreate.length;
-          console.log(`📢 Sent match notification to ${notificationsSent} players: "${notificationMessage.trim().substring(0, 50)}..."`);
+          console.log(`📢 Sent match notification to ${notificationsSent} players: "${normalizedNotificationMessage}"`);
         }
       } catch (notifError) {
         console.warn('Failed to send match notification:', notifError);
