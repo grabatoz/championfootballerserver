@@ -540,7 +540,10 @@ export const setMatchAvailability = async (ctx: Context) => {
     });
 
     if (!created) {
-      await availability.update({ status: available ? 'available' : 'unavailable' });
+      const updateData: any = { status: available ? 'available' : 'unavailable' };
+      // Keep acceptance order accurate: when user marks available, refresh created_at as acceptance time.
+      if (available) updateData.created_at = new Date();
+      await availability.update(updateData);
     }
 
     ctx.body = { success: true, message: 'Availability updated', available };

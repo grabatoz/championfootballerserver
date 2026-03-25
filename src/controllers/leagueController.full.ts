@@ -2734,10 +2734,18 @@ export const createMatchInLeague = async (ctx: Context) => {
       const members = (leagueWithMembers as any)?.members || [];
       const currentUserId = ctx.state.user.userId;
 
-      // Get match number (count of matches in this season + 1)
-      const matchCount = await Match.count({
-        where: { leagueId, seasonId: activeSeason.id }
+      // Get match number in this season using visible (non-archived) sequence order.
+      const seasonMatches = await Match.findAll({
+        where: {
+          leagueId,
+          seasonId: activeSeason.id,
+          archived: { [Op.not]: true }
+        },
+        attributes: ['id', 'createdAt', 'date', 'start'],
+        order: [['createdAt', 'ASC']]
       });
+      const currentIdx = seasonMatches.findIndex((m: any) => String(m.id) === String(match.id));
+      const matchCount = currentIdx >= 0 ? currentIdx + 1 : seasonMatches.length;
 
       const notificationsToCreate = members
         .filter((member: any) => member.id !== currentUserId)
