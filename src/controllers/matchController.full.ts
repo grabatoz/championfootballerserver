@@ -989,8 +989,8 @@ export const submitMatchStats = async (ctx: Context) => {
           { replacements: { matchId }, type: QueryTypes.SELECT }
         );
         
-        const isHome = homeTeamUserIds.some(u => u.userId === userId);
-        const isAway = awayTeamUserIds.some(u => u.userId === userId);
+        const isHome = homeTeamUserIds.some(u => String(u.userId) === String(userId));
+        const isAway = awayTeamUserIds.some(u => String(u.userId) === String(userId));
         const homeGoals = match.homeTeamGoals ?? 0;
         const awayGoals = match.awayTeamGoals ?? 0;
         

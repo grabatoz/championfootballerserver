@@ -21,7 +21,7 @@ const isUuid = (v: string) =>
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(v);
 
 const normalizeTeam = (v: unknown): 'home' | 'away' =>
-  String(v || '').toLowerCase() === 'away' ? 'away' : 'home';
+  String(v || '').toLowerCase().includes('away') ? 'away' : 'home';
 
 type ApiMatchStatus = 'RESULT_PUBLISHED' | 'SCHEDULED' | 'ONGOING';
 
@@ -601,22 +601,59 @@ export const getTeamView = async (ctx: Context) => {
     }
 
     // Map users → shape the client expects (role instead of position)
-    const mapUser = (u: any) => ({
-      id: String(u.id),
-      firstName: u.firstName,
-      lastName: u.lastName,
-      shirtNumber: u.shirtNumber || null,
-      role: u.position || null,
-    });
+    const homeUsers = ((match as any).homeTeamUsers || []);
+    const awayUsers = ((match as any).awayTeamUsers || []);
+    const teamUserIds = Array.from(new Set([
+      ...homeUsers.map((u: any) => String(u.id)),
+      ...awayUsers.map((u: any) => String(u.id)),
+    ].filter(Boolean)));
 
-    const homeTeam = ((match as any).homeTeamUsers || []).map(mapUser);
-    const awayTeam = ((match as any).awayTeamUsers || []).map(mapUser);
-    const guests   = ((match as any).guestPlayers  || []).map((g: any) => ({
+    // ROOT FIX: Team-view should return per-match XP (match_statistics.xp_awarded)
+    const xpByUserId: Record<string, number> = {};
+    if (teamUserIds.length > 0) {
+      try {
+        const placeholders = teamUserIds.map((_, i) => `$${i + 2}`).join(',');
+        const xpRows = await MatchStatistics.sequelize!.query<{
+          user_id?: string;
+          userId?: string;
+          xp_awarded?: number;
+          xpAwarded?: number;
+        }>(
+          `SELECT user_id, xp_awarded FROM match_statistics WHERE match_id = $1 AND user_id IN (${placeholders})`,
+          { bind: [matchId, ...teamUserIds], type: QueryTypes.SELECT }
+        );
+        xpRows.forEach((r) => {
+          const uid = String(r.user_id ?? r.userId ?? '').trim();
+          if (!uid) return;
+          const raw = r.xp_awarded ?? r.xpAwarded ?? 0;
+          const xp = Number(raw);
+          xpByUserId[uid] = Number.isFinite(xp) ? xp : 0;
+        });
+      } catch (xpErr) {
+        console.warn('[getTeamView] Failed to load match XP, defaulting to 0:', xpErr);
+      }
+    }
+
+    const mapUser = (u: any) => {
+      const uid = String(u.id);
+      return {
+        id: uid,
+        firstName: u.firstName,
+        lastName: u.lastName,
+        shirtNumber: u.shirtNumber || null,
+        role: u.position || null,
+        xp: xpByUserId[uid] ?? 0,
+      };
+    };
+
+    const homeTeam = homeUsers.map(mapUser);
+    const awayTeam = awayUsers.map(mapUser);
+    let guests = ((match as any).guestPlayers  || []).map((g: any) => ({
       id: String(g.id),
       firstName: g.firstName,
       lastName: g.lastName,
       shirtNumber: g.shirtNumber || null,
-      team: g.team,
+      team: normalizeTeam(g.team),
     }));
 
     // Load saved pitch positions
@@ -641,6 +678,15 @@ export const getTeamView = async (ctx: Context) => {
         const side = l.team === 'away' ? 'away' : 'home';
         positions[side][String(l.userId)] = { x: l.x, y: l.y };
       }
+
+      // Prefer saved layout side for guests when available.
+      const homeLayoutIds = new Set(Object.keys(positions.home).map(String));
+      const awayLayoutIds = new Set(Object.keys(positions.away).map(String));
+      guests = guests.map((g: any) => {
+        if (homeLayoutIds.has(String(g.id))) return { ...g, team: 'home' };
+        if (awayLayoutIds.has(String(g.id))) return { ...g, team: 'away' };
+        return g;
+      });
     } catch (posErr) {
       console.error('[getTeamView] Failed to load positions:', posErr);
     }
@@ -702,10 +748,18 @@ export const saveLayout = async (ctx: Context) => {
       );
     `);
 
+    const clamp01 = (n: unknown) => Math.max(0.04, Math.min(0.96, Number(n) || 0));
+    const centerGap = 0.02;
+
     // Upsert each player position
     for (const [userId, pos] of Object.entries(positions)) {
       if (pos && typeof pos.x === 'number' && typeof pos.y === 'number') {
-        await MatchPlayerLayout.upsert({ matchId, userId, team: side, x: pos.x, y: pos.y });
+        const x = clamp01(pos.x);
+        let y = clamp01(pos.y);
+        y = side === 'home'
+          ? Math.min(0.5 - centerGap, y)
+          : Math.max(0.5 + centerGap, y);
+        await MatchPlayerLayout.upsert({ matchId, userId, team: side, x, y });
       }
     }
 
