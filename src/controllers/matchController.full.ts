@@ -19,6 +19,7 @@ const MIN_TOTAL_PLAYERS_FOR_SCORE_UPLOAD = 8;
 const MIN_REGISTERED_PLAYERS_FOR_SCORE_UPLOAD = 6;
 const MIN_REGISTERED_PLAYERS_MESSAGE = 'A minimum of 6 registered players is required to choose teams';
 const MIN_TOTAL_PLAYERS_FOR_SCORE_MESSAGE = 'A minimum of 8 total players (including at least 6 registered league players) is required before uploading match scores.';
+const clampPercentage = (value: number): number => Math.max(0, Math.min(100, Math.round(value)));
 
 const getMatchPlayerCounts = async (matchId: string): Promise<{ registeredPlayers: number; totalPlayers: number }> => {
   const homeTeamUserIds = await sequelize.query<{ userId: string }>(
@@ -915,6 +916,12 @@ export const submitMatchStats = async (ctx: Context) => {
       // Determine target user: if playerId provided, use it; otherwise use current user
       const targetPlayerId = stat.playerId || currentUserId;
       const userId = await resolveTargetUserIdForMatch(targetPlayerId, matchId);
+      const safeGoals = Math.max(0, Number(stat.goals) || 0);
+      const safeAssists = Math.max(0, Number(stat.assists) || 0);
+      const safeCleanSheets = Math.max(0, Number(stat.cleanSheets || stat.cleanSheet) || 0);
+      const safePenalties = Math.max(0, Number(stat.penalties) || 0);
+      const safeFreeKicks = Math.max(0, Number(stat.freeKicks) || 0);
+      const safeDefence = Math.max(0, Number(stat.defence) || 0);
       
       console.log(`📊 Processing stats for user ${userId}:`, {
         goals: stat.goals,
@@ -929,21 +936,64 @@ export const submitMatchStats = async (ctx: Context) => {
         ctx.throw(403, 'You can only submit your own stats');
         return;
       }
+
+      const homeGoalsForImpact = match.homeTeamGoals ?? 0;
+      const awayGoalsForImpact = match.awayTeamGoals ?? 0;
+      const homeTeamUserIdsForImpact = await sequelize.query<{ userId: string }>(
+        `SELECT DISTINCT "userId" FROM "UserHomeMatches" WHERE "matchId" = :matchId`,
+        { replacements: { matchId }, type: QueryTypes.SELECT }
+      );
+      const awayTeamUserIdsForImpact = await sequelize.query<{ userId: string }>(
+        `SELECT DISTINCT "userId" FROM "UserAwayMatches" WHERE "matchId" = :matchId`,
+        { replacements: { matchId }, type: QueryTypes.SELECT }
+      );
+      const isHomeForImpact = homeTeamUserIdsForImpact.some(u => String(u.userId) === String(userId));
+      const isAwayForImpact = awayTeamUserIdsForImpact.some(u => String(u.userId) === String(userId));
+      const teamGoalsForImpact = isHomeForImpact
+        ? homeGoalsForImpact
+        : isAwayForImpact
+          ? awayGoalsForImpact
+          : Math.max(homeGoalsForImpact, awayGoalsForImpact, 0);
+      const captainPicksForImpact = await sequelize.query(
+        `SELECT "homeMentalityId", "awayMentalityId" FROM "Matches" WHERE id = $1`,
+        { bind: [matchId], type: QueryTypes.SELECT }
+      );
+      const picksForImpact = (captainPicksForImpact[0] as any) || {};
+      const isMentalityPickForImpact =
+        (picksForImpact.homeMentalityId && String(picksForImpact.homeMentalityId) === String(userId)) ||
+        (picksForImpact.awayMentalityId && String(picksForImpact.awayMentalityId) === String(userId));
+
+      // Client-shared Match Contribution Index formula
+      // Goal baseline = 100%, Assist = 50%, CleanSheet = 15%, DefensiveImpact = 10%, Mentality = 5%
+      const goalContribution = teamGoalsForImpact > 0 ? (safeGoals / teamGoalsForImpact) * 100 : 0;
+      const assistContribution = teamGoalsForImpact > 0 ? (safeAssists / teamGoalsForImpact) * 50 : 0;
+      const cleanSheetContribution = safeCleanSheets > 0 ? 15 * safeCleanSheets : 0;
+      const defensiveContribution = safeDefence * 10;
+      const mentalityContribution = isMentalityPickForImpact ? 5 : 0;
+      const rawContribution =
+        goalContribution +
+        assistContribution +
+        cleanSheetContribution +
+        defensiveContribution +
+        mentalityContribution;
+
+      // Participation floor if no contribution action is recorded
+      const computedImpact = clampPercentage(rawContribution > 0 ? rawContribution : 15);
       
       const [statRecord, created] = await MatchStatistics.findOrCreate({
         where: { match_id: matchId, user_id: userId },
         defaults: {
           match_id: matchId,
           user_id: userId,
-          goals: stat.goals || 0,
-          assists: stat.assists || 0,
-          cleanSheets: stat.cleanSheets || stat.cleanSheet || 0,
-          penalties: stat.penalties || 0,
-          freeKicks: stat.freeKicks || 0,
+          goals: safeGoals,
+          assists: safeAssists,
+          cleanSheets: safeCleanSheets,
+          penalties: safePenalties,
+          freeKicks: safeFreeKicks,
           yellowCards: stat.yellowCards || 0,
           redCards: stat.redCards || 0,
-          defence: stat.defence || 0,
-          impact: stat.impact || 0,
+          defence: safeDefence,
+          impact: computedImpact,
           minutesPlayed: stat.minutesPlayed || 0,
           rating: stat.rating || 0,
           xpAwarded: 0
@@ -953,13 +1003,13 @@ export const submitMatchStats = async (ctx: Context) => {
       console.log(`📊 Stats record ${created ? 'CREATED' : 'FOUND'} for user ${userId}`);
 
       const updateData = {
-        goals: stat.goals || 0,
-        assists: stat.assists || 0,
-        cleanSheets: stat.cleanSheets || stat.cleanSheet || 0,
-        penalties: stat.penalties || 0,
-        freeKicks: stat.freeKicks || 0,
-        defence: stat.defence || 0,
-        impact: stat.impact || 0
+        goals: safeGoals,
+        assists: safeAssists,
+        cleanSheets: safeCleanSheets,
+        penalties: safePenalties,
+        freeKicks: safeFreeKicks,
+        defence: safeDefence,
+        impact: computedImpact
       };
       
       console.log(`📊 Updating stats for user ${userId}:`, updateData);
@@ -1015,21 +1065,21 @@ export const submitMatchStats = async (ctx: Context) => {
         }
         
         // Goals
-        if (stat.goals > 0) {
-          const goalXP = (teamResult === 'win' ? xpPointsTable.goal.win : xpPointsTable.goal.lose) * stat.goals;
+        if (safeGoals > 0) {
+          const goalXP = (teamResult === 'win' ? xpPointsTable.goal.win : xpPointsTable.goal.lose) * safeGoals;
           newXpToAward += goalXP;
-          breakdown.push(`Goals (${stat.goals}): +${goalXP}`);
+          breakdown.push(`Goals (${safeGoals}): +${goalXP}`);
         }
         
         // Assists
-        if (stat.assists > 0) {
-          const assistXP = (teamResult === 'win' ? xpPointsTable.assist.win : xpPointsTable.assist.lose) * stat.assists;
+        if (safeAssists > 0) {
+          const assistXP = (teamResult === 'win' ? xpPointsTable.assist.win : xpPointsTable.assist.lose) * safeAssists;
           newXpToAward += assistXP;
-          breakdown.push(`Assists (${stat.assists}): +${assistXP}`);
+          breakdown.push(`Assists (${safeAssists}): +${assistXP}`);
         }
         
         // Clean Sheets
-        const cleanSheets = stat.cleanSheets || stat.cleanSheet || 0;
+        const cleanSheets = safeCleanSheets;
         if (cleanSheets > 0) {
           const cleanSheetXP = xpPointsTable.cleanSheet * cleanSheets;
           newXpToAward += cleanSheetXP;
@@ -1040,7 +1090,7 @@ export const submitMatchStats = async (ctx: Context) => {
         try {
           // Get all votes for this match where this user was voted for
           const votesResult = await sequelize.query(
-            `SELECT COUNT(*) as vote_count FROM "Votes" WHERE "matchId" = $1 AND "votedForId" = $2`,
+            `SELECT COUNT(DISTINCT "voterId") as vote_count FROM "Votes" WHERE "matchId" = $1 AND "votedForId" = $2`,
             { bind: [matchId, userId], type: QueryTypes.SELECT }
           );
           
@@ -1055,7 +1105,7 @@ export const submitMatchStats = async (ctx: Context) => {
             
             // Check if this user has the MOST votes (is the actual MOTM winner)
             const mostVotesResult = await sequelize.query(
-              `SELECT "votedForId", COUNT(*) as vote_count 
+              `SELECT "votedForId", COUNT(DISTINCT "voterId") as vote_count 
                FROM "Votes" 
                WHERE "matchId" = $1 
                GROUP BY "votedForId" 
@@ -1063,8 +1113,13 @@ export const submitMatchStats = async (ctx: Context) => {
                LIMIT 1`,
               { bind: [matchId], type: QueryTypes.SELECT }
             );
-            
-            // MOTM Winner bonus removed - only individual votes count
+
+            const top = (mostVotesResult[0] as any) || null;
+            const topVotedForId = top?.votedForId ? String(top.votedForId) : '';
+            if (topVotedForId && topVotedForId === String(userId)) {
+              newXpToAward += xpPointsTable.motm;
+              breakdown.push(`MOTM Winner: +${xpPointsTable.motm}`);
+            }
           }
         } catch (motmErr) {
           console.error('⚠️ Error checking MOTM votes:', motmErr);
@@ -1197,9 +1252,9 @@ export const submitMatchStats = async (ctx: Context) => {
 
       // Update cache
       try {
-        cache.updateLeaderboard(`leaderboard_goals_${match.leagueId}_all`, { playerId: userId, value: stat.goals || 0 });
-        cache.updateLeaderboard(`leaderboard_assists_${match.leagueId}_all`, { playerId: userId, value: stat.assists || 0 });
-        if (stat.cleanSheet) {
+        cache.updateLeaderboard(`leaderboard_goals_${match.leagueId}_all`, { playerId: userId, value: safeGoals });
+        cache.updateLeaderboard(`leaderboard_assists_${match.leagueId}_all`, { playerId: userId, value: safeAssists });
+        if (safeCleanSheets > 0) {
           cache.updateLeaderboard(`leaderboard_cleanSheet_${match.leagueId}_all`, { playerId: userId, value: 1 });
         }
       } catch {}
@@ -1247,7 +1302,7 @@ export const getMatchVotes = async (ctx: Context) => {
     // Get all votes grouped by votedForId
     const votes = await Vote.findAll({
       where: { matchId },
-      attributes: ['votedForId', [fn('COUNT', col('id')), 'count']],
+      attributes: ['votedForId', [fn('COUNT', fn('DISTINCT', col('voterId'))), 'count']],
       group: ['votedForId']
     });
 
@@ -1380,6 +1435,7 @@ export const getMatchStats = async (ctx: Context) => {
             freeKicks: stat.freeKicks,
             defence: stat.defence,
             impact: stat.impact,
+            impactPercent: `${Number(stat.impact) || 0}%`,
             xpAwarded: (stat as any).xpAwarded || 0,
             user: (stat as any).user
           }
@@ -1410,6 +1466,7 @@ export const getMatchStats = async (ctx: Context) => {
         freeKicks: s.freeKicks,
         defence: s.defence,
         impact: s.impact,
+        impactPercent: `${Number(s.impact) || 0}%`,
         xpAwarded: (s as any).xpAwarded || 0,
         user: (s as any).user
       }))
@@ -1984,10 +2041,25 @@ export const getMatchXPBreakdown = async (ctx: Context) => {
     
     // 3. Get all match statistics for this match
     const stats = await sequelize.query(`
-      SELECT ms.*, u."firstName", u."lastName", u.xp as "currentUserXP"
+      SELECT
+        ms.id,
+        ms.user_id AS "userId",
+        ms.match_id AS "matchId",
+        COALESCE(ms.goals, 0) AS goals,
+        COALESCE(ms.assists, 0) AS assists,
+        COALESCE(ms.clean_sheets, 0) AS "cleanSheets",
+        COALESCE(ms.penalties, 0) AS penalties,
+        COALESCE(ms.free_kicks, 0) AS "freeKicks",
+        COALESCE(ms.defence, 0) AS defence,
+        COALESCE(ms.impact, 0) AS impact,
+        COALESCE(ms.xp_awarded, 0) AS "xp_awarded",
+        COALESCE(ms.xp_awarded, 0) AS "xpAwarded",
+        u."firstName",
+        u."lastName",
+        COALESCE(u.xp, 0) AS "currentUserXP"
       FROM match_statistics ms
-      JOIN users u ON ms."userId" = u.id
-      WHERE ms."matchId" = :matchId
+      JOIN users u ON ms.user_id = u.id
+      WHERE ms.match_id = :matchId
     `, {
       replacements: { matchId },
       type: QueryTypes.SELECT
@@ -2047,18 +2119,8 @@ export const getMatchXPBreakdown = async (ctx: Context) => {
       }
     }
     
-    // 7. XP Points Table (hardcoded for reference)
-    const xpTable = {
-      winningTeam: 30,
-      draw: 15,
-      losingTeam: 10,
-      cleanSheet: 5,
-      goal: { win: 3, lose: 2 },
-      assist: { win: 2, lose: 1 },
-      motmVote: { win: 2, lose: 1 },
-      defensiveImpact: { win: 2, lose: 1 },
-      mentality: { win: 2, lose: 2 }
-    };
+    // 7. XP Points Table (shared source of truth)
+    const xpTable = xpPointsTable;
     
     // 8. Build detailed breakdown for each player
     const playerBreakdown: any[] = [];
@@ -2107,6 +2169,10 @@ export const getMatchXPBreakdown = async (ctx: Context) => {
             xpPerVote: isWinningTeam ? xpTable.motmVote.win : xpTable.motmVote.lose,
             totalXP: (voteCountMap[userId] || 0) * (isWinningTeam ? xpTable.motmVote.win : xpTable.motmVote.lose)
           },
+          motmWinner: {
+            selected: motmWinnerId === userId,
+            xp: motmWinnerId === userId ? xpTable.motm : 0
+          },
           captainPicks: {
             defensiveImpact: String(matchData.homeDefensiveImpactId) === userId ? {
               selected: true,
@@ -2127,6 +2193,7 @@ export const getMatchXPBreakdown = async (ctx: Context) => {
       if (breakdown.xpBreakdown.assists) total += breakdown.xpBreakdown.assists.totalXP;
       if (breakdown.xpBreakdown.cleanSheets) total += breakdown.xpBreakdown.cleanSheets.totalXP;
       total += breakdown.xpBreakdown.motmVotes.totalXP;
+      total += breakdown.xpBreakdown.motmWinner.xp;
       if (breakdown.xpBreakdown.captainPicks.defensiveImpact) total += breakdown.xpBreakdown.captainPicks.defensiveImpact.xp;
       if (breakdown.xpBreakdown.captainPicks.mentality) total += breakdown.xpBreakdown.captainPicks.mentality.xp;
       breakdown.calculatedTotalXP = total;
@@ -2178,6 +2245,10 @@ export const getMatchXPBreakdown = async (ctx: Context) => {
             xpPerVote: isWinningTeam ? xpTable.motmVote.win : xpTable.motmVote.lose,
             totalXP: (voteCountMap[userId] || 0) * (isWinningTeam ? xpTable.motmVote.win : xpTable.motmVote.lose)
           },
+          motmWinner: {
+            selected: motmWinnerId === userId,
+            xp: motmWinnerId === userId ? xpTable.motm : 0
+          },
           captainPicks: {
             defensiveImpact: String(matchData.awayDefensiveImpactId) === userId ? {
               selected: true,
@@ -2198,6 +2269,7 @@ export const getMatchXPBreakdown = async (ctx: Context) => {
       if (breakdown.xpBreakdown.assists) total += breakdown.xpBreakdown.assists.totalXP;
       if (breakdown.xpBreakdown.cleanSheets) total += breakdown.xpBreakdown.cleanSheets.totalXP;
       total += breakdown.xpBreakdown.motmVotes.totalXP;
+      total += breakdown.xpBreakdown.motmWinner.xp;
       if (breakdown.xpBreakdown.captainPicks.defensiveImpact) total += breakdown.xpBreakdown.captainPicks.defensiveImpact.xp;
       if (breakdown.xpBreakdown.captainPicks.mentality) total += breakdown.xpBreakdown.captainPicks.mentality.xp;
       breakdown.calculatedTotalXP = total;
@@ -2225,7 +2297,7 @@ export const getMatchXPBreakdown = async (ctx: Context) => {
         }
       },
       xpPointsTable: xpTable,
-      // motmWinner removed - only individual votes count
+      // Includes both individual MOTM vote XP and MOTM winner bonus
       votes: votes,
       voteCountByPlayer: voteCountMap,
       homeTeamPlayers: homeUsers,
