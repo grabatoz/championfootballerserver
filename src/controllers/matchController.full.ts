@@ -150,12 +150,19 @@ export const createMatch = async (ctx: Context) => {
   }
 };
 
+const normalizePlayerOrGuestId = (value: string): string => {
+  const v = String(value || '').trim();
+  if (v.startsWith('guest-')) return v.slice(6);
+  return v;
+};
+
 // Resolve player or guest ID to user ID
 async function resolveTargetUserIdForMatch(playerOrGuestId: string, matchId: string): Promise<string> {
-  const existingUser = await User.findByPk(playerOrGuestId);
+  const normalizedId = normalizePlayerOrGuestId(playerOrGuestId);
+  const existingUser = await User.findByPk(normalizedId);
   if (existingUser) return String(existingUser.id);
 
-  const guest = await (models as any).MatchGuest.findOne({ where: { id: playerOrGuestId, matchId } });
+  const guest = await (models as any).MatchGuest.findOne({ where: { id: normalizedId, matchId } });
   if (!guest) {
     throw new Error('Player not found');
   }
@@ -175,6 +182,82 @@ async function resolveTargetUserIdForMatch(playerOrGuestId: string, matchId: str
     providerId: String(guest.id),
   } as any);
   return String(created.id);
+}
+
+async function getMatchGuestMirrorMaps(matchId: string): Promise<{
+  mirrorToDisplay: Map<string, string>;
+  displayToMirror: Map<string, string>;
+}> {
+  const mirrorToDisplay = new Map<string, string>();
+  const displayToMirror = new Map<string, string>();
+
+  const guests = await (models as any).MatchGuest.findAll({
+    where: { matchId },
+    attributes: ['id']
+  });
+  const guestIds = (guests || []).map((g: any) => String(g.id));
+  if (!guestIds.length) return { mirrorToDisplay, displayToMirror };
+
+  const guestMirrors = await User.findAll({
+    where: {
+      provider: 'guest',
+      providerId: { [Op.in]: guestIds }
+    },
+    attributes: ['id', 'providerId']
+  } as any);
+
+  (guestMirrors || []).forEach((u: any) => {
+    const mirrorId = String(u.id);
+    const providerId = String(u.providerId || '');
+    if (!providerId) return;
+    const displayId = `guest-${providerId}`;
+    mirrorToDisplay.set(mirrorId, displayId);
+    // Accept both prefixed and raw guest IDs from client payloads.
+    displayToMirror.set(displayId, mirrorId);
+    displayToMirror.set(providerId, mirrorId);
+  });
+
+  return { mirrorToDisplay, displayToMirror };
+}
+
+async function getPlayerTeamForMatch(userId: string, matchId: string): Promise<'home' | 'away' | null> {
+  const uid = String(userId);
+  const homeTeamUserIds = await sequelize.query<{ userId: string }>(
+    `SELECT DISTINCT "userId" FROM "UserHomeMatches" WHERE "matchId" = $1`,
+    { bind: [matchId], type: QueryTypes.SELECT }
+  );
+  const awayTeamUserIds = await sequelize.query<{ userId: string }>(
+    `SELECT DISTINCT "userId" FROM "UserAwayMatches" WHERE "matchId" = $1`,
+    { bind: [matchId], type: QueryTypes.SELECT }
+  );
+
+  if (homeTeamUserIds.some(u => String(u.userId) === uid)) return 'home';
+  if (awayTeamUserIds.some(u => String(u.userId) === uid)) return 'away';
+
+  const user = await User.findByPk(uid, { attributes: ['id', 'provider', 'providerId'] } as any);
+  const provider = String((user as any)?.provider || '');
+  const providerId = String((user as any)?.providerId || '');
+  if (provider !== 'guest' || !providerId) return null;
+
+  const guest = await (models as any).MatchGuest.findOne({
+    where: { id: providerId, matchId },
+    attributes: ['id', 'team']
+  });
+  if (!guest) return null;
+  return normalizeTeam((guest as any).team);
+}
+
+async function getTeamResultForUserInMatch(
+  userId: string,
+  matchId: string,
+  homeGoals: number,
+  awayGoals: number
+): Promise<'win' | 'draw' | 'lose'> {
+  if (homeGoals === awayGoals) return 'draw';
+  const team = await getPlayerTeamForMatch(userId, matchId);
+  if (team === 'home') return homeGoals > awayGoals ? 'win' : 'lose';
+  if (team === 'away') return awayGoals > homeGoals ? 'win' : 'lose';
+  return 'lose';
 }
 
 // Vote for MOTM
@@ -197,6 +280,27 @@ export const voteForMotm = async (ctx: Context) => {
     }
   }
 
+  // Resolve incoming selected target (supports regular users + guests).
+  let targetUserId: string | null = null;
+  if (votedForId) {
+    try {
+      targetUserId = await resolveTargetUserIdForMatch(String(votedForId), matchId);
+    } catch {
+      ctx.throw(400, 'Selected player is invalid for this match.');
+      return;
+    }
+
+    const targetTeam = await getPlayerTeamForMatch(targetUserId, matchId);
+    if (!targetTeam) {
+      ctx.throw(400, 'Selected player is not part of this match.');
+      return;
+    }
+    if (String(voterId) === String(targetUserId)) {
+      ctx.throw(400, 'You cannot vote for yourself.');
+      return;
+    }
+  }
+
   // Get old vote to subtract XP from previous voted player
   const oldVote = await Vote.findOne({ where: { matchId, voterId } });
   const oldVotedForId = oldVote?.votedForId;
@@ -209,20 +313,7 @@ export const voteForMotm = async (ctx: Context) => {
         if (match) {
           const homeGoals = match.homeTeamGoals ?? 0;
           const awayGoals = match.awayTeamGoals ?? 0;
-          const homeTeamUserIds = await sequelize.query<{ userId: string }>(
-            `SELECT DISTINCT "userId" FROM "UserHomeMatches" WHERE "matchId" = $1`,
-            { bind: [matchId], type: QueryTypes.SELECT }
-          );
-          const awayTeamUserIds = await sequelize.query<{ userId: string }>(
-            `SELECT DISTINCT "userId" FROM "UserAwayMatches" WHERE "matchId" = $1`,
-            { bind: [matchId], type: QueryTypes.SELECT }
-          );
-          const isHome = homeTeamUserIds.some(u => String(u.userId) === String(oldVotedForId));
-          const isAway = awayTeamUserIds.some(u => String(u.userId) === String(oldVotedForId));
-          let teamResult: 'win' | 'draw' | 'lose' = 'lose';
-          if (isHome && homeGoals > awayGoals) teamResult = 'win';
-          else if (isAway && awayGoals > homeGoals) teamResult = 'win';
-          else if (homeGoals === awayGoals) teamResult = 'draw';
+          const teamResult = await getTeamResultForUserInMatch(String(oldVotedForId), matchId, homeGoals, awayGoals);
           
           const voteXP = teamResult === 'win' ? xpPointsTable.motmVote.win : xpPointsTable.motmVote.lose;
           const userResult = await sequelize.query(
@@ -264,31 +355,14 @@ export const voteForMotm = async (ctx: Context) => {
     return;
   }
 
-  if (voterId === votedForId) {
-    ctx.throw(400, 'You cannot vote for yourself.');
-  }
-
   // If changing vote, subtract XP from old voted player first
-  if (oldVotedForId && oldVotedForId !== votedForId) {
+  if (oldVotedForId && targetUserId && oldVotedForId !== targetUserId) {
     try {
       const match = await Match.findByPk(matchId);
       if (match) {
         const homeGoals = match.homeTeamGoals ?? 0;
         const awayGoals = match.awayTeamGoals ?? 0;
-        const homeTeamUserIds = await sequelize.query<{ userId: string }>(
-          `SELECT DISTINCT "userId" FROM "UserHomeMatches" WHERE "matchId" = $1`,
-          { bind: [matchId], type: QueryTypes.SELECT }
-        );
-        const awayTeamUserIds = await sequelize.query<{ userId: string }>(
-          `SELECT DISTINCT "userId" FROM "UserAwayMatches" WHERE "matchId" = $1`,
-          { bind: [matchId], type: QueryTypes.SELECT }
-        );
-        const isHome = homeTeamUserIds.some(u => String(u.userId) === String(oldVotedForId));
-        const isAway = awayTeamUserIds.some(u => String(u.userId) === String(oldVotedForId));
-        let teamResult: 'win' | 'draw' | 'lose' = 'lose';
-        if (isHome && homeGoals > awayGoals) teamResult = 'win';
-        else if (isAway && awayGoals > homeGoals) teamResult = 'win';
-        else if (homeGoals === awayGoals) teamResult = 'draw';
+        const teamResult = await getTeamResultForUserInMatch(String(oldVotedForId), matchId, homeGoals, awayGoals);
         
         const voteXP = teamResult === 'win' ? xpPointsTable.motmVote.win : xpPointsTable.motmVote.lose;
         const userResult = await sequelize.query(
@@ -325,14 +399,18 @@ export const voteForMotm = async (ctx: Context) => {
   }
 
   await Vote.destroy({ where: { matchId, voterId } });
-  await Vote.create({ matchId, voterId, votedForId });
+  if (!targetUserId) {
+    ctx.throw(400, 'Selected player is invalid for this match.');
+    return;
+  }
+  await Vote.create({ matchId, voterId, votedForId: targetUserId });
 
-  console.log(`🗳️ Vote created - voterId: ${voterId}, votedForId: ${votedForId}, matchId: ${matchId}`);
+  console.log(`🗳️ Vote created - voterId: ${voterId}, votedForId: ${targetUserId}, matchId: ${matchId}`);
   console.log(`🗳️ Old vote was for: ${oldVotedForId || 'none'}`);
 
   // 🗳️ Award XP to the voted player immediately (skip if same player)
-  if (!oldVotedForId || oldVotedForId !== votedForId) {
-    console.log(`🗳️ Processing XP award for ${votedForId}...`);
+  if (!oldVotedForId || oldVotedForId !== targetUserId) {
+    console.log(`🗳️ Processing XP award for ${targetUserId}...`);
     try {
       const match = await Match.findByPk(matchId);
       console.log(`🗳️ Match found: ${match ? 'YES' : 'NO'}`);
@@ -343,27 +421,10 @@ export const voteForMotm = async (ctx: Context) => {
         const awayGoals = match.awayTeamGoals ?? 0;
         console.log(`🗳️ Score: Home ${homeGoals} - Away ${awayGoals}`);
         
-        // Check if voted player is in home or away team
-        const homeTeamUserIds = await sequelize.query<{ userId: string }>(
-          `SELECT DISTINCT "userId" FROM "UserHomeMatches" WHERE "matchId" = $1`,
-          { bind: [matchId], type: QueryTypes.SELECT }
-        );
-        const awayTeamUserIds = await sequelize.query<{ userId: string }>(
-          `SELECT DISTINCT "userId" FROM "UserAwayMatches" WHERE "matchId" = $1`,
-          { bind: [matchId], type: QueryTypes.SELECT }
-        );
-        
-        console.log(`🗳️ Home team users: ${JSON.stringify(homeTeamUserIds)}`);
-        console.log(`🗳️ Away team users: ${JSON.stringify(awayTeamUserIds)}`);
-        
-        const isHome = homeTeamUserIds.some(u => String(u.userId) === String(votedForId));
-        const isAway = awayTeamUserIds.some(u => String(u.userId) === String(votedForId));
-        console.log(`🗳️ VotedFor isHome: ${isHome}, isAway: ${isAway}`);
-      
-        let teamResult: 'win' | 'draw' | 'lose' = 'lose';
-        if (isHome && homeGoals > awayGoals) teamResult = 'win';
-        else if (isAway && awayGoals > homeGoals) teamResult = 'win';
-        else if (homeGoals === awayGoals) teamResult = 'draw';
+        const team = await getPlayerTeamForMatch(targetUserId, matchId);
+        console.log(`🗳️ VotedFor team: ${team || 'unknown'}`);
+
+        const teamResult = await getTeamResultForUserInMatch(targetUserId, matchId, homeGoals, awayGoals);
         console.log(`🗳️ Team result: ${teamResult}`);
         
         // Award motmVote XP for this single vote
@@ -373,7 +434,7 @@ export const voteForMotm = async (ctx: Context) => {
         // Get current user XP and add vote XP
         const userResult = await sequelize.query(
           `SELECT id, "firstName", xp FROM users WHERE id = $1`,
-          { bind: [votedForId], type: QueryTypes.SELECT }
+          { bind: [targetUserId], type: QueryTypes.SELECT }
         );
         console.log(`🗳️ User query result: ${JSON.stringify(userResult)}`);
         
@@ -386,7 +447,7 @@ export const voteForMotm = async (ctx: Context) => {
           
           const updateResult = await sequelize.query(
             `UPDATE users SET xp = $1 WHERE id = $2 RETURNING id, xp`,
-            { bind: [newXP, votedForId], type: QueryTypes.UPDATE }
+            { bind: [newXP, targetUserId], type: QueryTypes.UPDATE }
           );
           console.log(`🗳️ Update result: ${JSON.stringify(updateResult)}`);
           
@@ -394,14 +455,14 @@ export const voteForMotm = async (ctx: Context) => {
           try {
             const existingStats = await sequelize.query(
               `SELECT xp_awarded FROM match_statistics WHERE match_id = $1 AND user_id = $2`,
-              { bind: [matchId, votedForId], type: QueryTypes.SELECT }
+              { bind: [matchId, targetUserId], type: QueryTypes.SELECT }
             );
             if (existingStats.length > 0) {
               const prevXpAwarded = (existingStats[0] as any)?.xp_awarded || 0;
               const newXpAwarded = prevXpAwarded + voteXP;
               await sequelize.query(
                 `UPDATE match_statistics SET xp_awarded = $1 WHERE match_id = $2 AND user_id = $3`,
-                { bind: [newXpAwarded, matchId, votedForId] }
+                { bind: [newXpAwarded, matchId, targetUserId] }
               );
               console.log(`🗳️ match_statistics.xp_awarded updated: ${prevXpAwarded} → ${newXpAwarded}`);
             }
@@ -412,13 +473,13 @@ export const voteForMotm = async (ctx: Context) => {
           // Verify the update
           const verifyResult = await sequelize.query(
             `SELECT id, "firstName", xp FROM users WHERE id = $1`,
-            { bind: [votedForId], type: QueryTypes.SELECT }
+            { bind: [targetUserId], type: QueryTypes.SELECT }
           );
           console.log(`🗳️ VERIFIED - User XP after update: ${JSON.stringify(verifyResult)}`);
           
           console.log(`✅ MOTM Vote XP awarded! ${user.firstName} received +${voteXP} XP (${currentXP} → ${newXP})`);
         } else {
-          console.log(`❌ User not found with id: ${votedForId}`);
+          console.log(`❌ User not found with id: ${targetUserId}`);
         }
       }
     } catch (voteXpErr: any) {
@@ -433,8 +494,11 @@ export const voteForMotm = async (ctx: Context) => {
   try {
     const match = await Match.findByPk(matchId);
     if (match && match.leagueId) {
-      const cacheKey = `leaderboard_motm_${match.leagueId}_all`;
-      cache.updateLeaderboard(cacheKey, { playerId: votedForId, value: 1 });
+      const votedUser = await User.findByPk(String(targetUserId), { attributes: ['id', 'provider'] } as any);
+      if (String((votedUser as any)?.provider || '') !== 'guest') {
+        const cacheKey = `leaderboard_motm_${match.leagueId}_all`;
+        cache.updateLeaderboard(cacheKey, { playerId: targetUserId, value: 1 });
+      }
     }
   } catch (e) {
     console.warn('MOTM leaderboard cache update failed', e);
@@ -462,9 +526,9 @@ export const voteForMotm = async (ctx: Context) => {
       ];
 
       const uniquePlayerIds = Array.from(new Set(allPlayerIds))
-        .filter(id => id !== votedForId);
+        .filter(id => id !== targetUserId);
 
-      const votedForPlayer = await User.findByPk(votedForId);
+      const votedForPlayer = await User.findByPk(String(targetUserId));
       const voterPlayer = await User.findByPk(voterId);
 
       if (votedForPlayer && voterPlayer) {
@@ -479,7 +543,7 @@ export const voteForMotm = async (ctx: Context) => {
               leagueId: match.leagueId,
               leagueName: (match as any).league?.name,
               voterId,
-              votedForId,
+              votedForId: targetUserId,
               voterName: `${voterPlayer.firstName} ${voterPlayer.lastName}`,
               votedForName: `${votedForPlayer.firstName} ${votedForPlayer.lastName}`
             }),
@@ -1312,16 +1376,27 @@ export const getMatchVotes = async (ctx: Context) => {
       votesObject[v.votedForId] = Number(v.get('count'));
     });
 
+    // Add guest display aliases: guest-<guestId> -> same count as guest mirror user id.
+    const { mirrorToDisplay } = await getMatchGuestMirrorMaps(matchId);
+    mirrorToDisplay.forEach((displayId, mirrorUserId) => {
+      if (typeof votesObject[mirrorUserId] === 'number') {
+        votesObject[displayId] = votesObject[mirrorUserId];
+      }
+    });
+
     // Get current user's vote
     const userVote = await Vote.findOne({
       where: { matchId, voterId: userId },
       attributes: ['votedForId']
     });
 
+    const rawUserVote = userVote?.votedForId ? String(userVote.votedForId) : null;
+    const userVoteDisplay = rawUserVote ? (mirrorToDisplay.get(rawUserVote) || rawUserVote) : null;
+
     const result = {
       success: true,
       votes: votesObject,
-      userVote: userVote?.votedForId || null
+      userVote: userVoteDisplay
     };
 
     cache.set(cacheKey, result, 60); // Cache for 1 minute
@@ -1418,16 +1493,40 @@ export const getMatchStats = async (ctx: Context) => {
   try {
     // If playerId is provided, get stats for that specific player only
     if (playerId) {
+      let targetUserId = String(playerId);
+      // Support guest IDs from UI (guest-<guestId> or raw guestId)
+      try {
+        targetUserId = await resolveTargetUserIdForMatch(targetUserId, matchId);
+      } catch {
+        // keep original if resolution fails; query below may still find a direct user stat
+        targetUserId = String(playerId);
+      }
+
+      const teamForTarget = await getPlayerTeamForMatch(targetUserId, matchId);
+      if (!teamForTarget) {
+        ctx.body = { success: true, stats: null };
+        return;
+      }
+
       const stat = await MatchStatistics.findOne({
-        where: { match_id: matchId, user_id: playerId },
-        include: [{ model: User, as: 'user', attributes: ['id', 'firstName', 'lastName', 'profilePicture'] }]
+        where: { match_id: matchId, user_id: targetUserId },
+        include: [{ model: User, as: 'user', attributes: ['id', 'firstName', 'lastName', 'profilePicture', 'provider', 'providerId'] }]
       });
 
       if (stat) {
+        const statUser = (stat as any).user as any;
+        const isGuestMirror =
+          String(statUser?.provider || '') === 'guest' &&
+          String(statUser?.providerId || '').trim() !== '';
+        const displayUserId = isGuestMirror
+          ? `guest-${String(statUser.providerId)}`
+          : String(stat.user_id);
+
         ctx.body = {
           success: true,
           stats: {
             userId: stat.user_id,
+            displayUserId,
             goals: stat.goals,
             assists: stat.assists,
             cleanSheets: stat.cleanSheets,
@@ -1437,7 +1536,14 @@ export const getMatchStats = async (ctx: Context) => {
             impact: stat.impact,
             impactPercent: `${Number(stat.impact) || 0}%`,
             xpAwarded: (stat as any).xpAwarded || 0,
-            user: (stat as any).user
+            user: statUser
+              ? {
+                  id: statUser.id,
+                  firstName: statUser.firstName,
+                  lastName: statUser.lastName,
+                  profilePicture: statUser.profilePicture
+                }
+              : null
           }
         };
       } else {
@@ -1452,24 +1558,42 @@ export const getMatchStats = async (ctx: Context) => {
     // Otherwise, get all stats for the match
     const stats = await MatchStatistics.findAll({
       where: { match_id: matchId },
-      include: [{ model: User, as: 'user', attributes: ['id', 'firstName', 'lastName', 'profilePicture'] }]
+      include: [{ model: User, as: 'user', attributes: ['id', 'firstName', 'lastName', 'profilePicture', 'provider', 'providerId'] }]
     });
 
     ctx.body = {
       success: true,
-      stats: stats.map(s => ({
-        userId: s.user_id,
-        goals: s.goals,
-        assists: s.assists,
-        cleanSheets: s.cleanSheets,
-        penalties: s.penalties,
-        freeKicks: s.freeKicks,
-        defence: s.defence,
-        impact: s.impact,
-        impactPercent: `${Number(s.impact) || 0}%`,
-        xpAwarded: (s as any).xpAwarded || 0,
-        user: (s as any).user
-      }))
+      stats: stats.map(s => {
+        const statUser = (s as any).user as any;
+        const isGuestMirror =
+          String(statUser?.provider || '') === 'guest' &&
+          String(statUser?.providerId || '').trim() !== '';
+        const displayUserId = isGuestMirror
+          ? `guest-${String(statUser.providerId)}`
+          : String(s.user_id);
+
+        return {
+          userId: s.user_id,
+          displayUserId,
+          goals: s.goals,
+          assists: s.assists,
+          cleanSheets: s.cleanSheets,
+          penalties: s.penalties,
+          freeKicks: s.freeKicks,
+          defence: s.defence,
+          impact: s.impact,
+          impactPercent: `${Number(s.impact) || 0}%`,
+          xpAwarded: (s as any).xpAwarded || 0,
+          user: statUser
+            ? {
+                id: statUser.id,
+                firstName: statUser.firstName,
+                lastName: statUser.lastName,
+                profilePicture: statUser.profilePicture
+              }
+            : null
+        };
+      })
     };
   } catch (err) {
     console.error('Get match stats error', err);
@@ -1680,15 +1804,22 @@ export const getCaptainPicks = async (ctx: Context) => {
       return;
     }
 
+    const { mirrorToDisplay } = await getMatchGuestMirrorMaps(matchId);
+    const toDisplay = (id?: string | null) => {
+      if (!id) return null;
+      const sid = String(id);
+      return mirrorToDisplay.get(sid) || sid;
+    };
+
     const result = {
       success: true,
       home: {
-        defence: match.homeDefensiveImpactId || null,
-        influence: match.homeMentalityId || null
+        defence: toDisplay(match.homeDefensiveImpactId),
+        influence: toDisplay(match.homeMentalityId)
       },
       away: {
-        defence: match.awayDefensiveImpactId || null,
-        influence: match.awayMentalityId || null
+        defence: toDisplay(match.awayDefensiveImpactId),
+        influence: toDisplay(match.awayMentalityId)
       }
     };
 
@@ -1722,8 +1853,8 @@ export const submitCaptainPicks = async (ctx: Context) => {
     }
 
     // Check if user is a captain
-    const isHomeCaptain = match.homeCaptainId === userId;
-    const isAwayCaptain = match.awayCaptainId === userId;
+    const isHomeCaptain = String(match.homeCaptainId || '') === String(userId);
+    const isAwayCaptain = String(match.awayCaptainId || '') === String(userId);
 
     if (!isHomeCaptain && !isAwayCaptain) {
       ctx.status = 403;
@@ -1731,18 +1862,52 @@ export const submitCaptainPicks = async (ctx: Context) => {
       return;
     }
 
+    if (category !== 'defence' && category !== 'influence') {
+      ctx.status = 400;
+      ctx.body = { success: false, message: 'Invalid captain pick category' };
+      return;
+    }
+
+    let targetUserId: string;
+    try {
+      targetUserId = await resolveTargetUserIdForMatch(String(playerId), matchId);
+    } catch {
+      ctx.status = 400;
+      ctx.body = { success: false, message: 'Selected player is invalid for this match' };
+      return;
+    }
+
+    if (String(targetUserId) === String(userId)) {
+      ctx.status = 400;
+      ctx.body = { success: false, message: 'You cannot select yourself as a captain bonus pick' };
+      return;
+    }
+
+    const captainTeam: 'home' | 'away' = isHomeCaptain ? 'home' : 'away';
+    const targetTeam = await getPlayerTeamForMatch(targetUserId, matchId);
+    if (!targetTeam) {
+      ctx.status = 400;
+      ctx.body = { success: false, message: 'Selected player is not part of this match' };
+      return;
+    }
+    if (targetTeam !== captainTeam) {
+      ctx.status = 400;
+      ctx.body = { success: false, message: 'You can only pick players from your own team' };
+      return;
+    }
+
     // Update appropriate field based on team and category
     if (isHomeCaptain) {
       if (category === 'defence') {
-        await match.update({ homeDefensiveImpactId: playerId });
+        await match.update({ homeDefensiveImpactId: targetUserId });
       } else if (category === 'influence') {
-        await match.update({ homeMentalityId: playerId });
+        await match.update({ homeMentalityId: targetUserId });
       }
     } else if (isAwayCaptain) {
       if (category === 'defence') {
-        await match.update({ awayDefensiveImpactId: playerId });
+        await match.update({ awayDefensiveImpactId: targetUserId });
       } else if (category === 'influence') {
-        await match.update({ awayMentalityId: playerId });
+        await match.update({ awayMentalityId: targetUserId });
       }
     }
 
