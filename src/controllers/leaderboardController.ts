@@ -80,22 +80,28 @@ export const getLeaderboard = async (ctx: Context) => {
 
       const playerIds = [...new Set(votesGrouped.map((v: any) => v.votedForId))];
       const users = await models.User.findAll({
-        where: { id: playerIds },
+        where: {
+          id: playerIds,
+          provider: { [Op.ne]: 'guest' }
+        },
         attributes: ['id', 'firstName', 'lastName', 'profilePicture', 'position', 'positionType']
       });
 
       const userMap = new Map(users.map(u => [u.id, u]));
-      const players = votesGrouped.map((v: any) => {
-        const user = userMap.get(v.votedForId);
-        return {
-          id: v.votedForId,
-          name: user ? `${user.firstName} ${user.lastName}` : 'Unknown',
-          profilePicture: user?.profilePicture,
-          position: user?.position,
-          positionType: user?.positionType,
-          value: parseInt(v.count as string, 10) || 0
-        };
-      });
+      const players = votesGrouped
+        .map((v: any) => {
+          const user = userMap.get(v.votedForId);
+          if (!user) return null;
+          return {
+            id: v.votedForId,
+            name: `${user.firstName} ${user.lastName}`,
+            profilePicture: user.profilePicture,
+            position: user.position,
+            positionType: user.positionType,
+            value: parseInt(v.count as string, 10) || 0
+          };
+        })
+        .filter(Boolean);
 
       const result = { players };
       cache.set(cacheKey, result, 1800);
@@ -140,22 +146,28 @@ export const getLeaderboard = async (ctx: Context) => {
 
       const playerIds = sortedPlayers.map(([id]) => id);
       const users = await models.User.findAll({
-        where: { id: playerIds },
+        where: {
+          id: playerIds,
+          provider: { [Op.ne]: 'guest' }
+        },
         attributes: ['id', 'firstName', 'lastName', 'profilePicture', 'position', 'positionType']
       });
 
       const userMap = new Map(users.map(u => [u.id, u]));
-      const players = sortedPlayers.map(([playerId, count]) => {
-        const user = userMap.get(playerId);
-        return {
-          id: playerId,
-          name: user ? `${user.firstName} ${user.lastName}` : 'Unknown',
-          profilePicture: user?.profilePicture,
-          position: user?.position,
-          positionType: user?.positionType,
-          value: count
-        };
-      });
+      const players = sortedPlayers
+        .map(([playerId, count]) => {
+          const user = userMap.get(playerId);
+          if (!user) return null;
+          return {
+            id: playerId,
+            name: `${user.firstName} ${user.lastName}`,
+            profilePicture: user.profilePicture,
+            position: user.position,
+            positionType: user.positionType,
+            value: count
+          };
+        })
+        .filter(Boolean);
 
       const result = { players };
       cache.set(cacheKey, result, 1800);
@@ -192,6 +204,7 @@ export const getLeaderboard = async (ctx: Context) => {
     const users = await models.User.findAll({
       where: {
         id: playerIds,
+        provider: { [Op.ne]: 'guest' },
         ...(positionType && { positionType })
       },
       attributes: ['id', 'firstName', 'lastName', 'profilePicture', 'position', 'positionType']
