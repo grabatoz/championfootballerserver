@@ -12,11 +12,24 @@ const METRIC_MAP: Record<string, string> = {
   cleanSheet: 'clean_sheets'
 };
 
+const NON_GUEST_PROVIDER_WHERE = {
+  [Op.or]: [
+    { provider: { [Op.ne]: 'guest' } },
+    { provider: { [Op.is]: null } },
+    { provider: '' }
+  ]
+};
+
 export const getLeaderboard = async (ctx: Context) => {
   const metric = (ctx.query.metric as string) || 'goals';
   let leagueId = ctx.query.leagueId as string | undefined;
   let seasonId = ctx.query.seasonId as string | undefined;
   const positionType = ctx.query.positionType as string | undefined;
+  const requestedLimitRaw = Number(ctx.query.limit);
+  const topLimit = Number.isFinite(requestedLimitRaw) && requestedLimitRaw > 0
+    ? Math.min(Math.floor(requestedLimitRaw), 50)
+    : 5;
+  const fetchLimit = Math.max(topLimit * 20, 50);
 
   // Sanitize leagueId
   const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -41,7 +54,7 @@ export const getLeaderboard = async (ctx: Context) => {
     return;
   }
 
-  const cacheKey = `leaderboard_${metric}_${leagueId || 'all'}_${seasonId || 'all'}_${positionType || 'all'}`;
+  const cacheKey = `leaderboard_${metric}_${leagueId || 'all'}_${seasonId || 'all'}_${positionType || 'all'}_${topLimit}`;
   const cached = cache.get(cacheKey);
   if (cached) {
     ctx.set('X-Cache', 'HIT');
@@ -74,7 +87,7 @@ export const getLeaderboard = async (ctx: Context) => {
         include: voteInclude,
         group: ['Vote.votedForId'],
         order: [[literal('count'), 'DESC']],
-        limit: 5,
+        limit: fetchLimit,
         raw: true
       });
 
@@ -82,7 +95,7 @@ export const getLeaderboard = async (ctx: Context) => {
       const users = await models.User.findAll({
         where: {
           id: playerIds,
-          provider: { [Op.ne]: 'guest' }
+          ...NON_GUEST_PROVIDER_WHERE
         },
         attributes: ['id', 'firstName', 'lastName', 'profilePicture', 'position', 'positionType']
       });
@@ -101,7 +114,8 @@ export const getLeaderboard = async (ctx: Context) => {
             value: parseInt(v.count as string, 10) || 0
           };
         })
-        .filter(Boolean);
+        .filter(Boolean)
+        .slice(0, topLimit);
 
       const result = { players };
       cache.set(cacheKey, result, 1800);
@@ -139,22 +153,22 @@ export const getLeaderboard = async (ctx: Context) => {
         }
       });
 
-      // Sort by count and get top 5
+      // Sort by count
       const sortedPlayers = Object.entries(playerCounts)
-        .sort((a, b) => b[1] - a[1])
-        .slice(0, 5);
+        .sort((a, b) => b[1] - a[1]);
 
-      const playerIds = sortedPlayers.map(([id]) => id);
+      const candidatePlayers = sortedPlayers.slice(0, fetchLimit);
+      const playerIds = candidatePlayers.map(([id]) => id);
       const users = await models.User.findAll({
         where: {
           id: playerIds,
-          provider: { [Op.ne]: 'guest' }
+          ...NON_GUEST_PROVIDER_WHERE
         },
         attributes: ['id', 'firstName', 'lastName', 'profilePicture', 'position', 'positionType']
       });
 
       const userMap = new Map(users.map(u => [u.id, u]));
-      const players = sortedPlayers
+      const players = candidatePlayers
         .map(([playerId, count]) => {
           const user = userMap.get(playerId);
           if (!user) return null;
@@ -167,7 +181,8 @@ export const getLeaderboard = async (ctx: Context) => {
             value: count
           };
         })
-        .filter(Boolean);
+        .filter(Boolean)
+        .slice(0, topLimit);
 
       const result = { players };
       cache.set(cacheKey, result, 1800);
@@ -196,7 +211,7 @@ export const getLeaderboard = async (ctx: Context) => {
       ],
       group: ['MatchStatistics.user_id'],
       order: [[literal('total'), 'DESC']],
-      limit: 5,
+      limit: fetchLimit,
       raw: true
     });
 
@@ -204,7 +219,7 @@ export const getLeaderboard = async (ctx: Context) => {
     const users = await models.User.findAll({
       where: {
         id: playerIds,
-        provider: { [Op.ne]: 'guest' },
+        ...NON_GUEST_PROVIDER_WHERE,
         ...(positionType && { positionType })
       },
       attributes: ['id', 'firstName', 'lastName', 'profilePicture', 'position', 'positionType']
@@ -226,7 +241,8 @@ export const getLeaderboard = async (ctx: Context) => {
           value: parseInt(s.total as string, 10) || 0
         };
       })
-      .filter(Boolean);
+      .filter(Boolean)
+      .slice(0, topLimit);
 
     const result = { players };
     cache.set(cacheKey, result, 1800);
