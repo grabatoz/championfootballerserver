@@ -2027,13 +2027,25 @@ export const updateLeagueStatus = async (ctx: Context) => {
       return;
     }
 
-    const isAdmin = (league as any).administeredLeagues?.some((a: any) => String(a.id) === String(ctx.state.user.userId));
+    const userId = ctx.state.user.userId || ctx.state.user.id;
+    const adminList = (league as any).administeredLeagues || [];
+    let isAdmin = adminList.some((a: any) => String(a.id) === String(userId));
+
+    // Fallback: association may be stale/missing in some environments
+    if (!isAdmin) {
+      const directResult = await (League as any).sequelize.query(
+        'SELECT "userId" FROM "LeagueAdmin" WHERE "leagueId" = :leagueId AND "userId" = :userId LIMIT 1',
+        { replacements: { leagueId: id, userId }, type: (League as any).sequelize.QueryTypes.SELECT }
+      );
+      isAdmin = Array.isArray(directResult) && directResult.length > 0;
+    }
     if (!isAdmin) {
       ctx.throw(403, 'Only league admins can update status');
       return;
     }
 
-    const isActive = Boolean(active);
+    // Important: Boolean('false') === true, so parse explicitly.
+    const isActive = active === true || active === 'true';
     // When admin marks league as inactive, also archive it
     const updateData: any = { active: isActive };
     if (!isActive) {
