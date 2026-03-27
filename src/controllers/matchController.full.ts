@@ -260,6 +260,167 @@ async function getTeamResultForUserInMatch(
   return 'lose';
 }
 
+// Recompute canonical XP for this match from current stats + votes + captain picks.
+// This keeps users.xp and match_statistics.xp_awarded in sync whenever votes/scores change.
+async function recalculateMatchXPForCurrentState(matchId: string, ensureUserIds: Array<string | null | undefined> = []): Promise<void> {
+  const dedupEnsureIds = Array.from(new Set(
+    ensureUserIds
+      .map((v) => String(v || '').trim())
+      .filter(Boolean)
+  ));
+
+  // Ensure rows exist for any explicitly passed users (for vote-only players).
+  for (const uid of dedupEnsureIds) {
+    await MatchStatistics.findOrCreate({
+      where: { match_id: matchId, user_id: uid },
+      defaults: {
+        match_id: matchId,
+        user_id: uid,
+        goals: 0,
+        assists: 0,
+        cleanSheets: 0,
+        penalties: 0,
+        freeKicks: 0,
+        yellowCards: 0,
+        redCards: 0,
+        defence: 0,
+        impact: 0,
+        minutesPlayed: 0,
+        rating: 0,
+        xpAwarded: 0
+      }
+    });
+  }
+
+  const match = await Match.findByPk(matchId, {
+    attributes: [
+      'id',
+      'homeTeamGoals',
+      'awayTeamGoals',
+      'homeDefensiveImpactId',
+      'awayDefensiveImpactId',
+      'homeMentalityId',
+      'awayMentalityId'
+    ]
+  });
+  if (!match) return;
+
+  const homeGoals = Number(match.homeTeamGoals || 0);
+  const awayGoals = Number(match.awayTeamGoals || 0);
+
+  const statsRows = await sequelize.query<{
+    user_id: string;
+    goals: number;
+    assists: number;
+    clean_sheets: number;
+    xp_awarded: number;
+  }>(
+    `SELECT
+       user_id,
+       COALESCE(goals, 0) AS goals,
+       COALESCE(assists, 0) AS assists,
+       COALESCE(clean_sheets, 0) AS clean_sheets,
+       COALESCE(xp_awarded, 0) AS xp_awarded
+     FROM match_statistics
+     WHERE match_id = $1`,
+    { bind: [matchId], type: QueryTypes.SELECT }
+  );
+
+  if (!statsRows.length) return;
+
+  const votes = await sequelize.query<{ votedForId: string }>(
+    `SELECT "votedForId" FROM "Votes" WHERE "matchId" = $1`,
+    { bind: [matchId], type: QueryTypes.SELECT }
+  );
+
+  const voteCountByPlayer: Record<string, number> = {};
+  for (const v of votes) {
+    const vid = String(v.votedForId || '').trim();
+    if (!vid) continue;
+    voteCountByPlayer[vid] = (voteCountByPlayer[vid] || 0) + 1;
+  }
+
+  // Same tie-break behavior everywhere: highest votes, then lexical user id.
+  const motmSorted = Object.entries(voteCountByPlayer).sort((a, b) => {
+    if (b[1] !== a[1]) return b[1] - a[1];
+    return String(a[0]).localeCompare(String(b[0]));
+  });
+  const motmWinnerId = motmSorted.length > 0 && motmSorted[0][1] > 0 ? String(motmSorted[0][0]) : null;
+
+  const homeDefensiveId = String((match as any).homeDefensiveImpactId || '');
+  const awayDefensiveId = String((match as any).awayDefensiveImpactId || '');
+  const homeMentalityId = String((match as any).homeMentalityId || '');
+  const awayMentalityId = String((match as any).awayMentalityId || '');
+
+  const tx = await sequelize.transaction();
+  try {
+    for (const row of statsRows) {
+      const userId = String(row.user_id);
+      const goals = Math.max(0, Number(row.goals) || 0);
+      const assists = Math.max(0, Number(row.assists) || 0);
+      const cleanSheets = Math.max(0, Number(row.clean_sheets) || 0);
+      const prevAwarded = Math.max(0, Number(row.xp_awarded) || 0);
+
+      const teamResult = await getTeamResultForUserInMatch(userId, matchId, homeGoals, awayGoals);
+
+      let nextAwarded = 0;
+      if (teamResult === 'win') nextAwarded += xpPointsTable.winningTeam;
+      else if (teamResult === 'draw') nextAwarded += xpPointsTable.draw;
+      else nextAwarded += xpPointsTable.losingTeam;
+
+      nextAwarded += goals * (teamResult === 'win' ? xpPointsTable.goal.win : xpPointsTable.goal.lose);
+      nextAwarded += assists * (teamResult === 'win' ? xpPointsTable.assist.win : xpPointsTable.assist.lose);
+      nextAwarded += cleanSheets * xpPointsTable.cleanSheet;
+
+      const voteCount = voteCountByPlayer[userId] || 0;
+      nextAwarded += voteCount * (teamResult === 'win' ? xpPointsTable.motmVote.win : xpPointsTable.motmVote.lose);
+
+      if (motmWinnerId && motmWinnerId === userId) {
+        nextAwarded += xpPointsTable.motm;
+      }
+
+      const isDefensivePick = userId === homeDefensiveId || userId === awayDefensiveId;
+      if (isDefensivePick) {
+        nextAwarded += teamResult === 'win' ? xpPointsTable.defensiveImpact.win : xpPointsTable.defensiveImpact.lose;
+      }
+
+      const isMentalityPick = userId === homeMentalityId || userId === awayMentalityId;
+      if (isMentalityPick) {
+        nextAwarded += teamResult === 'win' ? xpPointsTable.mentality.win : xpPointsTable.mentality.lose;
+      }
+
+      nextAwarded = Math.max(0, Math.round(nextAwarded));
+      if (nextAwarded === prevAwarded) continue;
+
+      await sequelize.query(
+        `UPDATE match_statistics SET xp_awarded = $1 WHERE match_id = $2 AND user_id = $3`,
+        { bind: [nextAwarded, matchId, userId], transaction: tx }
+      );
+
+      const userRow = await sequelize.query<{ xp: number }>(
+        `SELECT xp FROM users WHERE id = $1 FOR UPDATE`,
+        { bind: [userId], type: QueryTypes.SELECT, transaction: tx }
+      );
+      if (userRow.length > 0) {
+        const currentXP = Math.max(0, Number(userRow[0].xp) || 0);
+        const delta = nextAwarded - prevAwarded;
+        const finalXP = Math.max(0, currentXP + delta);
+        if (finalXP !== currentXP) {
+          await sequelize.query(
+            `UPDATE users SET xp = $1 WHERE id = $2`,
+            { bind: [finalXP, userId], transaction: tx }
+          );
+        }
+      }
+    }
+
+    await tx.commit();
+  } catch (err) {
+    await tx.rollback();
+    throw err;
+  }
+}
+
 // Vote for MOTM
 export const voteForMotm = async (ctx: Context) => {
   if (!ctx.state.user?.userId) {
@@ -349,6 +510,11 @@ export const voteForMotm = async (ctx: Context) => {
       } catch (e) { console.error('Error removing vote XP:', e); }
     }
     await Vote.destroy({ where: { matchId, voterId } });
+    try {
+      await recalculateMatchXPForCurrentState(matchId, [oldVotedForId]);
+    } catch (recalcErr) {
+      console.error('Could not recalculate match XP after vote removal:', recalcErr);
+    }
     try { cache.clearPattern(`match_votes_${matchId}_`); } catch {}
     ctx.status = 200;
     ctx.body = { success: true, message: 'Vote removed.' };
@@ -489,6 +655,12 @@ export const voteForMotm = async (ctx: Context) => {
     }
   } else {
     console.log(`🗳️ Skipping XP - same player voted again`);
+  }
+
+  try {
+    await recalculateMatchXPForCurrentState(matchId, [oldVotedForId, targetUserId]);
+  } catch (recalcErr) {
+    console.error('Could not recalculate match XP after vote submit/change:', recalcErr);
   }
 
   try {
@@ -663,6 +835,12 @@ export const updateMatchGoals = async (ctx: Context) => {
 
     await match.update(updateData);
     console.log(`✅ Admin published result for match ${matchId} — status set to RESULT_PUBLISHED`);
+
+    try {
+      await recalculateMatchXPForCurrentState(matchId);
+    } catch (recalcErr) {
+      console.error('Could not recalculate match XP after score update:', recalcErr);
+    }
 
     // Send informational notification to captains (optional, no longer gates the result)
     try {
@@ -1324,6 +1502,12 @@ export const submitMatchStats = async (ctx: Context) => {
       } catch {}
     }
 
+    try {
+      await recalculateMatchXPForCurrentState(matchId);
+    } catch (recalcErr) {
+      console.error('Could not recalculate match XP after stats submission:', recalcErr);
+    }
+
     console.log(`✅ Stats submission complete - sending response`);
     
     // After stats submitted, re-check if league is now complete
@@ -1699,6 +1883,14 @@ export const updateMatch = async (ctx: Context) => {
     }
 
     await match.update(updateData);
+
+    if (includesScoreUpdate) {
+      try {
+        await recalculateMatchXPForCurrentState(id);
+      } catch (recalcErr) {
+        console.error('Could not recalculate match XP after match edit score change:', recalcErr);
+      }
+    }
 
     ctx.body = {
       success: true,
