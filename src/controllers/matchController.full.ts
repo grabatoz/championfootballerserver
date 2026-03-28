@@ -376,7 +376,7 @@ async function recalculateMatchXPForCurrentState(matchId: string, ensureUserIds:
       nextAwarded += voteCount * (teamResult === 'win' ? xpPointsTable.motmVote.win : xpPointsTable.motmVote.lose);
 
       if (motmWinnerId && motmWinnerId === userId) {
-        nextAwarded += xpPointsTable.motm;
+        nextAwarded += teamResult === 'win' ? xpPointsTable.motm.win : xpPointsTable.motm.lose;
       }
 
       const isDefensivePick = userId === homeDefensiveId || userId === awayDefensiveId;
@@ -1359,8 +1359,9 @@ export const submitMatchStats = async (ctx: Context) => {
             const top = (mostVotesResult[0] as any) || null;
             const topVotedForId = top?.votedForId ? String(top.votedForId) : '';
             if (topVotedForId && topVotedForId === String(userId)) {
-              newXpToAward += xpPointsTable.motm;
-              breakdown.push(`MOTM Winner: +${xpPointsTable.motm}`);
+              const motmWinnerXP = teamResult === 'win' ? xpPointsTable.motm.win : xpPointsTable.motm.lose;
+              newXpToAward += motmWinnerXP;
+              breakdown.push(`MOTM Winner: +${motmWinnerXP}`);
             }
           }
         } catch (motmErr) {

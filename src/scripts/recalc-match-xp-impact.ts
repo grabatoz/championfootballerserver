@@ -123,7 +123,7 @@ function computeMatchXp(params: {
   xp += (teamResult === 'win' ? xpPointsTable.motmVote.win : xpPointsTable.motmVote.lose) * voteCount;
 
   // MOTM winner bonus
-  if (isMotmWinner) xp += xpPointsTable.motm;
+  if (isMotmWinner) xp += teamResult === 'win' ? xpPointsTable.motm.win : xpPointsTable.motm.lose;
 
   // Captain picks
   if (isDefensivePick) {
