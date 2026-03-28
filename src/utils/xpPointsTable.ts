@@ -2,7 +2,7 @@ export const xpPointsTable = {
   winningTeam: 30, // Winning Team Bonus
   draw: 15, // Draw
   losingTeam: 10, // Losing Team Consolation
-  motm: 10, // Player with most MOTM votes in a match
+  motm:  { win: 10, lose: 5 }, // Player with most MOTM votes in a match
   motmVote: { win: 2, lose: 1 }, // Player receiving individual count of votes per match
   cleanSheet: 5, // Clean Sheets (Goalkeeper)
   goal: { win: 3, lose: 2 }, // Goal Scored
