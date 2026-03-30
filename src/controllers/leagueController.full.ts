@@ -561,13 +561,42 @@ export const getTrophyRoom = async (ctx: Context) => {
               const gaB = stats[b]?.teamGoalsConceded ?? Infinity;
               return gaA - gaB;
             })[0] || null;
-            return best || null;
+            if (!best) return null;
+            return (cleanSheets[best] || 0) > 0 ? best : null;
           })()
         }
       ];
 
+      const meetsAwardRequirement = (title: string, winnerId: string | null): boolean => {
+        if (!winnerId) return false;
+        const s = stats[winnerId];
+        if (!s || s.played <= 0) return false;
+
+        switch (title) {
+          case 'League Champion':
+            return leagueTable.length > 0 && leagueTable[0] === winnerId;
+          case 'Runner-Up':
+            return leagueTable.length > 1 && leagueTable[1] === winnerId;
+          case "Ballon D'or":
+            return s.motmVotes > 0;
+          case 'Golden Boot':
+            return s.goals > 0;
+          case 'King Playmaker':
+            return s.assists > 0;
+          case 'Legendary Shield':
+            return Number.isFinite(s.teamGoalsConceded / s.played);
+          case 'Dark Horse':
+            return leagueTable.slice(3).includes(winnerId) && s.motmVotes > 0;
+          case 'Star Keeper':
+            return gkIds.includes(winnerId) && (cleanSheets[winnerId] || 0) > 0;
+          default:
+            return true;
+        }
+      };
+
       awards.forEach(award => {
-        const winnerId = award.winnerId ? String(award.winnerId) : null;
+        const rawWinnerId = award.winnerId ? String(award.winnerId) : null;
+        const winnerId = rawWinnerId && meetsAwardRequirement(award.title, rawWinnerId) ? rawWinnerId : null;
         const winnerName = winnerId ? getPlayerName(winnerId) : '';
         const hasValidWinner = Boolean(winnerId && winnerName);
         trophyWinners.push({

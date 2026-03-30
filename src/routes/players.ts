@@ -775,7 +775,7 @@ router.get('/:id/trophies', required, async (ctx) => {
           return gaA - gaB;
         });
         const top = sorted[0];
-        return top || null;
+        return top && (cleanSheets[top] || 0) > 0 ? top : null;
       })();
 
       const awards: Array<{ title: string; id: string | null }> = [
@@ -790,12 +790,46 @@ router.get('/:id/trophies', required, async (ctx) => {
         { title: 'Star Keeper', id: starKeeper },
       ];
 
-      return awards.map(({ title, id }) => ({
-        title,
-        winnerId: id,
-        leagueId: String(league.id),
-        leagueName: league.name,
-      }));
+      const meetsAwardRequirement = (title: string, winnerId: string | null): boolean => {
+        if (!winnerId) return false;
+        const s = statsMap[winnerId];
+        if (!s || s.played <= 0) return false;
+
+        switch (title) {
+          case 'League Champion':
+            return table.length > 0 && table[0] === winnerId;
+          case 'Runner-Up':
+            return table.length > 1 && table[1] === winnerId;
+          case "Ballon D'or":
+            return s.motmVotes > 0;
+          case 'Golden Boot':
+            return s.goals > 0;
+          case 'King Playmaker':
+            return s.assists > 0;
+          case 'Legendary Shield':
+            return Number.isFinite(s.teamGoalsConceded / s.played);
+          case 'The Dark Horse':
+            return table.slice(3).includes(winnerId) && s.motmVotes > 0;
+          case 'Star Keeper':
+            return gkIds.includes(winnerId) && (cleanSheets[winnerId] || 0) > 0;
+          case 'GOAT': {
+            const ratio = s.played > 0 ? s.wins / s.played : 0;
+            return ratio > 0;
+          }
+          default:
+            return true;
+        }
+      };
+
+      return awards.map(({ title, id }) => {
+        const winnerId = id && meetsAwardRequirement(title, id) ? id : null;
+        return {
+          title,
+          winnerId,
+          leagueId: String(league.id),
+          leagueName: league.name,
+        };
+      });
     };
 
     // Apply filters and compute winners per league PER SEASON (like trophy room)
