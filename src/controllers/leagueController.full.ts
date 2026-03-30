@@ -198,7 +198,17 @@ export const getTrophyRoom = async (ctx: Context) => {
     seasonId: seasonIdQ || 'all' 
   });
 
-  type PlayerStats = { played: number; wins: number; draws: number; losses: number; goals: number; assists: number; motmVotes: number; teamGoalsConceded: number };
+  type PlayerStats = {
+    played: number;
+    wins: number;
+    draws: number;
+    losses: number;
+    goals: number;
+    assists: number;
+    motmVotes: number;
+    teamGoalsFor: number;
+    teamGoalsConceded: number;
+  };
 
   const countCompleted = (matches: any[]) =>
     matches.filter((m: any) => normalizeStatus(m.status) === 'RESULT_PUBLISHED').length;
@@ -207,7 +217,17 @@ export const getTrophyRoom = async (ctx: Context) => {
     const stats: Record<string, PlayerStats> = {};
     const ensure = (pid: string) => {
       if (!stats[pid]) {
-        stats[pid] = { played: 0, wins: 0, draws: 0, losses: 0, goals: 0, assists: 0, motmVotes: 0, teamGoalsConceded: 0 };
+        stats[pid] = {
+          played: 0,
+          wins: 0,
+          draws: 0,
+          losses: 0,
+          goals: 0,
+          assists: 0,
+          motmVotes: 0,
+          teamGoalsFor: 0,
+          teamGoalsConceded: 0
+        };
       }
     };
 
@@ -250,6 +270,7 @@ export const getTrophyRoom = async (ctx: Context) => {
           if (homeWon) stats[pid].wins++;
           else if (awayWon) stats[pid].losses++;
           else stats[pid].draws++;
+          stats[pid].teamGoalsFor += m.homeTeamGoals ?? 0;
           stats[pid].teamGoalsConceded += m.awayTeamGoals ?? 0;
         });
 
@@ -258,6 +279,7 @@ export const getTrophyRoom = async (ctx: Context) => {
           if (awayWon) stats[pid].wins++;
           else if (homeWon) stats[pid].losses++;
           else stats[pid].draws++;
+          stats[pid].teamGoalsFor += m.awayTeamGoals ?? 0;
           stats[pid].teamGoalsConceded += m.homeTeamGoals ?? 0;
         });
       });
@@ -267,7 +289,7 @@ export const getTrophyRoom = async (ctx: Context) => {
 
   try {
     // Cache key for trophy room
-    const trCacheKey = `trophy_room_${userId}_${leagueIdQ || 'all'}_${seasonIdQ || 'all'}`;
+    const trCacheKey = `trophy_room_v2_${userId}_${leagueIdQ || 'all'}_${seasonIdQ || 'all'}`;
     const trCached = cache.get(trCacheKey);
     if (trCached) {
       console.log('✅ [Trophy Room] Returning cached data');
@@ -282,7 +304,7 @@ export const getTrophyRoom = async (ctx: Context) => {
       const league = await League.findByPk(leagueIdQ, {
         attributes: ['id', 'name', 'maxGames'],
         include: [
-          { model: User, as: 'members', attributes: ['id', 'firstName', 'lastName', 'position', 'positionType'] },
+          { model: User, as: 'members', attributes: ['id', 'firstName', 'lastName', 'position', 'positionType', 'xp'] },
           {
             model: Match,
             as: 'matches',
@@ -317,7 +339,7 @@ export const getTrophyRoom = async (ctx: Context) => {
         where: { id: { [Op.in]: userLeagueIds } },
         attributes: ['id', 'name', 'maxGames'],
         include: [
-          { model: User, as: 'members', attributes: ['id', 'firstName', 'lastName', 'position', 'positionType'] },
+          { model: User, as: 'members', attributes: ['id', 'firstName', 'lastName', 'position', 'positionType', 'xp'] },
           {
             model: Match,
             as: 'matches',
@@ -422,17 +444,42 @@ export const getTrophyRoom = async (ctx: Context) => {
       const stats = calcStats(matchesToUse, league.members || []);
       const playerIds = Object.keys(stats).filter(id => stats[id].played > 0);
 
-      const sortByPoints = (a: string, b: string) => {
+      const memberXp: Record<string, number> = {};
+      (league.members || []).forEach((p: any) => {
+        memberXp[String(p.id)] = Number(p.xp || 0);
+      });
+
+      const sortByStandings = (a: string, b: string) => {
         const aPts = stats[a].wins * 3 + stats[a].draws;
         const bPts = stats[b].wins * 3 + stats[b].draws;
-        return bPts - aPts;
+        if (bPts !== aPts) return bPts - aPts;
+
+        const aGd = stats[a].teamGoalsFor - stats[a].teamGoalsConceded;
+        const bGd = stats[b].teamGoalsFor - stats[b].teamGoalsConceded;
+        if (bGd !== aGd) return bGd - aGd;
+
+        if (stats[b].teamGoalsFor !== stats[a].teamGoalsFor) {
+          return stats[b].teamGoalsFor - stats[a].teamGoalsFor;
+        }
+        if (stats[b].wins !== stats[a].wins) return stats[b].wins - stats[a].wins;
+
+        const aXp = memberXp[a] ?? 0;
+        const bXp = memberXp[b] ?? 0;
+        if (bXp !== aXp) return bXp - aXp;
+
+        return a.localeCompare(b);
       };
 
-      const leagueTable = [...playerIds].sort(sortByPoints);
+      const leagueTable = [...playerIds].sort(sortByStandings);
       
+      const isGoalkeeperRole = (rawRole: unknown) => {
+        const role = String(rawRole || '').trim().toLowerCase();
+        return role === 'gk' || role.includes('goalkeeper');
+      };
+
       // Calculate GK-specific stats for Star Keeper
       const gkIds: string[] = (league.members || [])
-        .filter((p: any) => String(p.positionType || p.position || '').toLowerCase().includes('goalkeeper'))
+        .filter((p: any) => isGoalkeeperRole(p.positionType || p.position))
         .map((p: any) => String(p.id));
 
       const cleanSheets: Record<string, number> = {};
@@ -447,10 +494,9 @@ export const getTrophyRoom = async (ctx: Context) => {
           if (Number(m.homeTeamGoals || 0) === 0) awayGk.forEach(id => (cleanSheets[id] = (cleanSheets[id] || 0) + 1));
         });
 
-      const defenderIds: string[] = (league.members || [])
-        .filter((p: any) => ['defender', 'goalkeeper'].includes(String(p.positionType || p.position || '').toLowerCase()))
-        .map((p: any) => String(p.id))
-        .filter((id: any) => stats[id]?.played > 0);
+      // Legendary Shield criteria:
+      // lowest average team goals conceded among all players who played.
+      const shieldCandidateIds: string[] = playerIds.filter((id: string) => stats[id]?.played > 0);
 
       const nameMap = new Map<string, string>();
       (league.members || []).forEach((p: any) => {
@@ -488,8 +534,8 @@ export const getTrophyRoom = async (ctx: Context) => {
         { title: 'King Playmaker', winnerId: pickTopBy(playerIds, (pid) => stats[pid].assists, 1) },
         {
           title: 'Legendary Shield',
-          winnerId: defenderIds.length > 0
-            ? defenderIds.sort((a, b) => {
+          winnerId: shieldCandidateIds.length > 0
+            ? shieldCandidateIds.sort((a, b) => {
                 const avgA = stats[a].teamGoalsConceded / stats[a].played;
                 const avgB = stats[b].teamGoalsConceded / stats[b].played;
                 return avgA - avgB;
@@ -515,8 +561,7 @@ export const getTrophyRoom = async (ctx: Context) => {
               const gaB = stats[b]?.teamGoalsConceded ?? Infinity;
               return gaA - gaB;
             })[0] || null;
-            // If no clean sheets were recorded in this scope, keep unassigned.
-            return best && (cleanSheets[best] || 0) > 0 ? best : null;
+            return best || null;
           })()
         }
       ];
