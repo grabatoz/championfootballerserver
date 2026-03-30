@@ -383,22 +383,42 @@ app.on("error", async (error) => {
 
 async function applyPerformanceIndexesIfEnabled() {
   try {
-    if (process.env.APPLY_PERF_INDEXES !== '1') return;
-    console.log('[DB] APPLY_PERF_INDEXES=1 detected. Ensuring performance indexes...');
+    if (process.env.APPLY_PERF_INDEXES === '0') {
+      console.log('[DB] APPLY_PERF_INDEXES=0 detected. Skipping performance index creation.');
+      return;
+    }
+    console.log('[DB] Ensuring performance indexes...');
     const q = (sql: string) => sequelize.query(sql);
+
+    // Core match lookup patterns
     await q('CREATE INDEX IF NOT EXISTS idx_matches_leagueid ON "Matches"("leagueId");');
     await q('CREATE INDEX IF NOT EXISTS idx_matches_leagueid_date ON "Matches"("leagueId", "date" DESC);');
-  // Match availability uses explicit snake_case table name
-  await q('CREATE INDEX IF NOT EXISTS idx_match_availability_match_id ON match_availabilities(match_id);');
-  await q('CREATE INDEX IF NOT EXISTS idx_match_availability_user_match ON match_availabilities(user_id, match_id);');
+    await q('CREATE INDEX IF NOT EXISTS idx_matches_seasonid_status_date ON "Matches"("seasonId", status, "date" DESC);');
+    await q('CREATE INDEX IF NOT EXISTS idx_matches_league_status_date ON "Matches"("leagueId", status, "date" DESC);');
+
+    // Match availability uses explicit snake_case table name
+    await q('CREATE INDEX IF NOT EXISTS idx_match_availability_match_id ON match_availabilities(match_id);');
+    await q('CREATE INDEX IF NOT EXISTS idx_match_availability_user_match ON match_availabilities(user_id, match_id);');
+
+    // Team assignment junction tables
     await q('CREATE INDEX IF NOT EXISTS idx_userhomematches_matchid ON "UserHomeMatches"("matchId");');
     await q('CREATE INDEX IF NOT EXISTS idx_userhomematches_user_match ON "UserHomeMatches"("userId", "matchId");');
     await q('CREATE INDEX IF NOT EXISTS idx_userawaymatches_matchid ON "UserAwayMatches"("matchId");');
     await q('CREATE INDEX IF NOT EXISTS idx_userawaymatches_user_match ON "UserAwayMatches"("userId", "matchId");');
-  await q('CREATE INDEX IF NOT EXISTS idx_leaguemember_leagueid ON "LeagueMember"("leagueId");');
-  await q('CREATE INDEX IF NOT EXISTS idx_leaguemember_user_league ON "LeagueMember"("userId", "leagueId");');
-  await q('CREATE INDEX IF NOT EXISTS idx_leagueadmin_leagueid ON "LeagueAdmin"("leagueId");');
-  await q('CREATE INDEX IF NOT EXISTS idx_leagueadmin_user_league ON "LeagueAdmin"("userId", "leagueId");');
+
+    // League membership/admin lookup patterns
+    await q('CREATE INDEX IF NOT EXISTS idx_leaguemember_leagueid ON "LeagueMember"("leagueId");');
+    await q('CREATE INDEX IF NOT EXISTS idx_leaguemember_user_league ON "LeagueMember"("userId", "leagueId");');
+    await q('CREATE INDEX IF NOT EXISTS idx_leagueadmin_leagueid ON "LeagueAdmin"("leagueId");');
+    await q('CREATE INDEX IF NOT EXISTS idx_leagueadmin_user_league ON "LeagueAdmin"("userId", "leagueId");');
+
+    // Stats and votes hot paths
+    await q('CREATE INDEX IF NOT EXISTS idx_matchstatistics_match_id ON "MatchStatistics"(match_id);');
+    await q('CREATE INDEX IF NOT EXISTS idx_matchstatistics_user_match ON "MatchStatistics"(user_id, match_id);');
+    await q('CREATE INDEX IF NOT EXISTS idx_matchstatistics_match_user ON "MatchStatistics"(match_id, user_id);');
+    await q('CREATE INDEX IF NOT EXISTS idx_votes_matchid ON "Votes"("matchId");');
+    await q('CREATE INDEX IF NOT EXISTS idx_votes_votedfor_match ON "Votes"("votedForId", "matchId");');
+
     console.log('[DB] Performance indexes ensured.');
   } catch (e) {
     console.error('[DB] Failed to apply performance indexes:', e);

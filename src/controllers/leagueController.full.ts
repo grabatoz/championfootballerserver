@@ -10,7 +10,7 @@ import Vote from '../models/Vote';
 import MatchStatistics from '../models/MatchStatistics';
 import { MatchAvailability } from '../models/MatchAvailability';
 import { MatchPlayerLayout } from '../models/MatchPlayerLayout';
-import { checkLeagueCompletion } from '../utils/leagueCompletion';
+import { checkLeagueCompletion, checkLeagueCompletionBulk } from '../utils/leagueCompletion';
 import { invalidateCache as invalidateServerCache } from '../middleware/memoryCache';
 
 const { League, Match, User, MatchGuest } = models;
@@ -119,6 +119,53 @@ const toUserBasic = (p: any) => ({
   xp: typeof p?.xp === 'number' ? p.xp : (p?.xp ? Number(p.xp) : undefined),
 });
 
+type LeagueListRow = {
+  id: string;
+  name: string;
+  active: boolean;
+  archived: boolean;
+  image: string | null;
+  maxGames: number | null;
+  createdAt?: string;
+};
+
+const fetchUserLeaguesBasic = async (userId: string): Promise<LeagueListRow[]> => {
+  const sequelize = League.sequelize!;
+  const rows = await sequelize.query<LeagueListRow>(
+    `
+      SELECT DISTINCT
+        l.id::text AS id,
+        l.name,
+        l.active,
+        COALESCE(l.archived, false) AS archived,
+        l.image,
+        l."maxGames",
+        l."createdAt" AS "createdAt"
+      FROM "Leagues" l
+      LEFT JOIN "LeagueMember" lm
+        ON lm."leagueId" = l.id
+      LEFT JOIN "LeagueAdmin" la
+        ON la."leagueId" = l.id
+      WHERE lm."userId" = :userId
+         OR la."userId" = :userId
+      ORDER BY l."createdAt" DESC
+    `,
+    {
+      replacements: { userId },
+      type: QueryTypes.SELECT,
+    }
+  );
+
+  return rows.map((row) => ({
+    id: String(row.id),
+    name: row.name,
+    active: Boolean(row.active),
+    archived: Boolean(row.archived),
+    image: row.image || null,
+    maxGames: row.maxGames == null ? null : Number(row.maxGames),
+  }));
+};
+
 // Get all leagues for current user
 export const getAllLeagues = async (ctx: Context) => {
   if (!ctx.state.user || !ctx.state.user.userId) {
@@ -128,39 +175,28 @@ export const getAllLeagues = async (ctx: Context) => {
   }
   const userId = String(ctx.state.user.userId);
   try {
-    const memberLeagues = await League.findAll({
-      where: { '$members.id$': userId },
-      include: [{ model: User, as: 'members', attributes: ['id'] }],
-    });
+    const leaguesBasic = await fetchUserLeaguesBasic(userId);
+    const completionByLeague = await checkLeagueCompletionBulk(leaguesBasic.map((league) => league.id));
 
-    const adminLeagues = await League.findAll({
-      where: { '$administeredLeagues.id$': userId },
-      include: [{ model: User, as: 'administeredLeagues', attributes: ['id'] }],
-    });
-
-    const map: Record<string, any> = {};
-    [...memberLeagues, ...adminLeagues].forEach((l: any) => { map[String(l.id)] = l; });
-    
-    // Build leagues with completion info
-    const leagues = await Promise.all(Object.values(map).map(async (l: any) => {
-      const completionInfo = await checkLeagueCompletion(String(l.id));
+    const leagues = leaguesBasic.map((league) => {
+      const completionInfo = completionByLeague[league.id];
       return {
-        id: String(l.id),
-        name: l.name,
-        active: Boolean(l.active),
-        archived: Boolean((l as any).archived),
-        image: (l as any).image ?? null,
-        maxGames: l.maxGames ?? null,
+        id: league.id,
+        name: league.name,
+        active: league.active,
+        archived: league.archived,
+        image: league.image,
+        maxGames: league.maxGames,
         computedStatus: {
-          isCompleted: completionInfo.isCompleted,
-          activeSeasonCompleted: completionInfo.activeSeasonCompleted,
-          allStatsSubmitted: completionInfo.allStatsSubmitted,
-          matchesPlayed: completionInfo.totalCompletedMatches,
-          gamesPlayed: completionInfo.totalCompletedMatches,
-          maxGames: l.maxGames ?? 0,
-          totalMaxGames: completionInfo.totalMaxGames,
-          missing: completionInfo.missing,
-          seasons: completionInfo.seasons.map(s => ({
+          isCompleted: Boolean(completionInfo?.isCompleted),
+          activeSeasonCompleted: Boolean(completionInfo?.activeSeasonCompleted),
+          allStatsSubmitted: Boolean(completionInfo?.allStatsSubmitted),
+          matchesPlayed: completionInfo?.totalCompletedMatches ?? 0,
+          gamesPlayed: completionInfo?.totalCompletedMatches ?? 0,
+          maxGames: league.maxGames ?? 0,
+          totalMaxGames: completionInfo?.totalMaxGames ?? 0,
+          missing: completionInfo?.missing ?? [],
+          seasons: (completionInfo?.seasons ?? []).map(s => ({
             seasonId: s.seasonId,
             seasonName: s.seasonName,
             maxGames: s.maxGames,
@@ -171,7 +207,7 @@ export const getAllLeagues = async (ctx: Context) => {
           })),
         },
       };
-    }));
+    });
 
     ctx.body = { success: true, leagues };
   } catch (err) {
@@ -1053,40 +1089,30 @@ export const getUserLeagues = async (ctx: Context) => {
   }
 
   try {
-    const leagues = await League.findAll({
-      where: {
-        [Op.or]: [
-          { '$members.id$': userId },
-          { '$administeredLeagues.id$': userId }
-        ]
-      },
-      include: [
-        { model: User, as: 'members', attributes: ['id'] },
-        { model: User, as: 'administeredLeagues', attributes: ['id'] }
-      ]
-    });
+    const leaguesBasic = await fetchUserLeaguesBasic(String(userId));
+    const completionByLeague = await checkLeagueCompletionBulk(leaguesBasic.map((league) => league.id));
 
     const result = {
       success: true,
-      leagues: await Promise.all(leagues.map(async l => {
-        const completionInfo = await checkLeagueCompletion(String(l.id));
+      leagues: leaguesBasic.map((league) => {
+        const completionInfo = completionByLeague[league.id];
         return {
-          id: l.id,
-          name: l.name,
-          active: l.active,
-          archived: Boolean((l as any).archived),
-          image: (l as any).image,
-          maxGames: l.maxGames ?? null,
+          id: league.id,
+          name: league.name,
+          active: league.active,
+          archived: league.archived,
+          image: league.image,
+          maxGames: league.maxGames,
           computedStatus: {
-            isCompleted: completionInfo.isCompleted,
-            activeSeasonCompleted: completionInfo.activeSeasonCompleted,
-            allStatsSubmitted: completionInfo.allStatsSubmitted,
-            matchesPlayed: completionInfo.totalCompletedMatches,
-            gamesPlayed: completionInfo.totalCompletedMatches,
-            maxGames: l.maxGames ?? 0,
-            totalMaxGames: completionInfo.totalMaxGames,
-            missing: completionInfo.missing,
-            seasons: completionInfo.seasons.map(s => ({
+            isCompleted: Boolean(completionInfo?.isCompleted),
+            activeSeasonCompleted: Boolean(completionInfo?.activeSeasonCompleted),
+            allStatsSubmitted: Boolean(completionInfo?.allStatsSubmitted),
+            matchesPlayed: completionInfo?.totalCompletedMatches ?? 0,
+            gamesPlayed: completionInfo?.totalCompletedMatches ?? 0,
+            maxGames: league.maxGames ?? 0,
+            totalMaxGames: completionInfo?.totalMaxGames ?? 0,
+            missing: completionInfo?.missing ?? [],
+            seasons: (completionInfo?.seasons ?? []).map(s => ({
               seasonId: s.seasonId,
               seasonName: s.seasonName,
               maxGames: s.maxGames,
@@ -1097,7 +1123,7 @@ export const getUserLeagues = async (ctx: Context) => {
             })),
           },
         };
-      }))
+      })
     };
 
     cache.set(cacheKey, result, 120); // Reduced cache time for more accurate completion status
