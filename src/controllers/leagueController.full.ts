@@ -1178,6 +1178,7 @@ export const getLeagueById = async (ctx: Context) => {
         include: [
           { model: User, as: 'homeTeamUsers', attributes: ['id', 'firstName', 'lastName', 'profilePicture', 'shirtNumber'] },
           { model: User, as: 'awayTeamUsers', attributes: ['id', 'firstName', 'lastName', 'profilePicture', 'shirtNumber'] },
+          { model: MatchGuest, as: 'guestPlayers', attributes: ['id', 'firstName', 'lastName', 'team'] },
           { model: Vote, as: 'votes', attributes: ['voterId', 'votedForId'] }
         ],
         order: [['createdAt', 'ASC']] // Order by creation date to assign matchNumber
@@ -1240,6 +1241,7 @@ export const getLeagueById = async (ctx: Context) => {
           })
           .map((match: any, index: number) => {
             const matchJson = match.toJSON();
+            const guests = Array.isArray(matchJson.guestPlayers) ? matchJson.guestPlayers : [];
             
             // Convert votes array to manOfTheMatchVotes object format
             const manOfTheMatchVotes: Record<string, string> = {};
@@ -1249,12 +1251,14 @@ export const getLeagueById = async (ctx: Context) => {
               });
             }
             delete matchJson.votes; // Remove votes array
+            delete matchJson.guestPlayers; // Normalize key for frontend
             
             return {
               ...matchJson,
               seasonMatchNumber: index + 1, // Season-specific match number
               matchNumber: index + 1, // Keep for backward compatibility
               manOfTheMatchVotes,
+              guests,
               availableUsers: matchAvailabilityMap[match.id] || []
             };
           });
@@ -1386,6 +1390,7 @@ export const getLeagueById = async (ctx: Context) => {
       include: [
         { model: User, as: 'homeTeamUsers', attributes: ['id', 'firstName', 'lastName', 'profilePicture', 'shirtNumber'] },
         { model: User, as: 'awayTeamUsers', attributes: ['id', 'firstName', 'lastName', 'profilePicture', 'shirtNumber'] },
+        { model: MatchGuest, as: 'guestPlayers', attributes: ['id', 'firstName', 'lastName', 'team'] },
         { model: Vote, as: 'votes', attributes: ['voterId', 'votedForId'] }
       ],
       order: [['createdAt', 'ASC']] // Order by creation date to assign matchNumber
@@ -1448,6 +1453,7 @@ export const getLeagueById = async (ctx: Context) => {
         })
         .map((match: any, index: number) => {
           const matchJson = match.toJSON();
+          const guests = Array.isArray(matchJson.guestPlayers) ? matchJson.guestPlayers : [];
           
           // Convert votes array to manOfTheMatchVotes object format
           const manOfTheMatchVotes: Record<string, string> = {};
@@ -1457,12 +1463,14 @@ export const getLeagueById = async (ctx: Context) => {
             });
           }
           delete matchJson.votes; // Remove votes array
+          delete matchJson.guestPlayers; // Normalize key for frontend
           
           return {
             ...matchJson,
             seasonMatchNumber: index + 1, // Season-specific match number
             matchNumber: index + 1, // Keep for backward compatibility
             manOfTheMatchVotes,
+            guests,
             availableUsers: matchAvailabilityMap[match.id] || []
           };
         });
