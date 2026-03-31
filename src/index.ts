@@ -425,6 +425,19 @@ async function applyPerformanceIndexesIfEnabled() {
   }
 }
 
+async function ensureSeasonTrophySnapshotColumn() {
+  try {
+    const q = (sql: string) => sequelize.query(sql);
+    await q(`
+      ALTER TABLE "Seasons"
+      ADD COLUMN IF NOT EXISTS "trophyAwardSnapshot" JSONB DEFAULT '{}'::jsonb
+    `);
+    console.log('[DB] Ensured Seasons.trophyAwardSnapshot column.');
+  } catch (e) {
+    console.error('[DB] Failed to ensure Seasons.trophyAwardSnapshot column:', e);
+  }
+}
+
 // Removed duplicate, incomplete startup block left from earlier version
 
 // Start app - SINGLE LISTEN CALL
@@ -433,6 +446,7 @@ const PORT = process.env.PORT || 5000;
 // Initialize database and start server (ONLY ONCE)
 initializeDatabase().then(async () => {
   await applyPerformanceIndexesIfEnabled();
+  await ensureSeasonTrophySnapshotColumn();
   // Start LISTEN/NOTIFY bridge after DB ready
   startDbEventBridge();
   app.listen(PORT, () => {

@@ -246,6 +246,85 @@ export const getTrophyRoom = async (ctx: Context) => {
     teamGoalsConceded: number;
   };
 
+  type TrophySnapshotEntry = {
+    winnerId: string | null;
+    winner: string;
+    awardedAt: string | null;
+    updatedAt: string | null;
+  };
+  type TrophySnapshot = Record<string, TrophySnapshotEntry>;
+
+  const toIsoString = (value: unknown): string | null => {
+    if (value == null) return null;
+    if (value instanceof Date) {
+      const ms = value.getTime();
+      return Number.isFinite(ms) ? value.toISOString() : null;
+    }
+
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      const ms = value < 1_000_000_000_000 ? value * 1000 : value;
+      const dt = new Date(ms);
+      return Number.isFinite(dt.getTime()) ? dt.toISOString() : null;
+    }
+
+    if (typeof value === 'string') {
+      const trimmed = value.trim();
+      if (!trimmed) return null;
+      const numeric = Number(trimmed);
+      if (Number.isFinite(numeric)) {
+        const ms = numeric < 1_000_000_000_000 ? numeric * 1000 : numeric;
+        const dt = new Date(ms);
+        return Number.isFinite(dt.getTime()) ? dt.toISOString() : null;
+      }
+      const parsed = new Date(trimmed);
+      return Number.isFinite(parsed.getTime()) ? parsed.toISOString() : null;
+    }
+
+    return null;
+  };
+
+  const parseSnapshot = (raw: unknown): TrophySnapshot => {
+    if (!raw) return {};
+
+    let parsed: unknown = raw;
+    if (typeof raw === 'string') {
+      try {
+        parsed = JSON.parse(raw);
+      } catch {
+        return {};
+      }
+    }
+
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+
+    const out: TrophySnapshot = {};
+    Object.entries(parsed as Record<string, unknown>).forEach(([title, value]) => {
+      if (!value || typeof value !== 'object' || Array.isArray(value)) return;
+      const row = value as Record<string, unknown>;
+      const winnerIdRaw = row.winnerId;
+      const winnerId = winnerIdRaw == null || String(winnerIdRaw).trim() === '' ? null : String(winnerIdRaw);
+      const winnerText = typeof row.winner === 'string' && row.winner.trim() ? row.winner.trim() : (winnerId ? '' : 'TBC');
+
+      out[title] = {
+        winnerId,
+        winner: winnerText || 'TBC',
+        awardedAt: toIsoString(row.awardedAt),
+        updatedAt: toIsoString(row.updatedAt),
+      };
+    });
+    return out;
+  };
+
+  const comparableSnapshot = (snapshot: TrophySnapshot): string => {
+    const ordered: Record<string, TrophySnapshotEntry> = {};
+    Object.keys(snapshot)
+      .sort()
+      .forEach((key) => {
+        ordered[key] = snapshot[key];
+      });
+    return JSON.stringify(ordered);
+  };
+
   const countCompleted = (matches: any[]) =>
     matches.filter((m: any) => normalizeStatus(m.status) === 'RESULT_PUBLISHED').length;
 
@@ -393,10 +472,21 @@ export const getTrophyRoom = async (ctx: Context) => {
     }
 
     // Fetch seasons separately (lightweight query, avoids timeout)
+    const seasonQI = Season.sequelize?.getQueryInterface();
+    const seasonTableInfo = seasonQI
+      ? await seasonQI.describeTable('Seasons').catch(() => null)
+      : null;
+    const hasTrophySnapshotColumn = Boolean(
+      seasonTableInfo && (seasonTableInfo as Record<string, unknown>)['trophyAwardSnapshot']
+    );
+    const seasonAttributes = hasTrophySnapshotColumn
+      ? ['id', 'leagueId', 'seasonNumber', 'name', 'isActive', 'maxGames', 'showPoints', 'trophyAwardSnapshot']
+      : ['id', 'leagueId', 'seasonNumber', 'name', 'isActive', 'maxGames', 'showPoints'];
+
     const leagueIds = leagues.map((l: any) => String(l.id));
     const allSeasons = leagueIds.length > 0 ? await Season.findAll({
       where: { leagueId: { [Op.in]: leagueIds } },
-      attributes: ['id', 'leagueId', 'seasonNumber', 'name', 'isActive', 'maxGames', 'showPoints'],
+      attributes: seasonAttributes as string[],
       raw: true,
     }) : [];
     const seasonsByLeague: Record<string, any[]> = {};
@@ -407,6 +497,7 @@ export const getTrophyRoom = async (ctx: Context) => {
     });
 
     const trophyWinners: any[] = [];
+    const seasonSnapshotUpdates: Array<{ seasonId: string; snapshot: TrophySnapshot }> = [];
 
     // Fetch goals/assists from MatchStatistics and MOTM votes from Vote table
     const allMatchIds: string[] = [];
@@ -462,15 +553,18 @@ export const getTrophyRoom = async (ctx: Context) => {
       let matchesToUse = allMatches;
       let currentSeasonId = seasonIdQ;
       let currentSeasonName = '';
+      let currentSeasonRow: any | null = null;
       
       if (seasonIdQ && seasonIdQ !== 'all') {
         matchesToUse = allMatches.filter((m: any) => String(m.seasonId) === seasonIdQ);
-        const season = seasons.find((s: any) => String(s.id) === seasonIdQ);
+        const season = seasons.find((s: any) => String(s.id) === seasonIdQ) || null;
+        currentSeasonRow = season;
         currentSeasonName = season?.name || `Season ${season?.seasonNumber || 1}`;
         console.log(`🔍 [Trophy Room] Filtered ${matchesToUse.length} matches for season ${currentSeasonName}`);
       } else if (seasons.length > 0) {
         // Use active season if no specific season is selected
         const activeSeason = seasons.find((s: any) => s.isActive) || seasons[0];
+        currentSeasonRow = activeSeason;
         currentSeasonId = String(activeSeason.id);
         currentSeasonName = activeSeason.name || `Season ${activeSeason.seasonNumber}`;
         matchesToUse = allMatches.filter((m: any) => String(m.seasonId) === currentSeasonId);
@@ -630,11 +724,40 @@ export const getTrophyRoom = async (ctx: Context) => {
         }
       };
 
-      awards.forEach(award => {
+      const existingSnapshot = hasTrophySnapshotColumn
+        ? parseSnapshot(currentSeasonRow?.trophyAwardSnapshot)
+        : {};
+      const nextSnapshot: TrophySnapshot = { ...existingSnapshot };
+      const nowIso = new Date().toISOString();
+
+      awards.forEach((award) => {
         const rawWinnerId = award.winnerId ? String(award.winnerId) : null;
         const winnerId = rawWinnerId && meetsAwardRequirement(award.title, rawWinnerId) ? rawWinnerId : null;
         const winnerName = winnerId ? getPlayerName(winnerId) : '';
         const hasValidWinner = Boolean(winnerId && winnerName);
+
+        const prev = existingSnapshot[award.title];
+        const prevWinnerId = prev?.winnerId ? String(prev.winnerId) : null;
+        const winnerChanged = (hasValidWinner ? winnerId : null) !== prevWinnerId;
+
+        const awardedAt = hasValidWinner
+          ? (hasTrophySnapshotColumn
+              ? (winnerChanged
+                  ? nowIso
+                  : (toIsoString(prev?.awardedAt) || toIsoString(prev?.updatedAt) || nowIso))
+              : null)
+          : null;
+        const updatedAt = hasTrophySnapshotColumn
+          ? (winnerChanged ? nowIso : (toIsoString(prev?.updatedAt) || null))
+          : null;
+
+        nextSnapshot[award.title] = {
+          winnerId: hasValidWinner ? winnerId : null,
+          winner: hasValidWinner ? winnerName : 'TBC',
+          awardedAt,
+          updatedAt,
+        };
+
         trophyWinners.push({
           title: award.title,
           winnerId: hasValidWinner ? winnerId : null,
@@ -643,18 +766,55 @@ export const getTrophyRoom = async (ctx: Context) => {
           leagueName: league.name,
           seasonId: currentSeasonId || undefined,
           seasonName: currentSeasonName || undefined,
+          awardedAt,
+          updatedAt,
         });
       });
+
+      if (hasTrophySnapshotColumn && currentSeasonRow?.id) {
+        const before = comparableSnapshot(existingSnapshot);
+        const after = comparableSnapshot(nextSnapshot);
+        if (before !== after) {
+          seasonSnapshotUpdates.push({
+            seasonId: String(currentSeasonRow.id),
+            snapshot: nextSnapshot,
+          });
+        }
+      }
     });
+
+    if (hasTrophySnapshotColumn && seasonSnapshotUpdates.length > 0) {
+      const latestBySeason = new Map<string, TrophySnapshot>();
+      seasonSnapshotUpdates.forEach((row) => {
+        latestBySeason.set(row.seasonId, row.snapshot);
+      });
+
+      await Promise.all(
+        Array.from(latestBySeason.entries()).map(([seasonId, snapshot]) =>
+          Season.update(
+            { trophyAwardSnapshot: snapshot as any },
+            { where: { id: seasonId } }
+          )
+        )
+      );
+    }
 
     console.log(`✅ [Trophy Room] Returning ${trophyWinners.length} trophy winners`);
     
+    const winnerUpdateMs = trophyWinners
+      .map((row: any) => toIsoString(row.awardedAt) || toIsoString(row.updatedAt))
+      .filter((v): v is string => typeof v === 'string')
+      .map((iso) => new Date(iso).getTime())
+      .filter((ms) => Number.isFinite(ms));
+    const lastUpdatedAt = winnerUpdateMs.length > 0 ? new Date(Math.max(...winnerUpdateMs)).toISOString() : null;
+
     const trPayload = { 
       success: true, 
       trophyWinners,
-      backendTotalXP: 0
+      backendTotalXP: 0,
+      lastUpdatedAt,
     };
-    cache.set(trCacheKey, trPayload, 120); // cache 2 minutes
+    cache.set(trCacheKey, trPayload, 20); // keep short so trophy updates appear quickly
     ctx.body = trPayload;
   } catch (err) {
     console.error('❌ [Trophy Room] Error:', err);

@@ -14,6 +14,12 @@ interface SeasonAttributes {
   endDate?: Date;
   maxGames?: number;
   showPoints?: boolean;
+  trophyAwardSnapshot?: Record<string, {
+    winnerId: string | null;
+    winner: string;
+    awardedAt?: string | null;
+    updatedAt?: string | null;
+  }>;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -30,6 +36,12 @@ class Season extends Model<SeasonAttributes, SeasonCreationAttributes> {
   declare endDate?: Date;
   declare maxGames?: number;
   declare showPoints?: boolean;
+  declare trophyAwardSnapshot?: Record<string, {
+    winnerId: string | null;
+    winner: string;
+    awardedAt?: string | null;
+    updatedAt?: string | null;
+  }>;
   declare readonly createdAt: Date;
   declare readonly updatedAt: Date;
 
@@ -103,6 +115,11 @@ Season.init(
       type: DataTypes.BOOLEAN,
       allowNull: true,
       defaultValue: false,
+    },
+    trophyAwardSnapshot: {
+      type: DataTypes.JSONB,
+      allowNull: true,
+      defaultValue: {},
     },
     createdAt: {
       type: DataTypes.DATE,
