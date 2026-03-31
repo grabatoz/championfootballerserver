@@ -346,20 +346,22 @@ router.get('/me/achievements', required, async (ctx) => {
     }
 
     // Streak helpers
-    const longestStreak = (arr: Summ[], pred: (x: Summ) => boolean) => {
-      let best = 0, cur = 0;
-      for (const x of arr) { if (pred(x)) { cur++; best = Math.max(best, cur); } else { cur = 0; } }
-      return best;
+    const currentStreak = (arr: Summ[], pred: (x: Summ) => boolean) => {
+      let cur = 0;
+      for (let i = arr.length - 1; i >= 0; i--) {
+        if (pred(arr[i])) cur++;
+        else break;
+      }
+      return cur;
     };
 
     const leaguesArr = Object.values(byLeague);
-    const acrossAll = leaguesArr.flat();
     const hatTricks = leaguesArr.reduce((acc, arr) => acc + arr.filter(x => x.goals >= 3).length, 0);
-    const maxAssistStreakSingle = Math.max(0, ...leaguesArr.map(arr => longestStreak(arr, x => x.assists > 0)));
-    const maxScoringStreakSingle = Math.max(0, ...leaguesArr.map(arr => longestStreak(arr, x => x.goals > 0)));
-    const maxMotmStreakAll = longestStreak(acrossAll, x => x.motmVotes > 0);
-    const maxCleanSheetWinStreakAll = longestStreak(acrossAll, x => x.result === 'W' && x.conceded === 0);
-    const maxWinStreakSingle = Math.max(0, ...leaguesArr.map(arr => longestStreak(arr, x => x.result === 'W')));
+    const currentAssistStreakSingle = Math.max(0, ...leaguesArr.map(arr => currentStreak(arr, x => x.assists > 0)));
+    const currentScoringStreakSingle = Math.max(0, ...leaguesArr.map(arr => currentStreak(arr, x => x.goals > 0)));
+    const currentMotmStreakSingle = Math.max(0, ...leaguesArr.map(arr => currentStreak(arr, x => x.motmVotes > 0)));
+    const currentCleanSheetWinStreakSingle = Math.max(0, ...leaguesArr.map(arr => currentStreak(arr, x => x.result === 'W' && x.conceded === 0)));
+    const currentWinStreakSingle = Math.max(0, ...leaguesArr.map(arr => currentStreak(arr, x => x.result === 'W')));
     const maxCaptainPickCountSingle = Math.max(0, ...leaguesArr.map(arr => arr.filter(x => x.motmVotes > 0).length));
 
     const toNext = (best: number, target: number) => (target - (best % target || target));
@@ -381,31 +383,31 @@ router.get('/me/achievements', required, async (ctx) => {
         id: 'captain_5_wins', title: "Captain's 5 Wins", count: Math.floor(0 / 5), xp: 150, unlocked: false, progressText: 'Captain tracking not available',
       },
       {
-        id: 'assist_10_consecutive', title: 'Assist Streak x10', count: Math.floor(maxAssistStreakSingle / 10), xp: 200, unlocked: maxAssistStreakSingle >= 10,
-        progressText: maxAssistStreakSingle >= 10 ? `Best streak: ${maxAssistStreakSingle}` : `${toNext(maxAssistStreakSingle, 10)} match(es) to go`,
+        id: 'assist_10_consecutive', title: 'Assist Streak x10', count: Math.floor(currentAssistStreakSingle / 10), xp: 200, unlocked: currentAssistStreakSingle >= 10,
+        progressText: currentAssistStreakSingle >= 10 ? `Current streak: ${currentAssistStreakSingle}` : `${toNext(currentAssistStreakSingle, 10)} match(es) to go`,
       },
       {
-        id: 'scoring_10_consecutive', title: 'Scoring Streak x10', count: Math.floor(maxScoringStreakSingle / 10), xp: 250, unlocked: maxScoringStreakSingle >= 10,
-        progressText: maxScoringStreakSingle >= 10 ? `Best streak: ${maxScoringStreakSingle}` : `${toNext(maxScoringStreakSingle, 10)} match(es) to go`,
+        id: 'scoring_10_consecutive', title: 'Scoring Streak x10', count: Math.floor(currentScoringStreakSingle / 10), xp: 250, unlocked: currentScoringStreakSingle >= 10,
+        progressText: currentScoringStreakSingle >= 10 ? `Current streak: ${currentScoringStreakSingle}` : `${toNext(currentScoringStreakSingle, 10)} match(es) to go`,
       },
       {
         id: 'captain_performance_3', title: "Captain's Picks x3", count: Math.floor(maxCaptainPickCountSingle / 3), xp: 300, unlocked: maxCaptainPickCountSingle >= 3,
         progressText: maxCaptainPickCountSingle >= 3 ? `Picks: ${maxCaptainPickCountSingle}` : `${3 - Math.min(maxCaptainPickCountSingle, 3)} pick(s) to go`,
       },
       {
-        id: 'motm_4_consecutive', title: 'MOTM Streak x4', count: Math.floor(maxMotmStreakAll / 4), xp: 350, unlocked: maxMotmStreakAll >= 4,
-        progressText: maxMotmStreakAll >= 4 ? `Best streak: ${maxMotmStreakAll}` : `${toNext(maxMotmStreakAll, 4)} match(es) to go`,
+        id: 'motm_4_consecutive', title: 'MOTM Streak x4', count: Math.floor(currentMotmStreakSingle / 4), xp: 350, unlocked: currentMotmStreakSingle >= 4,
+        progressText: currentMotmStreakSingle >= 4 ? `Current streak: ${currentMotmStreakSingle}` : `${toNext(currentMotmStreakSingle, 4)} match(es) to go`,
       },
       {
-        id: 'clean_sheet_5_wins', title: 'Clean-Sheet Win Streak x5', count: Math.floor(maxCleanSheetWinStreakAll / 5), xp: 400, unlocked: maxCleanSheetWinStreakAll >= 5,
-        progressText: maxCleanSheetWinStreakAll >= 5 ? `Best streak: ${maxCleanSheetWinStreakAll}` : `${toNext(maxCleanSheetWinStreakAll, 5)} match(es) to go`,
+        id: 'clean_sheet_5_wins', title: 'Clean-Sheet Win Streak x5', count: Math.floor(currentCleanSheetWinStreakSingle / 5), xp: 400, unlocked: currentCleanSheetWinStreakSingle >= 5,
+        progressText: currentCleanSheetWinStreakSingle >= 5 ? `Current streak: ${currentCleanSheetWinStreakSingle}` : `${toNext(currentCleanSheetWinStreakSingle, 5)} match(es) to go`,
       },
       {
         id: 'top_spot_10_matches', title: 'Top Spot x10 Matches', count: 0, xp: 450, unlocked: false, progressText: 'League top-spot tracking not available',
       },
       {
-        id: 'consecutive_10_victories', title: '10 In A Row', count: Math.floor(maxWinStreakSingle / 10), xp: 500, unlocked: maxWinStreakSingle >= 10,
-        progressText: maxWinStreakSingle >= 10 ? `Best streak: ${maxWinStreakSingle}` : `${toNext(maxWinStreakSingle, 10)} win(s) to go`,
+        id: 'consecutive_10_victories', title: '10 In A Row', count: Math.floor(currentWinStreakSingle / 10), xp: 500, unlocked: currentWinStreakSingle >= 10,
+        progressText: currentWinStreakSingle >= 10 ? `Current streak: ${currentWinStreakSingle}` : `${toNext(currentWinStreakSingle, 10)} win(s) to go`,
       },
     ];
 

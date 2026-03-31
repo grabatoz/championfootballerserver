@@ -197,71 +197,94 @@ export async function calculateAndAwardXPAchievements(userId: string, leagueId?:
     consecutiveWins: stats.consecutiveWins
   });
 
+  const user = await User.findByPk(userId);
+  if (!user) {
+    console.log(`❌ User ${userId} not found for achievement sync`);
+    return;
+  }
+
+  const previousAchievementIds: string[] = Array.isArray(user.achievements)
+    ? user.achievements.map((id: unknown) => String(id))
+    : [];
+  const xpAchievementIdSet = new Set(xpAchievements.map((a) => a.id));
+  const nonXpAchievementIds = previousAchievementIds.filter((id) => !xpAchievementIdSet.has(id));
+
+  const activeAchievementIds: string[] = [];
   const awarded: string[] = [];
+  const removed: string[] = [];
 
   for (const ach of xpAchievements) {
     let achieved = false;
     let reason = '';
-    
-    // Check if achievement is already awarded
-    const user = await User.findByPk(userId);
-    if (!user) continue;
-    
-    if (user.achievements?.includes(ach.id)) {
-      console.log(`✅ Achievement '${ach.id}' already awarded to user ${userId}`);
-      continue;
-    }
 
-    if (ach.id === "hat_trick_3_matches" && stats.hatTrickMatches >= 3) { 
-      achieved = true; 
-      reason = `Hat tricks: ${stats.hatTrickMatches}`; 
+    if (ach.id === "hat_trick_3_matches" && stats.hatTrickMatches >= 3) {
+      achieved = true;
+      reason = `Hat tricks: ${stats.hatTrickMatches}`;
     }
-    if (ach.id === "captain_5_wins" && stats.captainWins >= 5) { 
-      achieved = true; 
-      reason = `Captain wins: ${stats.captainWins}`; 
+    if (ach.id === "captain_5_wins" && stats.captainWins >= 5) {
+      achieved = true;
+      reason = `Captain wins: ${stats.captainWins}`;
     }
-    if (ach.id === "assist_10_consecutive" && stats.consecutiveAssists >= 10) { 
-      achieved = true; 
-      reason = `Consecutive assists: ${stats.consecutiveAssists}`; 
+    if (ach.id === "assist_10_consecutive" && stats.consecutiveAssists >= 10) {
+      achieved = true;
+      reason = `Consecutive assists: ${stats.consecutiveAssists}`;
     }
-    if (ach.id === "scoring_10_consecutive" && stats.consecutiveGoals >= 10) { 
-      achieved = true; 
-      reason = `Consecutive goals: ${stats.consecutiveGoals}`; 
+    if (ach.id === "scoring_10_consecutive" && stats.consecutiveGoals >= 10) {
+      achieved = true;
+      reason = `Consecutive goals: ${stats.consecutiveGoals}`;
     }
-    if (ach.id === "captain_performance_3" && stats.captainPerformancePicks >= 3) { 
-      achieved = true; 
-      reason = `Captain performance picks: ${stats.captainPerformancePicks}`; 
+    if (ach.id === "captain_performance_3" && stats.captainPerformancePicks >= 3) {
+      achieved = true;
+      reason = `Captain performance picks: ${stats.captainPerformancePicks}`;
     }
-    if (ach.id === "motm_4_consecutive" && stats.consecutiveMOTM >= 4) { 
-      achieved = true; 
-      reason = `Consecutive MOTM: ${stats.consecutiveMOTM}`; 
+    if (ach.id === "motm_4_consecutive" && stats.consecutiveMOTM >= 4) {
+      achieved = true;
+      reason = `Consecutive MOTM: ${stats.consecutiveMOTM}`;
     }
-    if (ach.id === "clean_sheet_5_wins" && stats.consecutiveCleanSheetWins >= 5) { 
-      achieved = true; 
-      reason = `Consecutive clean sheet wins: ${stats.consecutiveCleanSheetWins}`; 
+    if (ach.id === "clean_sheet_5_wins" && stats.consecutiveCleanSheetWins >= 5) {
+      achieved = true;
+      reason = `Consecutive clean sheet wins: ${stats.consecutiveCleanSheetWins}`;
     }
-    if (ach.id === "top_spot_10_matches" && stats.topSpotMatches >= 10) { 
-      achieved = true; 
-      reason = `Top spot matches: ${stats.topSpotMatches}`; 
+    if (ach.id === "top_spot_10_matches" && stats.topSpotMatches >= 10) {
+      achieved = true;
+      reason = `Top spot matches: ${stats.topSpotMatches}`;
     }
-    if (ach.id === "consecutive_10_victories" && stats.consecutiveWins >= 10) { 
-      achieved = true; 
-      reason = `Consecutive wins: ${stats.consecutiveWins}`; 
+    if (ach.id === "consecutive_10_victories" && stats.consecutiveWins >= 10) {
+      achieved = true;
+      reason = `Consecutive wins: ${stats.consecutiveWins}`;
     }
 
     if (achieved) {
-      console.log(`🏆 ACHIEVEMENT UNLOCKED! User ${userId} - ${ach.definition} (${reason})`);
-      await awardXPAchievement(userId, ach.id);
-      awarded.push(ach.id);
+      activeAchievementIds.push(ach.id);
+      if (!previousAchievementIds.includes(ach.id)) {
+        awarded.push(ach.id);
+      }
+      console.log(`✅ Achievement '${ach.id}' active for user ${userId}: ${reason}`);
     } else {
-      console.log(`⏳ Achievement '${ach.id}' not yet achieved: ${reason || 'Requirements not met'}`);
+      if (previousAchievementIds.includes(ach.id)) {
+        removed.push(ach.id);
+      }
+      console.log(`⏳ Achievement '${ach.id}' not currently active: ${reason || 'Requirements not met'}`);
     }
   }
-  
+
+  const nextAchievementIds = Array.from(new Set([...nonXpAchievementIds, ...activeAchievementIds]));
+  const sameLength = nextAchievementIds.length === previousAchievementIds.length;
+  const sameValues = sameLength && nextAchievementIds.every((id) => previousAchievementIds.includes(id));
+  if (!sameValues) {
+    user.achievements = nextAchievementIds;
+    await user.save();
+    console.log(`🔄 Synced achievements for user ${userId}. Added: ${awarded.length}, Removed: ${removed.length}`);
+  }
+
   if (awarded.length > 0) {
-    console.log(`🎉 User ${userId} awarded ${awarded.length} new achievements:`, awarded);
-  } else {
-    console.log(`📝 User ${userId} - No new achievements awarded`);
+    console.log(`🎉 User ${userId} newly unlocked ${awarded.length} achievements:`, awarded);
+  }
+  if (removed.length > 0) {
+    console.log(`?? User ${userId} had ${removed.length} inactive achievements removed:`, removed);
+  }
+  if (awarded.length === 0 && removed.length === 0) {
+    console.log(`📝 User ${userId} - No achievement changes`);
   }
 
   // --- XP Awarding Logic for Completed Match ---
@@ -738,3 +761,4 @@ export async function awardXPForPlayer(userId: string, matchId: string, statReco
 
   return xp;
 }
+
