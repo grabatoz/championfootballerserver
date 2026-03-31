@@ -1,27 +1,40 @@
 import { Context } from 'koa';
 import models from '../models';
-import { Op, fn, col, literal, QueryTypes } from 'sequelize';
+import { Op, QueryTypes } from 'sequelize';
 import sequelize from '../config/database';
 import cache from '../utils/cache';
 
-// Resolve actual DB table names from Sequelize models
 const getTableName = (model: any): string => {
   const tn = model.getTableName?.() ?? model.tableName;
   return typeof tn === 'object' ? `"${tn.schema}"."${tn.tableName}"` : `"${tn}"`;
 };
 
 export const getWorldRanking = async (ctx: Context) => {
-  // ── Parse query params ──
   const mode = (ctx.query.mode as string) === 'avg' ? 'avg' : 'total';
   const positionType = ctx.query.positionType as string | undefined;
   const country = ctx.query.country as string | undefined;
-  const year = ctx.query.year ? Number(ctx.query.year) : undefined;
+  const yearRaw = ctx.query.year as string | undefined;
+  const year = yearRaw ? Number(yearRaw) : undefined;
   const playerId = ctx.query.playerId as string | undefined;
-  const limit = Math.min(Number(ctx.query.limit) || 100000, 100000);
+  const requestedLimit = Number(ctx.query.limit);
+  const requestedPage = Number(ctx.query.page);
+  const MAX_LIMIT = 500;
+  const DEFAULT_LIMIT = 100;
+  const limit = Number.isFinite(requestedLimit) && requestedLimit > 0
+    ? Math.min(Math.floor(requestedLimit), MAX_LIMIT)
+    : DEFAULT_LIMIT;
+  const page = Number.isFinite(requestedPage) && requestedPage > 0
+    ? Math.floor(requestedPage)
+    : 1;
+  const offset = (page - 1) * limit;
   const fresh = ctx.query.fresh === '1';
 
-  // ── Dynamic cache key ──
-  const cacheKey = `wr_${mode}_${positionType || ''}_${country || ''}_${year || ''}_${limit}`;
+  if (yearRaw && !Number.isFinite(year)) {
+    ctx.throw(400, 'Invalid year');
+    return;
+  }
+
+  const cacheKey = `wr_${mode}_${positionType || ''}_${country || ''}_${year || ''}_${page}_${limit}`;
 
   if (!fresh) {
     const cached = cache.get(cacheKey);
@@ -35,16 +48,14 @@ export const getWorldRanking = async (ctx: Context) => {
   ctx.set('X-Cache', 'MISS');
 
   try {
-    // Resolve actual table names from Sequelize models
     const usersTable = getTableName(models.User);
     const matchStatsTable = getTableName(models.MatchStatistics);
     const matchesTable = getTableName(models.Match);
 
-    // ── Build WHERE clauses ──
     const whereConditions: string[] = ['1=1'];
     const replacements: Record<string, any> = {};
+    const rankingMetric = mode === 'avg' ? '"avgXP"' : '"totalXP"';
 
-    // Exclude guest players (lastName = 'Guest')
     whereConditions.push(`u."lastName" != 'Guest'`);
 
     if (positionType) {
@@ -60,121 +71,126 @@ export const getWorldRanking = async (ctx: Context) => {
 
     if (year) {
       replacements.year = year;
-      // Year-filtered: sum xpAwarded from that year only, count matches from that year
       query = `
-        SELECT
-          u."id",
-          u."firstName",
-          u."lastName",
-          u."profilePicture",
-          u."position",
-          u."positionType",
-          u."country",
-          COALESCE(stats."totalXP", 0)::int AS "totalXP",
-          COALESCE(stats."matchCount", 0)::int AS "matches",
-          CASE
-            WHEN COALESCE(stats."matchCount", 0) > 0
-            THEN ROUND(COALESCE(stats."totalXP", 0)::numeric / stats."matchCount", 2)
-            ELSE 0
-          END AS "avgXP"
-        FROM ${usersTable} u
-        LEFT JOIN (
+        WITH base AS (
           SELECT
-            ms2."user_id",
-            SUM(ms2."xpAwarded")  AS "totalXP",
-            COUNT(DISTINCT ms2."match_id") AS "matchCount"
-          FROM ${matchStatsTable} ms2
-          INNER JOIN ${matchesTable} m2 ON m2."id" = ms2."match_id"
-            AND m2."status" = 'RESULT_PUBLISHED'
-            AND EXTRACT(YEAR FROM m2."date") = :year
-          GROUP BY ms2."user_id"
-        ) stats ON stats."user_id" = u."id"
-        WHERE ${whereConditions.join(' AND ')}
-          AND COALESCE(stats."totalXP", 0) > 0
-        ORDER BY ${mode === 'avg' ? '"avgXP"' : '"totalXP"'} DESC
-        LIMIT :limit
+            u."id",
+            u."firstName",
+            u."lastName",
+            u."profilePicture",
+            u."position",
+            u."positionType",
+            u."country",
+            COALESCE(stats."totalXP", 0)::int AS "totalXP",
+            COALESCE(stats."matchCount", 0)::int AS "matches",
+            CASE
+              WHEN COALESCE(stats."matchCount", 0) > 0
+              THEN ROUND(COALESCE(stats."totalXP", 0)::numeric / stats."matchCount", 2)
+              ELSE 0
+            END AS "avgXP"
+          FROM ${usersTable} u
+          LEFT JOIN (
+            SELECT
+              ms2."user_id",
+              SUM(ms2."xpAwarded") AS "totalXP",
+              COUNT(DISTINCT ms2."match_id") AS "matchCount"
+            FROM ${matchStatsTable} ms2
+            INNER JOIN ${matchesTable} m2 ON m2."id" = ms2."match_id"
+              AND m2."status" = 'RESULT_PUBLISHED'
+              AND EXTRACT(YEAR FROM m2."date") = :year
+            GROUP BY ms2."user_id"
+          ) stats ON stats."user_id" = u."id"
+          WHERE ${whereConditions.join(' AND ')}
+            AND COALESCE(stats."totalXP", 0) > 0
+        )
+        SELECT
+          b.*,
+          DENSE_RANK() OVER (ORDER BY ${rankingMetric} DESC) AS "rank",
+          COUNT(*) OVER ()::int AS "totalCount"
+        FROM base b
+        ORDER BY ${rankingMetric} DESC, b."id" ASC
+        LIMIT :limit OFFSET :offset
       `;
     } else {
-      // No year filter: use user.xp for totalXP, count all published matches for avg
       query = `
-        SELECT
-          u."id",
-          u."firstName",
-          u."lastName",
-          u."profilePicture",
-          u."position",
-          u."positionType",
-          u."country",
-          COALESCE(u."xp", 0)::int AS "totalXP",
-          COALESCE(stats."matchCount", 0)::int AS "matches",
-          CASE
-            WHEN COALESCE(stats."matchCount", 0) > 0
-            THEN ROUND(COALESCE(u."xp", 0)::numeric / stats."matchCount", 2)
-            ELSE 0
-          END AS "avgXP"
-        FROM ${usersTable} u
-        LEFT JOIN (
+        WITH base AS (
           SELECT
-            ms2."user_id",
-            COUNT(DISTINCT ms2."match_id") AS "matchCount"
-          FROM ${matchStatsTable} ms2
-          INNER JOIN ${matchesTable} m2 ON m2."id" = ms2."match_id"
-            AND m2."status" = 'RESULT_PUBLISHED'
-          GROUP BY ms2."user_id"
-        ) stats ON stats."user_id" = u."id"
-        WHERE ${whereConditions.join(' AND ')}
-        ORDER BY ${mode === 'avg' ? '"avgXP"' : '"totalXP"'} DESC
-        LIMIT :limit
+            u."id",
+            u."firstName",
+            u."lastName",
+            u."profilePicture",
+            u."position",
+            u."positionType",
+            u."country",
+            COALESCE(u."xp", 0)::int AS "totalXP",
+            COALESCE(stats."matchCount", 0)::int AS "matches",
+            CASE
+              WHEN COALESCE(stats."matchCount", 0) > 0
+              THEN ROUND(COALESCE(u."xp", 0)::numeric / stats."matchCount", 2)
+              ELSE 0
+            END AS "avgXP"
+          FROM ${usersTable} u
+          LEFT JOIN (
+            SELECT
+              ms2."user_id",
+              COUNT(DISTINCT ms2."match_id") AS "matchCount"
+            FROM ${matchStatsTable} ms2
+            INNER JOIN ${matchesTable} m2 ON m2."id" = ms2."match_id"
+              AND m2."status" = 'RESULT_PUBLISHED'
+            GROUP BY ms2."user_id"
+          ) stats ON stats."user_id" = u."id"
+          WHERE ${whereConditions.join(' AND ')}
+        )
+        SELECT
+          b.*,
+          DENSE_RANK() OVER (ORDER BY ${rankingMetric} DESC) AS "rank",
+          COUNT(*) OVER ()::int AS "totalCount"
+        FROM base b
+        ORDER BY ${rankingMetric} DESC, b."id" ASC
+        LIMIT :limit OFFSET :offset
       `;
     }
 
     replacements.limit = limit;
+    replacements.offset = offset;
 
     const rows: any[] = await sequelize.query(query, {
       replacements,
       type: QueryTypes.SELECT,
     });
 
-    // ── Build rankings with proper rank (competition ranking: ties get same rank) ──
     const metricKey = mode === 'avg' ? 'avgXP' : 'totalXP';
-    let lastVal: number | null = null;
-    let rank = 0;
-    let playerRank: number | undefined;
+    const total = rows.length > 0 ? Number(rows[0].totalCount) || 0 : 0;
+    const totalPages = total > 0 ? Math.ceil(total / limit) : 0;
 
-    const rankings = rows.map((row: any, index: number) => {
-      const val = Number(row[metricKey]) || 0;
-      if (lastVal === null || val !== lastVal) {
-        rank = index + 1;
-        lastVal = val;
-      }
-      const entry = {
-        rank,
-        id: row.id,
-        name: `${row.firstName || ''} ${row.lastName || ''}`.trim(),
-        profilePicture: row.profilePicture,
-        position: row.position,
-        positionType: row.positionType,
-        totalXP: Number(row.totalXP) || 0,
-        avgXP: Number(row.avgXP) || 0,
-        matches: Number(row.matches) || 0,
-        xp: Number(row[metricKey]) || 0,
-        country: row.country || null,
-      };
-      if (playerId && row.id === playerId) {
-        playerRank = rank;
-      }
-      return entry;
-    });
+    const rankings = rows.map((row: any) => ({
+      rank: Number(row.rank) || 0,
+      id: row.id,
+      name: `${row.firstName || ''} ${row.lastName || ''}`.trim(),
+      profilePicture: row.profilePicture,
+      position: row.position,
+      positionType: row.positionType,
+      totalXP: Number(row.totalXP) || 0,
+      avgXP: Number(row.avgXP) || 0,
+      matches: Number(row.matches) || 0,
+      xp: Number(row[metricKey]) || 0,
+      country: row.country || null,
+    }));
+
+    const playerEntry = playerId ? rankings.find((entry: any) => entry.id === playerId) : undefined;
+    const playerRank = playerEntry?.rank;
 
     const result: any = {
       success: true,
       mode,
+      page,
       limit,
+      total,
+      totalPages,
       rankings,
       playerRank,
     };
 
-    // Cache for 10 minutes (shorter to keep data fresh)
     cache.set(cacheKey, result, 600);
     ctx.body = result;
   } catch (error) {
@@ -193,7 +209,7 @@ export const getCountryRanking = async (ctx: Context) => {
 
   const cacheKey = `country_ranking_${country}`;
   const cached = cache.get(cacheKey);
-  
+
   if (cached) {
     ctx.set('X-Cache', 'HIT');
     ctx.body = cached;
@@ -255,7 +271,7 @@ export const getPositionRanking = async (ctx: Context) => {
 
   const cacheKey = `position_ranking_${positionType}`;
   const cached = cache.get(cacheKey);
-  
+
   if (cached) {
     ctx.set('X-Cache', 'HIT');
     ctx.body = cached;

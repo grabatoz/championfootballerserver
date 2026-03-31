@@ -1640,15 +1640,43 @@ export const getMatchById = async (ctx: Context) => {
 // Get all matches
 export const getAllMatches = async (ctx: Context) => {
   try {
+    const requestedLimit = Number(ctx.query.limit);
+    const requestedPage = Number(ctx.query.page);
+    const leagueId = typeof ctx.query.leagueId === 'string' ? ctx.query.leagueId.trim() : '';
+    const seasonId = typeof ctx.query.seasonId === 'string' ? ctx.query.seasonId.trim() : '';
+    const all = String(ctx.query.all || '') === '1';
+
+    const MAX_LIMIT = 500;
+    const DEFAULT_LIMIT = 200;
+    const limit = all
+      ? MAX_LIMIT
+      : (Number.isFinite(requestedLimit) && requestedLimit > 0
+          ? Math.min(Math.floor(requestedLimit), MAX_LIMIT)
+          : DEFAULT_LIMIT);
+    const page = Number.isFinite(requestedPage) && requestedPage > 0 ? Math.floor(requestedPage) : 1;
+    const offset = (page - 1) * limit;
+
+    const where: any = {};
+    if (leagueId) where.leagueId = leagueId;
+    if (seasonId) where.seasonId = seasonId;
+
+    const total = await Match.count({ where });
     const matches = await Match.findAll({
+      where,
       include: [
         { model: League, as: 'league', attributes: ['id', 'name'] }
       ],
-      order: [['date', 'DESC']]
+      order: [['date', 'DESC']],
+      limit,
+      offset
     });
 
     ctx.body = {
       success: true,
+      page,
+      limit,
+      total,
+      totalPages: total > 0 ? Math.ceil(total / limit) : 0,
       matches: matches.map(m => ({
         id: m.id,
         date: m.date,

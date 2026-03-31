@@ -48,10 +48,15 @@ class MemoryCache {
    * Generate cache key from request
    */
   private getCacheKey(ctx: Context): string {
-    const userId = ctx.state.user?.userId || 'anonymous';
+    const authHeader = String(ctx.request.get('Authorization') || '').trim();
+    const authScope = authHeader
+      ? crypto.createHash('sha1').update(authHeader).digest('hex')
+      : 'public';
+    const userId = ctx.state.user?.userId;
+    const identityScope = userId ? `user:${userId}` : `auth:${authScope}`;
     const path = ctx.path;
     const query = JSON.stringify(ctx.query);
-    return `${userId}:${path}:${query}`;
+    return `${identityScope}:${path}:${query}`;
   }
 
   /**
@@ -189,6 +194,7 @@ export const cacheMiddleware = async (ctx: Context, next: Next) => {
 
   // Don't cache these endpoints (require real-time data)
   const noCachePatterns = [
+    '/auth',
     '/vote',
     '/admin',
     '/upload',

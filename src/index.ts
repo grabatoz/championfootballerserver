@@ -10,8 +10,6 @@ import serve from 'koa-static';
 import path from 'path';
 import mount from 'koa-mount';
 // import { triggerImmediateXPCalculation } from './utils/xpAchievementsEngine';
-import bodyParser from 'koa-bodyparser';
-import zlib from 'zlib';
 import sequelize, { initializeDatabase } from './config/database'; // Import sequelize too
 import './models'; // Initialize models and associations
 
@@ -30,6 +28,7 @@ import passport from 'koa-passport';
 import socialAuthRouter from './routes/auth/social';
 import socialRoutes from './routes/auth/social';
 import cacheMiddleware from './middleware/memoryCache';
+import compressionMiddleware from './middleware/compression';
 import { startMatchEndScheduler } from './services/matchScheduler';
 import { startDbEventBridge } from './services/dbEvents';
 
@@ -86,38 +85,7 @@ app.use(async (ctx, next) => {
   await next();
 });
 
-// Inline gzip middleware using Node's zlib to avoid adding external dependency
-// Compresses JSON/text responses over 1KB when the client accepts gzip
-app.use(async (ctx, next) => {
-  await next();
-  try {
-    const acceptEncoding = String(ctx.request.get('Accept-Encoding') || '');
-    if (!acceptEncoding.includes('gzip')) return;
-
-    const contentType = (ctx.response.type || '').toLowerCase();
-    if (!ctx.body) return;
-    if (!contentType.includes('application/json') && !contentType.includes('text/')) return;
-    if (ctx.response.get('Content-Encoding')) return; // already encoded
-
-    let raw: Buffer;
-    if (Buffer.isBuffer(ctx.body)) {
-      raw = ctx.body as Buffer;
-    } else if (typeof ctx.body === 'string') {
-      raw = Buffer.from(ctx.body);
-    } else {
-      raw = Buffer.from(JSON.stringify(ctx.body));
-    }
-
-    if (raw.length < 1024) return; // only compress payloads >1KB
-
-    const gz = zlib.gzipSync(raw, { level: 6 });
-    ctx.set('Content-Encoding', 'gzip');
-    ctx.set('Content-Length', String(gz.length));
-    ctx.body = gz;
-  } catch (e) {
-    console.error('Compression middleware error:', e);
-  }
-});
+app.use(compressionMiddleware({ threshold: 1024, level: 6 }));
 
 // Root route for health check and CORS
 app.use(async (ctx, next) => {
@@ -223,7 +191,10 @@ app.use(async (ctx, next) => {
     ctx.set('X-Response-Time', `${ms}ms`);
     
     // Smart caching based on endpoint and method
-    if (ctx.method === 'GET' && ctx.path.startsWith('/api') || ctx.path.startsWith('/leagues') || ctx.path.startsWith('/matches') || ctx.path.startsWith('/players')) {
+    if (
+      ctx.method === 'GET' &&
+      (ctx.path.startsWith('/api') || ctx.path.startsWith('/leagues') || ctx.path.startsWith('/matches') || ctx.path.startsWith('/players'))
+    ) {
       // Check if response is from cache
       const isCached = ctx.get('X-Cache') === 'HIT';
       
@@ -294,7 +265,6 @@ console.log('[SERVER] Setting up passport...');
 setupPassport();
 
 console.log('[SERVER] Setting up middleware...');
-app.use(bodyParser());
 app.use(passport.initialize());
 
 // Lightweight diagnostic test endpoints to validate proxy forwarding
