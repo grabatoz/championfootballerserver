@@ -413,9 +413,24 @@ async function applyPerformanceIndexesIfEnabled() {
     await q('CREATE INDEX IF NOT EXISTS idx_leagueadmin_user_league ON "LeagueAdmin"("userId", "leagueId");');
 
     // Stats and votes hot paths
-    await q('CREATE INDEX IF NOT EXISTS idx_matchstatistics_match_id ON "MatchStatistics"(match_id);');
-    await q('CREATE INDEX IF NOT EXISTS idx_matchstatistics_user_match ON "MatchStatistics"(user_id, match_id);');
-    await q('CREATE INDEX IF NOT EXISTS idx_matchstatistics_match_user ON "MatchStatistics"(match_id, user_id);');
+    // MatchStatistics can exist with either quoted CamelCase or snake_case naming.
+    await q(`
+      DO $$
+      DECLARE tbl regclass;
+      BEGIN
+        SELECT COALESCE(
+          to_regclass('public."MatchStatistics"'),
+          to_regclass('public.match_statistics')
+        ) INTO tbl;
+
+        IF tbl IS NOT NULL THEN
+          EXECUTE 'CREATE INDEX IF NOT EXISTS idx_matchstatistics_match_id ON ' || tbl::text || '(match_id)';
+          EXECUTE 'CREATE INDEX IF NOT EXISTS idx_matchstatistics_user_match ON ' || tbl::text || '(user_id, match_id)';
+          EXECUTE 'CREATE INDEX IF NOT EXISTS idx_matchstatistics_match_user ON ' || tbl::text || '(match_id, user_id)';
+        END IF;
+      END
+      $$;
+    `);
     await q('CREATE INDEX IF NOT EXISTS idx_votes_matchid ON "Votes"("matchId");');
     await q('CREATE INDEX IF NOT EXISTS idx_votes_votedfor_match ON "Votes"("votedForId", "matchId");');
 
