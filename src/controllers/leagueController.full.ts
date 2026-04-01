@@ -2764,9 +2764,13 @@ export const updateLeague = async (ctx: Context) => {
   }
 };
 
-// Delete league (soft-delete: archives the league, preserves all player XP)
+// Delete league (hard delete by default; soft archive via ?mode=soft)
 export const deleteLeague = async (ctx: Context) => {
   const { id } = ctx.params;
+  const queryMode = typeof ctx.query?.mode === 'string' ? ctx.query.mode.trim().toLowerCase() : '';
+  const bodyModeRaw = (ctx.request as any)?.body?.mode;
+  const bodyMode = typeof bodyModeRaw === 'string' ? bodyModeRaw.trim().toLowerCase() : '';
+  const softDelete = queryMode === 'soft' || bodyMode === 'soft';
 
   if (!ctx.state.user) {
     ctx.throw(401, 'Unauthorized');
@@ -2792,26 +2796,103 @@ export const deleteLeague = async (ctx: Context) => {
       return;
     }
 
-    // Soft-delete: mark as inactive + archived so XP, stats, and match data are preserved
-    await league.update({ active: false, archived: true });
-
-    // Remove all members and admins from the league (they keep their XP)
     const members: any[] = (league as any).members || [];
-    if (members.length > 0) {
-      await (league as any).setMembers([]);
-      await (league as any).setAdministeredLeagues([]);
+
+    if (softDelete) {
+      await league.update({ active: false, archived: true });
+      if (members.length > 0) {
+        await (league as any).setMembers([]);
+        await (league as any).setAdministeredLeagues([]);
+      }
+
+      try {
+        const notifications = members.map((m: any) => ({
+          user_id: String(m.id),
+          type: 'LEAGUE_DELETED',
+          title: 'League Deleted',
+          body: `The league "${league.name}" has been deleted by the admin. Your XP points have been preserved.`,
+          meta: {
+            leagueId: id,
+            leagueName: league.name,
+            mode: 'soft'
+          },
+          read: false,
+          created_at: new Date(),
+        }));
+        if (notifications.length > 0) {
+          await Notification.bulkCreate(notifications);
+        }
+      } catch (notifErr) {
+        console.error('Failed to send league deletion notifications:', notifErr);
+      }
+
+      cache.clearPattern(`user_leagues_`);
+      cache.clearPattern(`league_${id}`);
+      cache.clearPattern(`matches_league_${id}`);
+
+      ctx.body = {
+        success: true,
+        message: 'League archived successfully (soft delete).'
+      };
+      return;
     }
 
-    // Notify all members the league was deleted
+    const sequelize = League.sequelize!;
+    const tx = await sequelize.transaction();
+    const replacements = { leagueId: id };
+
+    const runDelete = async (sql: string) => {
+      try {
+        await sequelize.query(sql, {
+          replacements,
+          type: QueryTypes.DELETE,
+          transaction: tx,
+        });
+      } catch (qErr: any) {
+        const code = qErr?.original?.code || qErr?.parent?.code || qErr?.code;
+        if (code === '42P01') {
+          console.warn('[deleteLeague] Optional table missing, skipping cleanup query');
+          return;
+        }
+        throw qErr;
+      }
+    };
+
+    try {
+      await runDelete(`DELETE FROM "Votes" WHERE "matchId" IN (SELECT id FROM "Matches" WHERE "leagueId" = :leagueId)`);
+      await runDelete(`DELETE FROM "match_statistics" WHERE "match_id" IN (SELECT id FROM "Matches" WHERE "leagueId" = :leagueId)`);
+      await runDelete(`DELETE FROM "MatchGuests" WHERE "matchId" IN (SELECT id FROM "Matches" WHERE "leagueId" = :leagueId)`);
+      await runDelete(`DELETE FROM "match_availabilities" WHERE "match_id" IN (SELECT id FROM "Matches" WHERE "leagueId" = :leagueId)`);
+      await runDelete(`DELETE FROM "match_player_layouts" WHERE "matchId" IN (SELECT id::text FROM "Matches" WHERE "leagueId" = :leagueId)`);
+      await runDelete(`DELETE FROM "UserHomeMatches" WHERE "matchId" IN (SELECT id FROM "Matches" WHERE "leagueId" = :leagueId)`);
+      await runDelete(`DELETE FROM "UserAwayMatches" WHERE "matchId" IN (SELECT id FROM "Matches" WHERE "leagueId" = :leagueId)`);
+      await runDelete(`DELETE FROM "UserMatchAvailability" WHERE "matchId" IN (SELECT id FROM "Matches" WHERE "leagueId" = :leagueId)`);
+      await runDelete(`DELETE FROM "UserMatchStatistics" WHERE "matchId" IN (SELECT id FROM "Matches" WHERE "leagueId" = :leagueId)`);
+      await runDelete(`DELETE FROM "SeasonPlayers" WHERE "seasonId" IN (SELECT id FROM "Seasons" WHERE "leagueId" = :leagueId)`);
+
+      await Match.destroy({ where: { leagueId: id }, transaction: tx });
+      await Season.destroy({ where: { leagueId: id }, transaction: tx });
+
+      await runDelete(`DELETE FROM "LeagueMember" WHERE "leagueId" = :leagueId`);
+      await runDelete(`DELETE FROM "LeagueAdmin" WHERE "leagueId" = :leagueId`);
+
+      await league.destroy({ transaction: tx });
+      await tx.commit();
+    } catch (hardErr) {
+      await tx.rollback();
+      throw hardErr;
+    }
+
     try {
       const notifications = members.map((m: any) => ({
         user_id: String(m.id),
         type: 'LEAGUE_DELETED',
-        title: '🗑️ League Deleted',
-        body: `The league "${league.name}" has been deleted by the admin. Your XP points have been preserved.`,
+        title: 'League Deleted',
+        body: `The league "${league.name}" has been permanently deleted by the admin.`,
         meta: {
           leagueId: id,
           leagueName: league.name,
+          mode: 'hard'
         },
         read: false,
         created_at: new Date(),
@@ -2820,14 +2901,16 @@ export const deleteLeague = async (ctx: Context) => {
         await Notification.bulkCreate(notifications);
       }
     } catch (notifErr) {
-      console.error('Failed to send league deletion notifications:', notifErr);
+      console.error('Failed to send hard-delete notifications:', notifErr);
     }
 
     cache.clearPattern(`user_leagues_`);
+    cache.clearPattern(`league_${id}`);
+    cache.clearPattern(`matches_league_${id}`);
 
     ctx.body = {
       success: true,
-      message: 'League deleted successfully. All players\' XP points have been preserved.'
+      message: 'League permanently deleted from database.'
     };
   } catch (err) {
     console.error('Delete league error', err);
