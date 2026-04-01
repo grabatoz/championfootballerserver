@@ -1639,7 +1639,14 @@ export const getMatchById = async (ctx: Context) => {
 
 // Get all matches
 export const getAllMatches = async (ctx: Context) => {
+  const authUserId = String(ctx.state.user?.userId || ctx.state.user?.id || '');
+  if (!authUserId) {
+    ctx.throw(401, 'Unauthorized');
+    return;
+  }
+
   try {
+    const userId = authUserId;
     const requestedLimit = Number(ctx.query.limit);
     const requestedPage = Number(ctx.query.page);
     const leagueId = typeof ctx.query.leagueId === 'string' ? ctx.query.leagueId.trim() : '';
@@ -1656,8 +1663,46 @@ export const getAllMatches = async (ctx: Context) => {
     const page = Number.isFinite(requestedPage) && requestedPage > 0 ? Math.floor(requestedPage) : 1;
     const offset = (page - 1) * limit;
 
+    // Restrict matches to leagues the current user can access.
+    const me = await User.findByPk(userId, {
+      attributes: ['id'],
+      include: [
+        { model: League, as: 'leagues', attributes: ['id'], through: { attributes: [] } },
+        { model: League, as: 'administeredLeagues', attributes: ['id'], through: { attributes: [] } }
+      ]
+    });
+
+    if (!me) {
+      ctx.throw(401, 'Unauthorized');
+      return;
+    }
+
+    const accessibleLeagueIds = new Set<string>([
+      ...(((me as any).leagues || []) as Array<{ id: string | number }>).map((l) => String(l.id)),
+      ...(((me as any).administeredLeagues || []) as Array<{ id: string | number }>).map((l) => String(l.id)),
+    ]);
+
+    if (accessibleLeagueIds.size === 0) {
+      ctx.body = {
+        success: true,
+        page,
+        limit,
+        total: 0,
+        totalPages: 0,
+        matches: []
+      };
+      return;
+    }
+
+    if (leagueId && !accessibleLeagueIds.has(String(leagueId))) {
+      ctx.status = 403;
+      ctx.body = { success: false, message: 'Access denied for this league' };
+      return;
+    }
+
     const where: any = {};
     if (leagueId) where.leagueId = leagueId;
+    else where.leagueId = { [Op.in]: Array.from(accessibleLeagueIds) };
     if (seasonId) where.seasonId = seasonId;
 
     const total = await Match.count({ where });
@@ -1679,10 +1724,20 @@ export const getAllMatches = async (ctx: Context) => {
       totalPages: total > 0 ? Math.ceil(total / limit) : 0,
       matches: matches.map(m => ({
         id: m.id,
+        leagueId: m.leagueId,
+        seasonId: m.seasonId,
         date: m.date,
+        start: (m as any).start,
+        end: (m as any).end,
+        location: (m as any).location,
         status: m.status,
+        homeTeamName: (m as any).homeTeamName,
+        awayTeamName: (m as any).awayTeamName,
         homeTeamGoals: m.homeTeamGoals,
         awayTeamGoals: m.awayTeamGoals,
+        archived: Boolean((m as any).archived),
+        updatedAt: (m as any).updatedAt,
+        createdAt: (m as any).createdAt,
         league: (m as any).league
       }))
     };

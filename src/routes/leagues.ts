@@ -62,6 +62,9 @@ router.post('/:id/matches', required, upload.fields([
   { name: 'awayTeamImage', maxCount: 1 }
 ]), leagueController.createMatchInLeague);
 
+// Get all matches in league (lightweight list endpoint)
+router.get('/:id/matches', required, leagueController.getLeagueMatches);
+
 // Get specific match in league
 router.get('/:id/matches/:matchId', required, leagueController.getLeagueMatch);
 

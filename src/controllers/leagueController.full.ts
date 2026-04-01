@@ -823,6 +823,202 @@ export const getTrophyRoom = async (ctx: Context) => {
   }
 };
 
+// Get all matches for a specific league (without returning full league payload)
+export const getLeagueMatches = async (ctx: Context) => {
+  const { id } = ctx.params;
+  const requestedSeasonId = typeof ctx.query?.seasonId === 'string' ? ctx.query.seasonId.trim() : '';
+  const includeArchived = String(ctx.query?.includeArchived ?? '1') !== '0';
+  const all = String(ctx.query?.all ?? '1') === '1';
+  const requestedLimit = Number(ctx.query?.limit);
+  const requestedPage = Number(ctx.query?.page);
+
+  if (!ctx.state.user || !ctx.state.user.userId) {
+    ctx.status = 401;
+    ctx.body = { success: false, message: 'Unauthorized' };
+    return;
+  }
+
+  const userId = String(ctx.state.user.userId);
+
+  try {
+    const league = await League.findByPk(id, {
+      attributes: ['id', 'name', 'active', 'archived'],
+      include: [
+        { model: User, as: 'members', attributes: ['id'] },
+        { model: User, as: 'administeredLeagues', attributes: ['id'] },
+        {
+          model: Season,
+          as: 'seasons',
+          attributes: ['id', 'seasonNumber', 'isActive'],
+          include: [
+            {
+              model: User,
+              as: 'players',
+              attributes: ['id'],
+              through: { attributes: [] }
+            }
+          ]
+        }
+      ]
+    });
+
+    if (!league) {
+      ctx.status = 404;
+      ctx.body = { success: false, message: 'League not found' };
+      return;
+    }
+
+    const isMember = (league as any).members?.some((m: any) => String(m.id) === userId);
+    const isAdmin = (league as any).administeredLeagues?.some((a: any) => String(a.id) === userId);
+
+    if (!isMember && !isAdmin) {
+      ctx.status = 403;
+      ctx.body = { success: false, message: 'Access denied' };
+      return;
+    }
+
+    const seasons = (league as any).seasons || [];
+    const validSeasonIds = new Set<string>(seasons.map((s: any) => String(s.id)));
+    if (requestedSeasonId && !validSeasonIds.has(requestedSeasonId)) {
+      ctx.status = 400;
+      ctx.body = { success: false, message: 'Invalid seasonId for this league' };
+      return;
+    }
+
+    const memberSeasonIds = seasons
+      .filter((season: any) => {
+        const seasonPlayers = season.players || [];
+        return seasonPlayers.some((p: any) => String(p.id) === userId);
+      })
+      .map((season: any) => String(season.id));
+
+    if (!isAdmin && requestedSeasonId && !memberSeasonIds.includes(requestedSeasonId)) {
+      ctx.status = 403;
+      ctx.body = { success: false, message: 'Access denied for requested season' };
+      return;
+    }
+
+    const whereClause: Record<string, unknown> = { leagueId: id };
+    if (!includeArchived) {
+      whereClause.archived = false;
+    }
+
+    if (requestedSeasonId) {
+      whereClause.seasonId = requestedSeasonId;
+    } else if (!isAdmin) {
+      // Member can only see matches for seasons where they are enrolled.
+      if (memberSeasonIds.length === 0) {
+        ctx.body = {
+          success: true,
+          page: 1,
+          limit: 0,
+          total: 0,
+          totalPages: 0,
+          matches: [],
+          leagueMatches: [],
+          league: {
+            id: league.id,
+            name: league.name,
+            active: (league as any).active,
+            archived: Boolean((league as any).archived),
+            isAdmin
+          }
+        };
+        return;
+      }
+      whereClause.seasonId = { [Op.in]: memberSeasonIds };
+    }
+
+    const matches = await Match.findAll({
+      where: whereClause as any,
+      attributes: { exclude: [] },
+      include: [
+        { model: League, as: 'league', attributes: ['id', 'name'] },
+        { model: User, as: 'homeTeamUsers', attributes: ['id', 'firstName', 'lastName', 'profilePicture', 'shirtNumber'] },
+        { model: User, as: 'awayTeamUsers', attributes: ['id', 'firstName', 'lastName', 'profilePicture', 'shirtNumber'] },
+        { model: User, as: 'availableUsers', attributes: ['id', 'firstName', 'lastName', 'profilePicture', 'shirtNumber'], through: { attributes: [] } },
+        { model: MatchGuest, as: 'guestPlayers', attributes: ['id', 'firstName', 'lastName', 'team'] },
+        { model: Vote, as: 'votes', attributes: ['voterId', 'votedForId'] }
+      ],
+      order: [['date', 'ASC'], ['createdAt', 'ASC']]
+    });
+
+    const matchesBySeasonMap: Record<string, any[]> = {};
+    matches.forEach((match: any) => {
+      const seasonId = String(match.seasonId || 'no-season');
+      if (!matchesBySeasonMap[seasonId]) {
+        matchesBySeasonMap[seasonId] = [];
+      }
+      matchesBySeasonMap[seasonId].push(match);
+    });
+
+    const matchesWithNumbers: any[] = [];
+    Object.keys(matchesBySeasonMap).forEach((seasonId) => {
+      const seasonMatches = matchesBySeasonMap[seasonId]
+        .sort((a: any, b: any) => {
+          const dateA = new Date(a.date || a.createdAt).getTime();
+          const dateB = new Date(b.date || b.createdAt).getTime();
+          return dateA - dateB;
+        })
+        .map((match: any, index: number) => {
+          const matchJson = match.toJSON();
+          const guests = Array.isArray(matchJson.guestPlayers) ? matchJson.guestPlayers : [];
+
+          const manOfTheMatchVotes: Record<string, string> = {};
+          if (Array.isArray(matchJson.votes)) {
+            matchJson.votes.forEach((vote: any) => {
+              manOfTheMatchVotes[vote.voterId] = vote.votedForId;
+            });
+          }
+          delete matchJson.votes;
+          delete matchJson.guestPlayers;
+
+          return {
+            ...matchJson,
+            seasonMatchNumber: index + 1,
+            matchNumber: index + 1,
+            manOfTheMatchVotes,
+            guests,
+          };
+        });
+
+      matchesWithNumbers.push(...seasonMatches);
+    });
+
+    const MAX_LIMIT = 500;
+    const DEFAULT_LIMIT = 200;
+    const normalizedLimit = Number.isFinite(requestedLimit) && requestedLimit > 0
+      ? Math.min(Math.floor(requestedLimit), MAX_LIMIT)
+      : DEFAULT_LIMIT;
+    const page = Number.isFinite(requestedPage) && requestedPage > 0 ? Math.floor(requestedPage) : 1;
+    const total = matchesWithNumbers.length;
+    const totalPages = total > 0 ? Math.ceil(total / normalizedLimit) : 0;
+    const start = (page - 1) * normalizedLimit;
+    const pagedMatches = all ? matchesWithNumbers : matchesWithNumbers.slice(start, start + normalizedLimit);
+
+    ctx.body = {
+      success: true,
+      page: all ? 1 : page,
+      limit: all ? total : normalizedLimit,
+      total,
+      totalPages: all ? (total > 0 ? 1 : 0) : totalPages,
+      matches: pagedMatches,
+      leagueMatches: pagedMatches,
+      league: {
+        id: league.id,
+        name: league.name,
+        active: (league as any).active,
+        archived: Boolean((league as any).archived),
+        isAdmin
+      }
+    };
+  } catch (err) {
+    console.error('Get league matches error', err);
+    ctx.status = 500;
+    ctx.body = { success: false, message: 'Failed to fetch league matches' };
+  }
+};
+
 // Get a specific match from a league
 export const getLeagueMatch = async (ctx: Context) => {
   const { id, matchId } = ctx.params;
