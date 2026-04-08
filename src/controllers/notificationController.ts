@@ -2,6 +2,17 @@ import { Context } from 'koa';
 import Notification from '../models/Notification';
 import User from '../models/User';
 
+const importWithFallback = async <T = any>(specifier: string): Promise<T> => {
+  try {
+    return await import(specifier);
+  } catch (err) {
+    if (specifier.endsWith('.js')) {
+      return await import(specifier.slice(0, -3) + '.ts');
+    }
+    throw err;
+  }
+};
+
 export const getUserNotifications = async (ctx: Context) => {
   const userId = ctx.state.user?.userId;
 
@@ -142,8 +153,8 @@ export const handleSeasonAction = async (ctx: Context) => {
 
   try {
     // Import Season and User models
-    const Season = (await import('../models/Season.js')).default as any;
-    const League = (await import('../models/League.js')).default as any;
+    const Season = (await importWithFallback('../models/Season.js')).default as any;
+    const League = (await importWithFallback('../models/League.js')).default as any;
 
     // Get the season from notification meta (this is the exact season the notification is about)
     const seasonId = meta.seasonId;

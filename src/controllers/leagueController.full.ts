@@ -15,6 +15,17 @@ import { invalidateCache as invalidateServerCache } from '../middleware/memoryCa
 
 const { League, Match, User, MatchGuest } = models;
 
+const importWithFallback = async <T = any>(specifier: string): Promise<T> => {
+  try {
+    return await import(specifier);
+  } catch (err) {
+    if (specifier.endsWith('.js')) {
+      return await import(specifier.slice(0, -3) + '.ts');
+    }
+    throw err;
+  }
+};
+
 // Helper functions
 const isUuid = (v: string) =>
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(v);
@@ -1637,7 +1648,7 @@ export const getLeagueById = async (ctx: Context) => {
       userSeasonId = activeSeason?.id || (seasons.length > 0 ? seasons[0].id : null);
 
       // Fetch ALL matches for ALL seasons (admin can switch between seasons in frontend)
-      const { Vote } = await import('../models/Vote.js');
+      const { Vote } = await importWithFallback('../models/Vote.js');
       const matches = await Match.findAll({
         where: {
           leagueId: id,
@@ -1811,7 +1822,7 @@ export const getLeagueById = async (ctx: Context) => {
 
     // If user is not in any season, check if they declined the active season
     if (!userSeasonId) {
-      const Notification = (await import('../models/Notification.js')).default as any;
+      const Notification = (await importWithFallback('../models/Notification.js')).default as any;
       const activeSeason = seasons.find((s: any) => s.isActive);
       
       if (activeSeason) {
@@ -1838,7 +1849,7 @@ export const getLeagueById = async (ctx: Context) => {
     }
 
     // Fetch ALL matches for seasons user is a member of (frontend will filter by selected season)
-    const { Vote } = await import('../models/Vote.js');
+    const { Vote } = await importWithFallback('../models/Vote.js');
     
     // Get all season IDs user is a member of
     const userSeasonIds = seasons
@@ -3212,7 +3223,7 @@ export const notifyMembersNewSeason = async (ctx: Context) => {
     const currentUserId = ctx.state.user.userId;
 
     // Send notification to all members except the admin who created it
-    const Notification = (await import('../models/Notification.js')).default as any;
+    const Notification = (await importWithFallback('../models/Notification.js')).default as any;
     
     const notificationsToCreate = members
       .filter((member: any) => member.id !== currentUserId)

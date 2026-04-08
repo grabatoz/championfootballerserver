@@ -10,6 +10,17 @@ import Vote from '../models/Vote';
 import { calculateAndAwardXPAchievements } from '../utils/xpAchievementsEngine';
 const { User, League } = models
 
+const importWithFallback = async <T = any>(specifier: string): Promise<T> => {
+  try {
+    return await import(specifier);
+  } catch (err) {
+    if (specifier.endsWith('.js')) {
+      return await import(specifier.slice(0, -3) + '.ts');
+    }
+    throw err;
+  }
+};
+
 const router = new Router({ prefix: '/users' });
 
 
@@ -435,7 +446,7 @@ router.post('/me/achievements/award', required, async (ctx) => {
     // Return updated XP snapshot
     // Recalculate total XP to include both match stats and achievements
     try {
-      const { recalcUserTotalXP } = await import('../utils/xpRecalc.js');
+      const { recalcUserTotalXP } = await importWithFallback('../utils/xpRecalc.js');
       await recalcUserTotalXP(userId);
     } catch {}
     const UserModel = (models as any).User;
