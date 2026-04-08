@@ -37,10 +37,11 @@ import { startDbEventBridge } from './services/dbEvents';
 const allowedOrigins = [
   'http://localhost:3000',
   'http://localhost:3001',
-  'http://192.168.18.102:3000',
+  'http://192.168.18.103:3000',
   'https://championfootballer-client.vercel.app',
   'https://championfootballer-client-git-main-championfootballer.vercel.app',
-  'https://championfootballer-client-championfootballer.vercel.app'
+  'https://championfootballer-client-championfootballer.vercel.app',
+  'http://192.168.18.103:3000'
 ];
 
 // Function to check if origin is allowed (handles trailing slash)
@@ -1315,7 +1316,7 @@ initializeDatabase().then(async () => {
 //       console.log(`🚀 Server is running on http://localhost:${PORT}`)
 //       console.log(`🌍 Environment: ${process.env.NODE_ENV || "development"}`)
 //       console.log(`🔗 Allowed origins: ${allowedOrigins.join(", ")}`)
-//       console.log(`📱 Client URL: ${process.env.CLIENT_URL}`)
+//       console.log(`📱 Client URL: ${process.env.}`)
 //       console.log("🔗 Social routes:")
 //       console.log(`   Google: http://localhost:${PORT}/auth/google`)
 //       console.log(`   Facebook: http://localhost:${PORT}/auth/facebook`)
