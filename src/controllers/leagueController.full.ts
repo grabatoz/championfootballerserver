@@ -1637,7 +1637,7 @@ export const getLeagueById = async (ctx: Context) => {
       userSeasonId = activeSeason?.id || (seasons.length > 0 ? seasons[0].id : null);
 
       // Fetch ALL matches for ALL seasons (admin can switch between seasons in frontend)
-      const Vote = (await import('../models/Vote')).Vote;
+      const { Vote } = await import('../models/Vote.js');
       const matches = await Match.findAll({
         where: {
           leagueId: id,
@@ -1811,7 +1811,7 @@ export const getLeagueById = async (ctx: Context) => {
 
     // If user is not in any season, check if they declined the active season
     if (!userSeasonId) {
-      const Notification = (await import('../models/Notification')).default;
+      const Notification = (await import('../models/Notification.js')).default as any;
       const activeSeason = seasons.find((s: any) => s.isActive);
       
       if (activeSeason) {
@@ -1838,7 +1838,7 @@ export const getLeagueById = async (ctx: Context) => {
     }
 
     // Fetch ALL matches for seasons user is a member of (frontend will filter by selected season)
-    const Vote = (await import('../models/Vote')).Vote;
+    const { Vote } = await import('../models/Vote.js');
     
     // Get all season IDs user is a member of
     const userSeasonIds = seasons
@@ -3212,7 +3212,7 @@ export const notifyMembersNewSeason = async (ctx: Context) => {
     const currentUserId = ctx.state.user.userId;
 
     // Send notification to all members except the admin who created it
-    const Notification = (await import('../models/Notification')).default;
+    const Notification = (await import('../models/Notification.js')).default as any;
     
     const notificationsToCreate = members
       .filter((member: any) => member.id !== currentUserId)

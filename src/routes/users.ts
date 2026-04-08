@@ -435,7 +435,7 @@ router.post('/me/achievements/award', required, async (ctx) => {
     // Return updated XP snapshot
     // Recalculate total XP to include both match stats and achievements
     try {
-      const { recalcUserTotalXP } = await import('../utils/xpRecalc');
+      const { recalcUserTotalXP } = await import('../utils/xpRecalc.js');
       await recalcUserTotalXP(userId);
     } catch {}
     const UserModel = (models as any).User;

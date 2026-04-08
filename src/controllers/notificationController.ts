@@ -142,8 +142,8 @@ export const handleSeasonAction = async (ctx: Context) => {
 
   try {
     // Import Season and User models
-    const Season = (await import('../models/Season')).default;
-    const League = (await import('../models/League')).default;
+    const Season = (await import('../models/Season.js')).default as any;
+    const League = (await import('../models/League.js')).default as any;
 
     // Get the season from notification meta (this is the exact season the notification is about)
     const seasonId = meta.seasonId;
