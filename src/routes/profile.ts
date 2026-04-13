@@ -8,7 +8,6 @@ import {
 } from '../controllers/profileController';
 import models from '../models';
 import { upload, uploadToCloudinary } from '../middleware/upload';
-import jwt from 'jsonwebtoken';
 import cache from '../utils/cache';
 
 const { User, Session, League, Match } = models;
@@ -200,23 +199,7 @@ router.post('/picture', required, upload.single('profilePicture'), async (ctx: C
   ctx.body = { success: true, user: updatedUserData, cacheBuster };
 });
 
-// JWT-protected /me route
-const JWT_SECRET = process.env.JWT_SECRET || 'your_jwt_secret';
-
-function jwtRequired(ctx: any, next: any) {
-  const auth = ctx.headers.authorization;
-  if (!auth || !auth.startsWith('Bearer ')) ctx.throw(401, 'No token');
-  const token = auth.split(' ')[1];
-  try {
-    ctx.state.user = jwt.verify(token, JWT_SECRET);
-    return next();
-  } catch (e) {
-    ctx.throw(401, 'Invalid token');
-  }
-}
-
-router.get('/me', jwtRequired, async (ctx) => {
-  console.log('JWT user:', ctx.state.user);
+router.get('/me', required, async (ctx) => {
   ctx.body = { success: true, user: ctx.state.user };
 });
 

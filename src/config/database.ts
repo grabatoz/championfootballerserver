@@ -1,12 +1,10 @@
 import { Sequelize, QueryTypes } from 'sequelize';
-import dotenv from 'dotenv';
 import { QueryInterface, DataTypes } from 'sequelize';
-
-dotenv.config();
+import { DATABASE_URL } from './env';
 
 
 // Use the full Neon connection string
-const sequelize = new Sequelize(process.env.DATABASE_URL as string, {
+const sequelize = new Sequelize(DATABASE_URL, {
   dialect: 'postgres',
   protocol: 'postgres',
   logging: false, // Keep disabled for performance

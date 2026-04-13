@@ -1,11 +1,11 @@
 import Router from "@koa/router"
 import jwt from "jsonwebtoken"
 import passport from "koa-passport"
+import { IS_PRODUCTION, JWT_SECRET } from "../../config/env"
 
 const router = new Router({ prefix: "/auth" })
 
 const CLIENT_URL = process.env.CLIENT_URL || process.env.FRONTEND_URL || "http://localhost:3000"
-const JWT_SECRET = process.env.JWT_SECRET || "catsay's hello"
 
 const GOOGLE_ENABLED = Boolean(
   process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET && process.env.GOOGLE_CALLBACK_URL,
@@ -14,16 +14,41 @@ const FACEBOOK_ENABLED = Boolean(
   process.env.FACEBOOK_APP_ID && process.env.FACEBOOK_APP_SECRET && process.env.FACEBOOK_CALLBACK_URL,
 )
 
+type OAuthUser = {
+  id: string;
+  email: string;
+  firstName?: string;
+  lastName?: string;
+  profilePicture?: string | null;
+};
+
+type PassportHandler = (ctx: unknown, next: unknown) => Promise<unknown>;
+
+const runPassportHandler = async (handler: unknown, ctx: unknown, next: unknown) => {
+  return await (handler as PassportHandler)(ctx, next);
+};
+
+const isOAuthUser = (value: unknown): value is OAuthUser => {
+  if (!value || typeof value !== 'object') return false;
+  const v = value as Partial<OAuthUser>;
+  return typeof v.id === 'string' && typeof v.email === 'string';
+};
+
+const buildCallbackHashUrl = (params: Record<string, string>) => {
+  const hash = new URLSearchParams(params).toString();
+  return `${CLIENT_URL}/auth/callback#${hash}`;
+};
+
 
 console.log("[SOCIAL] CLIENT_URL:", CLIENT_URL)
-console.log("[SOCIAL] JWT_SECRET exists:", !!JWT_SECRET)
+console.log("[SOCIAL] JWT_SECRET exists:", Boolean(JWT_SECRET))
 console.log("[SOCIAL] Providers enabled:", {
   google: GOOGLE_ENABLED,
   facebook: FACEBOOK_ENABLED,
 })
 console.log("[SOCIAL] Routes being registered...")
 
-function redirectWithToken(ctx: any, user: any, nextPath = "/home") {
+function redirectWithToken(ctx: Router.RouterContext, user: OAuthUser, nextPath = "/home") {
   console.log("[SOCIAL] redirectWithToken called with user:", user.id, user.email)
 
   const token = jwt.sign(
@@ -40,24 +65,25 @@ function redirectWithToken(ctx: any, user: any, nextPath = "/home") {
   console.log("[SOCIAL] Generated token:", token.substring(0, 20) + "...")
 
   // Set cookies on API domain
-  const secure = process.env.NODE_ENV === "production"
+  const secure = IS_PRODUCTION
   // Set both names for compatibility with existing middleware/clients
   ctx.cookies.set("auth_token", token, {
     path: "/",
     sameSite: "lax",
     secure,
-    httpOnly: false,
+    httpOnly: true,
     maxAge: 604800000,
   })
   ctx.cookies.set("token", token, {
     path: "/",
     sameSite: "lax",
     secure,
-    httpOnly: false,
+    httpOnly: true,
     maxAge: 604800000,
   })
 
-  const redirectUrl = `${CLIENT_URL}/auth/callback?token=${encodeURIComponent(token)}&next=${encodeURIComponent(nextPath)}`
+  // Use hash instead of query to reduce token leakage via logs/referrers.
+  const redirectUrl = buildCallbackHashUrl({ token, next: nextPath })
   console.log("[SOCIAL] Redirecting to:", redirectUrl)
 
   ctx.redirect(redirectUrl)
@@ -76,23 +102,22 @@ router.get("/google", async (ctx, next) => {
 
   if (!GOOGLE_ENABLED) {
     console.warn("[SOCIAL] Google not configured in environment")
-    const redirectUrl = `${CLIENT_URL}/auth/callback?error=google_not_configured`
+    const redirectUrl = buildCallbackHashUrl({ error: 'google_not_configured' })
     ctx.status = 302
     ctx.redirect(redirectUrl)
     return
   }
 
   try {
-    return await (
-      passport.authenticate("google", {
-        session: false,
-        scope: ["profile", "email"],
-        state: JSON.stringify({ next: String(ctx.query.next || "/home") }),
-      }) as any
-    )(ctx, next)
+    const handler = passport.authenticate("google", {
+      session: false,
+      scope: ["profile", "email"],
+      state: JSON.stringify({ next: String(ctx.query.next || "/home") }),
+    });
+    return await runPassportHandler(handler, ctx, next);
   } catch (error) {
     console.error("[SOCIAL] Error in /google route:", error)
-    ctx.redirect(`${CLIENT_URL}/auth/callback?error=google_route_error`)
+    ctx.redirect(buildCallbackHashUrl({ error: 'google_route_error' }))
   }
 })
 
@@ -102,42 +127,41 @@ router.get("/google/callback", async (ctx, next) => {
 
   if (!GOOGLE_ENABLED) {
     console.warn("[SOCIAL] Google not configured in environment (callback)")
-    ctx.redirect(`${CLIENT_URL}/auth/callback?error=google_not_configured`)
+    ctx.redirect(buildCallbackHashUrl({ error: 'google_not_configured' }))
     return
   }
 
   try {
-    return await (
-      passport.authenticate("google", { session: false }, (err, user) => {
-        console.log("[SOCIAL] Google auth result:", { err: !!err, user: !!user })
+    const handler = passport.authenticate("google", { session: false }, (err: unknown, user: unknown) => {
+      console.log("[SOCIAL] Google auth result:", { err: !!err, user: !!user })
 
-        if (err) {
-          console.error("[SOCIAL] Google auth error:", err)
-          return ctx.redirect(`${CLIENT_URL}/auth/callback?error=google_failed`)
+      if (err) {
+        console.error("[SOCIAL] Google auth error:", err)
+        return ctx.redirect(buildCallbackHashUrl({ error: 'google_failed' }))
+      }
+
+      if (!isOAuthUser(user)) {
+        console.error("[SOCIAL] No valid user returned from Google")
+        return ctx.redirect(buildCallbackHashUrl({ error: 'no_user' }))
+      }
+
+      let nextPath = "/home"
+      try {
+        if (ctx.query.state) {
+          const s = JSON.parse(String(ctx.query.state))
+          if (s?.next && typeof s.next === "string") nextPath = s.next
         }
+      } catch (e) {
+        console.warn("[SOCIAL] Failed to parse state:", e)
+      }
 
-        if (!user) {
-          console.error("[SOCIAL] No user returned from Google")
-          return ctx.redirect(`${CLIENT_URL}/auth/callback?error=no_user`)
-        }
-
-        let nextPath = "/home"
-        try {
-          if (ctx.query.state) {
-            const s = JSON.parse(String(ctx.query.state))
-            if (s?.next && typeof s.next === "string") nextPath = s.next
-          }
-        } catch (e) {
-          console.warn("[SOCIAL] Failed to parse state:", e)
-        }
-
-        console.log("[SOCIAL] Proceeding with user:", user.email, "nextPath:", nextPath)
-        redirectWithToken(ctx, user, nextPath)
-      }) as any
-    )(ctx, next)
+      console.log("[SOCIAL] Proceeding with user:", user.email, "nextPath:", nextPath)
+      redirectWithToken(ctx, user, nextPath)
+    });
+    return await runPassportHandler(handler, ctx, next);
   } catch (error) {
     console.error("[SOCIAL] Error in /google/callback route:", error)
-    ctx.redirect(`${CLIENT_URL}/auth/callback?error=callback_error`)
+    ctx.redirect(buildCallbackHashUrl({ error: 'callback_error' }))
   }
 })
 
@@ -147,21 +171,20 @@ router.get("/facebook", async (ctx, next) => {
 
   if (!FACEBOOK_ENABLED) {
     console.warn("[SOCIAL] Facebook not configured in environment")
-    ctx.redirect(`${CLIENT_URL}/auth/callback?error=facebook_not_configured`)
+    ctx.redirect(buildCallbackHashUrl({ error: 'facebook_not_configured' }))
     return
   }
 
   try {
-    return await (
-      passport.authenticate("facebook", {
-        session: false,
-        scope: ["email"],
-        state: JSON.stringify({ next: String(ctx.query.next || "/home") }),
-      }) as any
-    )(ctx, next)
+    const handler = passport.authenticate("facebook", {
+      session: false,
+      scope: ["email"],
+      state: JSON.stringify({ next: String(ctx.query.next || "/home") }),
+    });
+    return await runPassportHandler(handler, ctx, next);
   } catch (error) {
     console.error("[SOCIAL] Error in /facebook route:", error)
-    ctx.redirect(`${CLIENT_URL}/auth/callback?error=facebook_route_error`)
+    ctx.redirect(buildCallbackHashUrl({ error: 'facebook_route_error' }))
   }
 })
 
@@ -170,37 +193,36 @@ router.get("/facebook/callback", async (ctx, next) => {
 
   if (!FACEBOOK_ENABLED) {
     console.warn("[SOCIAL] Facebook not configured in environment (callback)")
-    ctx.redirect(`${CLIENT_URL}/auth/callback?error=facebook_not_configured`)
+    ctx.redirect(buildCallbackHashUrl({ error: 'facebook_not_configured' }))
     return
   }
 
   try {
-    return await (
-      passport.authenticate("facebook", { session: false }, (err, user) => {
-        console.log("[SOCIAL] Facebook auth result:", { err: !!err, user: !!user })
+    const handler = passport.authenticate("facebook", { session: false }, (err: unknown, user: unknown) => {
+      console.log("[SOCIAL] Facebook auth result:", { err: !!err, user: !!user })
 
-        if (err || !user) {
-          console.error("[SOCIAL] Facebook auth error:", err)
-          return ctx.redirect(`${CLIENT_URL}/auth/callback?error=facebook_failed`)
+      if (err || !isOAuthUser(user)) {
+        console.error("[SOCIAL] Facebook auth error:", err)
+        return ctx.redirect(buildCallbackHashUrl({ error: 'facebook_failed' }))
+      }
+
+      let nextPath = "/home"
+      try {
+        if (ctx.query.state) {
+          const s = JSON.parse(String(ctx.query.state))
+          if (s?.next && typeof s.next === "string") nextPath = s.next
         }
+      } catch (e) {
+        console.warn("[SOCIAL] Failed to parse state:", e)
+      }
 
-        let nextPath = "/home"
-        try {
-          if (ctx.query.state) {
-            const s = JSON.parse(String(ctx.query.state))
-            if (s?.next && typeof s.next === "string") nextPath = s.next
-          }
-        } catch (e) {
-          console.warn("[SOCIAL] Failed to parse state:", e)
-        }
-
-        console.log("[SOCIAL] Proceeding with user:", user.email, "nextPath:", nextPath)
-        redirectWithToken(ctx, user, nextPath)
-      }) as any
-    )(ctx, next)
+      console.log("[SOCIAL] Proceeding with user:", user.email, "nextPath:", nextPath)
+      redirectWithToken(ctx, user, nextPath)
+    });
+    return await runPassportHandler(handler, ctx, next);
   } catch (error) {
     console.error("[SOCIAL] Error in /facebook/callback route:", error)
-    ctx.redirect(`${CLIENT_URL}/auth/callback?error=callback_error`)
+    ctx.redirect(buildCallbackHashUrl({ error: 'callback_error' }))
   }
 })
 

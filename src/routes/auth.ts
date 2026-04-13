@@ -11,10 +11,10 @@ import jwt from 'jsonwebtoken';
 import cache from '../utils/cache'; // ensure this exists and has get/set
 import crypto from 'crypto';
 import type { FindAttributeOptions } from 'sequelize'; // ADD THIS
+import { IS_PRODUCTION, JWT_SECRET } from '../config/env';
 
 const router = new Router();
 const { League, Match, Session } = models;
-const JWT_SECRET = process.env.JWT_SECRET || 'catsay\'s hello';
 // In-flight promise coalescing to prevent thundering herd on cache miss
 type CachedResponse<T> = { payload: T; etag: string };
 const inFlight = new Map<string, Promise<any>>();
@@ -74,6 +74,36 @@ interface CustomContext extends Context {
     userId: string;
   };
 }
+
+const clearAuthCookies = (ctx: Context) => {
+  const secure = IS_PRODUCTION;
+  const cookieDomain = process.env.COOKIE_DOMAIN?.trim();
+  const baseOptions = {
+    path: '/',
+    sameSite: 'lax' as const,
+    secure,
+    maxAge: 0,
+    expires: new Date(0),
+  };
+
+  const clearCookie = (name: string, httpOnly: boolean, withDomain: boolean) => {
+    ctx.cookies.set(name, '', {
+      ...baseOptions,
+      httpOnly,
+      ...(withDomain && cookieDomain ? { domain: cookieDomain } : {}),
+    });
+  };
+
+  ['token', 'auth_token'].forEach((name) => {
+    // Clear both httpOnly and non-httpOnly variants for compatibility.
+    clearCookie(name, true, false);
+    clearCookie(name, false, false);
+    if (cookieDomain) {
+      clearCookie(name, true, true);
+      clearCookie(name, false, true);
+    }
+  });
+};
 
 // type User = InstanceType<typeof userModel> & {
 //   leaguesJoined: League[];
@@ -629,8 +659,6 @@ router.post("/auth/login", none, async (ctx: CustomContext) => {
     attributes: ['id','firstName','lastName','email','password','age','gender','country','state','city','position','positionType','style','preferredFoot','shirtNumber','profilePicture','skills','xp','achievements','provider','isVerified'] // removed providerId
   });
 
-  console.log('first',email,user)
-
   if (!user) {
     ctx.throw(404, "We can't find a user with that email");
   }
@@ -678,14 +706,7 @@ router.post("/auth/login", none, async (ctx: CustomContext) => {
     ctx.throw(400, "User has no password. Please reset it now.");
   }
 
-  console.log('ًں”چ Password comparison:', {
-    providedPassword: password,
-    hashedPassword: user.password,
-    passwordLength: user.password?.length
-  });
-
   const passwordMatch = await compare(password, user.password);
-  console.log('ًں”چ Password match result:', passwordMatch);
 
   if (!passwordMatch) {
     ctx.throw(401, "Incorrect login details.");
@@ -728,13 +749,14 @@ router.post("/auth/login", none, async (ctx: CustomContext) => {
 
 
 
-router.post("/auth/logout", required, async (ctx: CustomContext) => {
-  // For JWT, logout is handled on the client-side by deleting the token.
-  // This endpoint can be kept for session invalidation if you mix strategies,
-  // but for pure JWT it's often not needed.
+const logoutHandler = async (ctx: CustomContext) => {
+  clearAuthCookies(ctx);
   ctx.status = 200;
   ctx.body = { success: true, message: "Logged out successfully." };
-}); 
+};
+
+router.post("/auth/logout", none, logoutHandler);
+router.get("/auth/logout", none, logoutHandler);
 
 router.get("/auth/data", required, async (ctx: CustomContext) => {
   if (!ctx.state.user?.userId) {

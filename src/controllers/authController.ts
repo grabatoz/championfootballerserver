@@ -2,8 +2,7 @@ import { Context } from 'koa';
 import User from '../models/User';
 import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
-
-const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key';
+import { JWT_SECRET } from '../config/env';
 
 export const register = async (ctx: Context) => {
   const { email, password, firstName, lastName } = ctx.request.body as any;

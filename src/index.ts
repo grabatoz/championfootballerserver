@@ -31,6 +31,7 @@ import cacheMiddleware from './middleware/memoryCache';
 import compressionMiddleware from './middleware/compression';
 import { startMatchEndScheduler } from './services/matchScheduler';
 import { startDbEventBridge } from './services/dbEvents';
+import { IS_PRODUCTION, NODE_ENV } from './config/env';
 
 
 // CORS configuration for both development and production
@@ -51,6 +52,25 @@ const isOriginAllowed = (origin: string): boolean => {
   return allowedOrigins.some(allowed => allowed.replace(/\/$/, '') === normalizedOrigin);
 };
 
+const AUTH_RATE_LIMIT_WINDOW_MS = Number(process.env.AUTH_RATE_LIMIT_WINDOW_MS || 15 * 60 * 1000);
+const AUTH_RATE_LIMIT_MAX = Number(process.env.AUTH_RATE_LIMIT_MAX || 60);
+type RateLimitBucket = { count: number; resetAt: number };
+const authRateBuckets = new Map<string, RateLimitBucket>();
+
+const getClientIp = (ctx: Koa.Context): string => {
+  const xff = ctx.request.header['x-forwarded-for'];
+  if (typeof xff === 'string' && xff.trim()) return xff.split(',')[0].trim();
+  if (Array.isArray(xff) && xff[0]) return String(xff[0]).trim();
+  return ctx.ip || 'unknown';
+};
+
+const isAuthMutationRequest = (ctx: Koa.Context): boolean => {
+  const method = (ctx.method || 'GET').toUpperCase();
+  if (!['POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) return false;
+  const p = (ctx.path || '').toLowerCase();
+  return p.startsWith('/auth/') || p.startsWith('/api/auth/') || p.startsWith('/v1/auth/') || p.startsWith('/api/v1/auth/');
+};
+
 app.use(cors({
   origin: (ctx) => {
     const requestOrigin = ctx.request.header.origin;
@@ -66,6 +86,52 @@ app.use(cors({
   credentials: true,
   allowMethods: ['GET','POST','PUT','PATCH','DELETE','OPTIONS'],
 }));
+
+// Basic security headers for all responses.
+app.use(async (ctx, next) => {
+  await next();
+  ctx.set('X-Content-Type-Options', 'nosniff');
+  ctx.set('X-Frame-Options', 'DENY');
+  ctx.set('Referrer-Policy', 'strict-origin-when-cross-origin');
+  ctx.set('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+  if (IS_PRODUCTION) {
+    ctx.set('Strict-Transport-Security', 'max-age=15552000; includeSubDomains');
+  }
+});
+
+// Lightweight in-memory auth mutation rate limiter (protects login/register/reset endpoints).
+app.use(async (ctx, next) => {
+  if (!isAuthMutationRequest(ctx)) {
+    await next();
+    return;
+  }
+
+  const now = Date.now();
+  const key = `${getClientIp(ctx)}:${ctx.path.toLowerCase()}`;
+  const existing = authRateBuckets.get(key);
+
+  if (!existing || now >= existing.resetAt) {
+    authRateBuckets.set(key, { count: 1, resetAt: now + AUTH_RATE_LIMIT_WINDOW_MS });
+  } else {
+    existing.count += 1;
+    if (existing.count > AUTH_RATE_LIMIT_MAX) {
+      const retryAfter = Math.max(1, Math.ceil((existing.resetAt - now) / 1000));
+      ctx.set('Retry-After', String(retryAfter));
+      ctx.status = 429;
+      ctx.body = { success: false, message: 'Too many requests. Please try again shortly.' };
+      return;
+    }
+  }
+
+  // Opportunistic cleanup when map grows large.
+  if (authRateBuckets.size > 10000) {
+    for (const [bucketKey, bucket] of authRateBuckets.entries()) {
+      if (bucket.resetAt <= now) authRateBuckets.delete(bucketKey);
+    }
+  }
+
+  await next();
+});
 
 // Explicit OPTIONS preflight handler (before body parser)
 app.use(async (ctx, next) => {
@@ -228,7 +294,7 @@ app.use(async (ctx, next) => {
     } else {
       console.log(`${ctx.request.method} ${ctx.response.status} in ${ms}ms: ${ctx.request.path}`)
     }
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error('Request error:', error);
     
     // Set CORS headers even on error
@@ -242,21 +308,22 @@ app.use(async (ctx, next) => {
     ctx.set('Access-Control-Allow-Credentials', 'true');
     
     // If there isn't a status, set it to 500 with default message
-    if (error.status) {
-      ctx.response.status = error.status
+    const err = error as { status?: number; message?: string; expose?: boolean };
+    if (err.status) {
+      ctx.response.status = err.status
     } else {
       ctx.response.status = 500
       ctx.response.body = {
         message: "Something went wrong. Please contact support.",
-        error: process.env.NODE_ENV === 'development' ? error.message : undefined
+        error: process.env.NODE_ENV === 'development' ? err.message : undefined
       }
     }
 
     // If error message needs to be exposed, send it to client. Else, hide it from client and log it to us
-    if (error.expose) {
-      ctx.response.body = { message: error.message }
+    if (err.expose) {
+      ctx.response.body = { message: err.message }
     } else {
-      ctx.app.emit("error", error, ctx)
+      ctx.app.emit("error", err, ctx)
     }
   }
 })
@@ -437,7 +504,7 @@ initializeDatabase().then(async () => {
   startDbEventBridge();
   app.listen(PORT, () => {
     console.log(`🚀 Server is running on http://localhost:${PORT}`);
-    console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
+    console.log(`🌍 Environment: ${NODE_ENV}`);
     console.log(`🔗 Allowed origins: ${allowedOrigins.join(', ')}`);
     console.log(`📱 Client URL: ${process.env.CLIENT_URL}`);
     console.log('🔗 Social routes:');
@@ -469,13 +536,8 @@ initializeDatabase().then(async () => {
   });
 }).catch((error) => {
   console.error('❌ Failed to initialize database:', error);
-  // Start server anyway for testing
-  app.listen(PORT, () => {
-    console.log(`🚀 Server is running on http://localhost:${PORT} (without database)`);
-    console.log('🔗 Social routes:');
-    console.log(`   Google: http://localhost:${PORT}/auth/google`);
-    console.log(`   Facebook: http://localhost:${PORT}/auth/facebook`);
-  });
+  // Fail fast in production-style startup instead of serving a half-broken API.
+  process.exit(1);
 });
 
 

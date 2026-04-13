@@ -1,11 +1,9 @@
 import { Context } from 'koa';
 import models from '../models';
 import { hash } from 'bcrypt';
-import jwt from 'jsonwebtoken';
 import cache from '../utils/cache';
 
 const { User, Session, League, Match } = models;
-const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key';
 
 export const getProfile = async (ctx: Context) => {
   if (!ctx.state.user?.userId) {
