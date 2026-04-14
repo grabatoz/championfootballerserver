@@ -32,7 +32,7 @@ router.get('/by-league', required, async (ctx) => {
     // Fetch league with members; keep attributes minimal for speed
     const league = await LeagueModel.findByPk(leagueId, {
       include: [
-        { model: models.User, as: 'members', attributes: ['id', 'firstName', 'lastName', 'profilePicture', 'xp', 'shirtNumber', 'email'] },
+        { model: models.User, as: 'members', attributes: ['id', 'firstName', 'lastName', 'profilePicture', 'xp', 'shirtNumber', 'email', 'position', 'positionType', 'style'] },
         { model: models.User, as: 'administeredLeagues', attributes: ['id'] },
       ],
       attributes: ['id', 'name'],
@@ -77,10 +77,15 @@ router.get('/by-league', required, async (ctx) => {
     
     const players = realPlayers.map((p) => ({
       id: p.id,
+      firstName: p.firstName ?? '',
+      lastName: p.lastName ?? '',
       name: `${p.firstName || ''} ${p.lastName || ''}`.trim(),
       profilePicture: p.profilePicture ?? null,
       rating: Number(p.xp || 0),
       shirtNumber: p.shirtNumber ?? null,
+      position: p.position ?? '',
+      positionType: p.positionType ?? '',
+      style: p.style ?? '',
     }));
 
     ctx.body = { success: true, players };
@@ -145,7 +150,7 @@ router.get('/played-with', required, async (ctx) => {
           [Op.in]: Array.from(playerIds)
         }
       },
-      attributes: ['id', 'firstName', 'lastName', 'profilePicture', 'xp','shirtNumber', 'email']
+      attributes: ['id', 'firstName', 'lastName', 'profilePicture', 'xp', 'shirtNumber', 'email', 'position', 'positionType', 'style']
     });
 
     // Filter out guest players - only include real registered players
@@ -157,10 +162,15 @@ router.get('/played-with', required, async (ctx) => {
       success: true,
       players: realPlayers.map(p => ({
         id: p.id,
+        firstName: p.firstName ?? '',
+        lastName: p.lastName ?? '',
         name: `${p.firstName} ${p.lastName}`,
         profilePicture: p.profilePicture,
-        rating: p.xp || 0 // Assuming XP is the rating
-        ,shirtNumber: p.shirtNumber
+        rating: p.xp || 0, // Assuming XP is the rating
+        shirtNumber: p.shirtNumber,
+        position: p.position ?? '',
+        positionType: p.positionType ?? '',
+        style: p.style ?? '',
       }))
     };
 
