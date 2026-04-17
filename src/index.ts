@@ -38,7 +38,7 @@ import { IS_PRODUCTION, NODE_ENV } from './config/env';
 const allowedOrigins = [
   'http://localhost:3000',
   'http://localhost:3001',
-  'http://192.168.18.103:3000',
+  // 'http://192.168.18.103:3000',
   'https://championfootballer-client.vercel.app',
   'https://championfootballer-client-git-main-championfootballer.vercel.app',
   'https://championfootballer-client-championfootballer.vercel.app',
