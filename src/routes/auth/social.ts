@@ -18,6 +18,18 @@ const normalizeOrigin = (value?: string | null): string | null => {
   }
 };
 
+const normalizeAbsoluteUrl = (value?: string | null): string | null => {
+  if (!value) return null;
+  try {
+    const parsed = new URL(value);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null;
+    parsed.hash = '';
+    return parsed.toString();
+  } catch {
+    return null;
+  }
+};
+
 const defaultClientOrigin = normalizeOrigin(CLIENT_URL) || 'http://localhost:3000';
 
 const configuredClientOrigins = [
@@ -103,6 +115,16 @@ const getRequestOrigin = (ctx: Router.RouterContext): string => {
 
 const buildProviderCallbackUrl = (ctx: Router.RouterContext, path: string): string => {
   return `${getRequestOrigin(ctx)}${path}`;
+};
+
+const resolveProviderCallbackUrl = (
+  envValue: string | undefined,
+  ctx: Router.RouterContext,
+  path: string,
+): string => {
+  const configured = normalizeAbsoluteUrl(envValue);
+  if (configured) return configured;
+  return buildProviderCallbackUrl(ctx, path);
 };
 
 type OAuthState = {
@@ -225,7 +247,7 @@ router.get("/google", async (ctx, next) => {
   console.log("[SOCIAL] Query params:", ctx.query)
   const clientOrigin = resolveClientOrigin(String(ctx.query.client || ''));
   const nextPath = sanitizeNextPath(ctx.query.next);
-  const callbackURL = buildProviderCallbackUrl(ctx, '/auth/google/callback');
+  const callbackURL = resolveProviderCallbackUrl(process.env.GOOGLE_CALLBACK_URL, ctx, '/auth/google/callback');
 
   if (!GOOGLE_ENABLED) {
     console.warn("[SOCIAL] Google not configured in environment")
@@ -255,7 +277,7 @@ router.get("/google/callback", async (ctx, next) => {
   console.log("[SOCIAL] Callback query params:", ctx.query)
   const state = parseOAuthState(ctx.query.state);
   const clientOrigin = resolveClientOrigin(state.client);
-  const callbackURL = buildProviderCallbackUrl(ctx, '/auth/google/callback');
+  const callbackURL = resolveProviderCallbackUrl(process.env.GOOGLE_CALLBACK_URL, ctx, '/auth/google/callback');
 
   const oauthError = toSafeErrorCode(ctx.query.error, '');
   if (oauthError) {
@@ -304,7 +326,7 @@ router.get("/facebook", async (ctx, next) => {
   console.log("[SOCIAL] /facebook route hit")
   const clientOrigin = resolveClientOrigin(String(ctx.query.client || ''));
   const nextPath = sanitizeNextPath(ctx.query.next);
-  const callbackURL = buildProviderCallbackUrl(ctx, '/auth/facebook/callback');
+  const callbackURL = resolveProviderCallbackUrl(process.env.FACEBOOK_CALLBACK_URL, ctx, '/auth/facebook/callback');
 
   if (!FACEBOOK_ENABLED) {
     console.warn("[SOCIAL] Facebook not configured in environment")
@@ -331,7 +353,7 @@ router.get("/facebook/callback", async (ctx, next) => {
   console.log("[SOCIAL] /facebook/callback route hit")
   const state = parseOAuthState(ctx.query.state);
   const clientOrigin = resolveClientOrigin(state.client);
-  const callbackURL = buildProviderCallbackUrl(ctx, '/auth/facebook/callback');
+  const callbackURL = resolveProviderCallbackUrl(process.env.FACEBOOK_CALLBACK_URL, ctx, '/auth/facebook/callback');
 
   const oauthError = toSafeErrorCode(ctx.query.error, '');
   if (oauthError) {
@@ -374,12 +396,18 @@ router.get("/facebook/callback", async (ctx, next) => {
 router.get("/providers", (ctx) => {
   const gcid = process.env.GOOGLE_CLIENT_ID || "";
   const gidMasked = gcid ? `${gcid.slice(0, 4)}...${gcid.slice(-6)}` : null;
+  const effectiveGoogleCallback = normalizeAbsoluteUrl(process.env.GOOGLE_CALLBACK_URL)
+    || `${defaultClientOrigin}/auth/google/callback`;
+  const effectiveFacebookCallback = normalizeAbsoluteUrl(process.env.FACEBOOK_CALLBACK_URL)
+    || `${defaultClientOrigin}/auth/facebook/callback`;
   ctx.body = {
     google: GOOGLE_ENABLED,
     facebook: FACEBOOK_ENABLED,
     clientUrl: CLIENT_URL,
     googleCallbackUrl: process.env.GOOGLE_CALLBACK_URL || null,
     facebookCallbackUrl: process.env.FACEBOOK_CALLBACK_URL || null,
+    effectiveGoogleCallback,
+    effectiveFacebookCallback,
     googleClientIdHint: gidMasked,
     hasGoogleSecret: Boolean(process.env.GOOGLE_CLIENT_SECRET || null),
     defaultClientOrigin,
