@@ -67,6 +67,44 @@ const sanitizeNextPath = (value: unknown): string => {
   return trimmed;
 };
 
+const toSafeErrorCode = (value: unknown, fallback: string): string => {
+  if (typeof value !== 'string') return fallback;
+  const slug = value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 100);
+  return slug || fallback;
+};
+
+const extractErrorMessage = (error: unknown): string => {
+  if (error instanceof Error && error.message) return error.message;
+  if (typeof error === 'string') return error;
+  if (error && typeof error === 'object' && 'message' in error) {
+    const maybeMessage = (error as { message?: unknown }).message;
+    if (typeof maybeMessage === 'string' && maybeMessage) return maybeMessage;
+  }
+  return 'callback_error';
+};
+
+const getRequestOrigin = (ctx: Router.RouterContext): string => {
+  const protoHeader = String(ctx.get('x-forwarded-proto') || '').split(',')[0].trim().toLowerCase();
+  const hostHeader = String(ctx.get('x-forwarded-host') || '').split(',')[0].trim();
+
+  const protocol =
+    protoHeader === 'https' || protoHeader === 'http'
+      ? protoHeader
+      : (ctx.protocol === 'https' ? 'https' : 'http');
+  const host = hostHeader || ctx.host;
+
+  if (!host) return defaultClientOrigin;
+  return `${protocol}://${host}`;
+};
+
+const buildProviderCallbackUrl = (ctx: Router.RouterContext, path: string): string => {
+  return `${getRequestOrigin(ctx)}${path}`;
+};
+
 type OAuthState = {
   next?: string;
   client?: string;
@@ -182,6 +220,7 @@ router.get("/google", async (ctx, next) => {
   console.log("[SOCIAL] Query params:", ctx.query)
   const clientOrigin = resolveClientOrigin(String(ctx.query.client || ''));
   const nextPath = sanitizeNextPath(ctx.query.next);
+  const callbackURL = buildProviderCallbackUrl(ctx, '/auth/google/callback');
 
   if (!GOOGLE_ENABLED) {
     console.warn("[SOCIAL] Google not configured in environment")
@@ -196,11 +235,13 @@ router.get("/google", async (ctx, next) => {
       session: false,
       scope: ["profile", "email"],
       state: JSON.stringify({ next: nextPath, client: clientOrigin }),
+      callbackURL,
     });
     return await runPassportHandler(handler, ctx, next);
   } catch (error) {
     console.error("[SOCIAL] Error in /google route:", error)
-    ctx.redirect(buildCallbackHashUrl({ error: 'google_route_error' }, clientOrigin))
+    const reason = toSafeErrorCode(extractErrorMessage(error), 'route_error');
+    ctx.redirect(buildCallbackHashUrl({ error: `google_${reason}` }, clientOrigin))
   }
 })
 
@@ -209,6 +250,15 @@ router.get("/google/callback", async (ctx, next) => {
   console.log("[SOCIAL] Callback query params:", ctx.query)
   const state = parseOAuthState(ctx.query.state);
   const clientOrigin = resolveClientOrigin(state.client);
+  const callbackURL = buildProviderCallbackUrl(ctx, '/auth/google/callback');
+
+  const oauthError = toSafeErrorCode(ctx.query.error, '');
+  if (oauthError) {
+    const oauthDescription = typeof ctx.query.error_description === 'string' ? ctx.query.error_description : '';
+    console.warn("[SOCIAL] Google provider returned error:", oauthError, oauthDescription);
+    ctx.redirect(buildCallbackHashUrl({ error: `google_${oauthError}` }, clientOrigin))
+    return;
+  }
 
   if (!GOOGLE_ENABLED) {
     console.warn("[SOCIAL] Google not configured in environment (callback)")
@@ -217,12 +267,13 @@ router.get("/google/callback", async (ctx, next) => {
   }
 
   try {
-    const handler = passport.authenticate("google", { session: false }, (err: unknown, user: unknown) => {
+    const handler = passport.authenticate("google", { session: false, callbackURL }, (err: unknown, user: unknown) => {
       console.log("[SOCIAL] Google auth result:", { err: !!err, user: !!user })
 
       if (err) {
         console.error("[SOCIAL] Google auth error:", err)
-        return ctx.redirect(buildCallbackHashUrl({ error: 'google_failed' }, clientOrigin))
+        const reason = toSafeErrorCode(extractErrorMessage(err), 'failed')
+        return ctx.redirect(buildCallbackHashUrl({ error: `google_${reason}` }, clientOrigin))
       }
 
       if (!isOAuthUser(user)) {
@@ -238,7 +289,8 @@ router.get("/google/callback", async (ctx, next) => {
     return await runPassportHandler(handler, ctx, next);
   } catch (error) {
     console.error("[SOCIAL] Error in /google/callback route:", error)
-    ctx.redirect(buildCallbackHashUrl({ error: 'callback_error' }, clientOrigin))
+    const reason = toSafeErrorCode(extractErrorMessage(error), 'callback_error')
+    ctx.redirect(buildCallbackHashUrl({ error: `google_${reason}` }, clientOrigin))
   }
 })
 
@@ -247,6 +299,7 @@ router.get("/facebook", async (ctx, next) => {
   console.log("[SOCIAL] /facebook route hit")
   const clientOrigin = resolveClientOrigin(String(ctx.query.client || ''));
   const nextPath = sanitizeNextPath(ctx.query.next);
+  const callbackURL = buildProviderCallbackUrl(ctx, '/auth/facebook/callback');
 
   if (!FACEBOOK_ENABLED) {
     console.warn("[SOCIAL] Facebook not configured in environment")
@@ -259,11 +312,13 @@ router.get("/facebook", async (ctx, next) => {
       session: false,
       scope: ["email"],
       state: JSON.stringify({ next: nextPath, client: clientOrigin }),
+      callbackURL,
     });
     return await runPassportHandler(handler, ctx, next);
   } catch (error) {
     console.error("[SOCIAL] Error in /facebook route:", error)
-    ctx.redirect(buildCallbackHashUrl({ error: 'facebook_route_error' }, clientOrigin))
+    const reason = toSafeErrorCode(extractErrorMessage(error), 'route_error');
+    ctx.redirect(buildCallbackHashUrl({ error: `facebook_${reason}` }, clientOrigin))
   }
 })
 
@@ -271,6 +326,15 @@ router.get("/facebook/callback", async (ctx, next) => {
   console.log("[SOCIAL] /facebook/callback route hit")
   const state = parseOAuthState(ctx.query.state);
   const clientOrigin = resolveClientOrigin(state.client);
+  const callbackURL = buildProviderCallbackUrl(ctx, '/auth/facebook/callback');
+
+  const oauthError = toSafeErrorCode(ctx.query.error, '');
+  if (oauthError) {
+    const oauthDescription = typeof ctx.query.error_description === 'string' ? ctx.query.error_description : '';
+    console.warn("[SOCIAL] Facebook provider returned error:", oauthError, oauthDescription);
+    ctx.redirect(buildCallbackHashUrl({ error: `facebook_${oauthError}` }, clientOrigin))
+    return;
+  }
 
   if (!FACEBOOK_ENABLED) {
     console.warn("[SOCIAL] Facebook not configured in environment (callback)")
@@ -279,12 +343,13 @@ router.get("/facebook/callback", async (ctx, next) => {
   }
 
   try {
-    const handler = passport.authenticate("facebook", { session: false }, (err: unknown, user: unknown) => {
+    const handler = passport.authenticate("facebook", { session: false, callbackURL }, (err: unknown, user: unknown) => {
       console.log("[SOCIAL] Facebook auth result:", { err: !!err, user: !!user })
 
       if (err || !isOAuthUser(user)) {
         console.error("[SOCIAL] Facebook auth error:", err)
-        return ctx.redirect(buildCallbackHashUrl({ error: 'facebook_failed' }, clientOrigin))
+        const reason = toSafeErrorCode(extractErrorMessage(err), 'failed')
+        return ctx.redirect(buildCallbackHashUrl({ error: `facebook_${reason}` }, clientOrigin))
       }
 
       const nextPath = sanitizeNextPath(state.next);
@@ -295,7 +360,8 @@ router.get("/facebook/callback", async (ctx, next) => {
     return await runPassportHandler(handler, ctx, next);
   } catch (error) {
     console.error("[SOCIAL] Error in /facebook/callback route:", error)
-    ctx.redirect(buildCallbackHashUrl({ error: 'callback_error' }, clientOrigin))
+    const reason = toSafeErrorCode(extractErrorMessage(error), 'callback_error')
+    ctx.redirect(buildCallbackHashUrl({ error: `facebook_${reason}` }, clientOrigin))
   }
 })
 
