@@ -7,11 +7,87 @@ const router = new Router({ prefix: "/auth" })
 
 const CLIENT_URL = process.env.CLIENT_URL || process.env.FRONTEND_URL || "http://localhost:3000"
 
+const normalizeOrigin = (value?: string | null): string | null => {
+  if (!value) return null;
+  try {
+    const parsed = new URL(value);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null;
+    return parsed.origin;
+  } catch {
+    return null;
+  }
+};
+
+const defaultClientOrigin = normalizeOrigin(CLIENT_URL) || 'http://localhost:3000';
+
+const configuredClientOrigins = [
+  process.env.CLIENT_URL,
+  process.env.FRONTEND_URL,
+  'https://championfootballer.com',
+  'https://www.championfootballer.com',
+  'https://championfootballer-client.vercel.app',
+  'https://championfootballer-client-git-main-championfootballer.vercel.app',
+  'https://championfootballer-client-championfootballer.vercel.app',
+  'http://localhost:3000',
+  'http://localhost:3001',
+]
+  .map(normalizeOrigin)
+  .filter((origin): origin is string => Boolean(origin));
+
+const allowedClientOrigins = new Set<string>([
+  ...configuredClientOrigins,
+  defaultClientOrigin,
+]);
+
+const isTrustedVercelPreview = (origin: string): boolean => {
+  try {
+    const hostname = new URL(origin).hostname.toLowerCase();
+    return /^championfootballer-client(?:-[\w-]+)?\.vercel\.app$/.test(hostname);
+  } catch {
+    return false;
+  }
+};
+
+const isAllowedClientOrigin = (origin: string): boolean => {
+  return allowedClientOrigins.has(origin) || isTrustedVercelPreview(origin);
+};
+
+const resolveClientOrigin = (candidate?: string | null): string => {
+  const normalized = normalizeOrigin(candidate);
+  if (normalized && isAllowedClientOrigin(normalized)) {
+    return normalized;
+  }
+  return defaultClientOrigin;
+};
+
+const sanitizeNextPath = (value: unknown): string => {
+  if (typeof value !== 'string') return '/home';
+  const trimmed = value.trim();
+  if (!trimmed.startsWith('/') || trimmed.startsWith('//')) return '/home';
+  return trimmed;
+};
+
+type OAuthState = {
+  next?: string;
+  client?: string;
+};
+
+const parseOAuthState = (value: unknown): OAuthState => {
+  if (typeof value !== 'string' || !value) return {};
+  try {
+    const parsed = JSON.parse(value) as OAuthState;
+    if (!parsed || typeof parsed !== 'object') return {};
+    return parsed;
+  } catch {
+    return {};
+  }
+};
+
 const GOOGLE_ENABLED = Boolean(
-  process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET && process.env.GOOGLE_CALLBACK_URL,
+  process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET,
 )
 const FACEBOOK_ENABLED = Boolean(
-  process.env.FACEBOOK_APP_ID && process.env.FACEBOOK_APP_SECRET && process.env.FACEBOOK_CALLBACK_URL,
+  process.env.FACEBOOK_APP_ID && process.env.FACEBOOK_APP_SECRET,
 )
 
 type OAuthUser = {
@@ -34,9 +110,9 @@ const isOAuthUser = (value: unknown): value is OAuthUser => {
   return typeof v.id === 'string' && typeof v.email === 'string';
 };
 
-const buildCallbackHashUrl = (params: Record<string, string>) => {
+const buildCallbackHashUrl = (params: Record<string, string>, clientOrigin = defaultClientOrigin) => {
   const hash = new URLSearchParams(params).toString();
-  return `${CLIENT_URL}/auth/callback#${hash}`;
+  return `${clientOrigin}/auth/callback#${hash}`;
 };
 
 
@@ -48,7 +124,12 @@ console.log("[SOCIAL] Providers enabled:", {
 })
 console.log("[SOCIAL] Routes being registered...")
 
-function redirectWithToken(ctx: Router.RouterContext, user: OAuthUser, nextPath = "/home") {
+function redirectWithToken(
+  ctx: Router.RouterContext,
+  user: OAuthUser,
+  nextPath = "/home",
+  clientOrigin = defaultClientOrigin,
+) {
   console.log("[SOCIAL] redirectWithToken called with user:", user.id, user.email)
 
   const token = jwt.sign(
@@ -83,7 +164,7 @@ function redirectWithToken(ctx: Router.RouterContext, user: OAuthUser, nextPath 
   })
 
   // Use hash instead of query to reduce token leakage via logs/referrers.
-  const redirectUrl = buildCallbackHashUrl({ token, next: nextPath })
+  const redirectUrl = buildCallbackHashUrl({ token, next: nextPath }, clientOrigin)
   console.log("[SOCIAL] Redirecting to:", redirectUrl)
 
   ctx.redirect(redirectUrl)
@@ -99,10 +180,12 @@ router.get("/test", (ctx) => {
 router.get("/google", async (ctx, next) => {
   console.log("[SOCIAL] /google route hit")
   console.log("[SOCIAL] Query params:", ctx.query)
+  const clientOrigin = resolveClientOrigin(String(ctx.query.client || ''));
+  const nextPath = sanitizeNextPath(ctx.query.next);
 
   if (!GOOGLE_ENABLED) {
     console.warn("[SOCIAL] Google not configured in environment")
-    const redirectUrl = buildCallbackHashUrl({ error: 'google_not_configured' })
+    const redirectUrl = buildCallbackHashUrl({ error: 'google_not_configured' }, clientOrigin)
     ctx.status = 302
     ctx.redirect(redirectUrl)
     return
@@ -112,22 +195,24 @@ router.get("/google", async (ctx, next) => {
     const handler = passport.authenticate("google", {
       session: false,
       scope: ["profile", "email"],
-      state: JSON.stringify({ next: String(ctx.query.next || "/home") }),
+      state: JSON.stringify({ next: nextPath, client: clientOrigin }),
     });
     return await runPassportHandler(handler, ctx, next);
   } catch (error) {
     console.error("[SOCIAL] Error in /google route:", error)
-    ctx.redirect(buildCallbackHashUrl({ error: 'google_route_error' }))
+    ctx.redirect(buildCallbackHashUrl({ error: 'google_route_error' }, clientOrigin))
   }
 })
 
 router.get("/google/callback", async (ctx, next) => {
   console.log("[SOCIAL] /google/callback route hit")
   console.log("[SOCIAL] Callback query params:", ctx.query)
+  const state = parseOAuthState(ctx.query.state);
+  const clientOrigin = resolveClientOrigin(state.client);
 
   if (!GOOGLE_ENABLED) {
     console.warn("[SOCIAL] Google not configured in environment (callback)")
-    ctx.redirect(buildCallbackHashUrl({ error: 'google_not_configured' }))
+    ctx.redirect(buildCallbackHashUrl({ error: 'google_not_configured' }, clientOrigin))
     return
   }
 
@@ -137,41 +222,35 @@ router.get("/google/callback", async (ctx, next) => {
 
       if (err) {
         console.error("[SOCIAL] Google auth error:", err)
-        return ctx.redirect(buildCallbackHashUrl({ error: 'google_failed' }))
+        return ctx.redirect(buildCallbackHashUrl({ error: 'google_failed' }, clientOrigin))
       }
 
       if (!isOAuthUser(user)) {
         console.error("[SOCIAL] No valid user returned from Google")
-        return ctx.redirect(buildCallbackHashUrl({ error: 'no_user' }))
+        return ctx.redirect(buildCallbackHashUrl({ error: 'no_user' }, clientOrigin))
       }
 
-      let nextPath = "/home"
-      try {
-        if (ctx.query.state) {
-          const s = JSON.parse(String(ctx.query.state))
-          if (s?.next && typeof s.next === "string") nextPath = s.next
-        }
-      } catch (e) {
-        console.warn("[SOCIAL] Failed to parse state:", e)
-      }
+      const nextPath = sanitizeNextPath(state.next);
 
       console.log("[SOCIAL] Proceeding with user:", user.email, "nextPath:", nextPath)
-      redirectWithToken(ctx, user, nextPath)
+      redirectWithToken(ctx, user, nextPath, clientOrigin)
     });
     return await runPassportHandler(handler, ctx, next);
   } catch (error) {
     console.error("[SOCIAL] Error in /google/callback route:", error)
-    ctx.redirect(buildCallbackHashUrl({ error: 'callback_error' }))
+    ctx.redirect(buildCallbackHashUrl({ error: 'callback_error' }, clientOrigin))
   }
 })
 
 // Facebook OAuth
 router.get("/facebook", async (ctx, next) => {
   console.log("[SOCIAL] /facebook route hit")
+  const clientOrigin = resolveClientOrigin(String(ctx.query.client || ''));
+  const nextPath = sanitizeNextPath(ctx.query.next);
 
   if (!FACEBOOK_ENABLED) {
     console.warn("[SOCIAL] Facebook not configured in environment")
-    ctx.redirect(buildCallbackHashUrl({ error: 'facebook_not_configured' }))
+    ctx.redirect(buildCallbackHashUrl({ error: 'facebook_not_configured' }, clientOrigin))
     return
   }
 
@@ -179,21 +258,23 @@ router.get("/facebook", async (ctx, next) => {
     const handler = passport.authenticate("facebook", {
       session: false,
       scope: ["email"],
-      state: JSON.stringify({ next: String(ctx.query.next || "/home") }),
+      state: JSON.stringify({ next: nextPath, client: clientOrigin }),
     });
     return await runPassportHandler(handler, ctx, next);
   } catch (error) {
     console.error("[SOCIAL] Error in /facebook route:", error)
-    ctx.redirect(buildCallbackHashUrl({ error: 'facebook_route_error' }))
+    ctx.redirect(buildCallbackHashUrl({ error: 'facebook_route_error' }, clientOrigin))
   }
 })
 
 router.get("/facebook/callback", async (ctx, next) => {
   console.log("[SOCIAL] /facebook/callback route hit")
+  const state = parseOAuthState(ctx.query.state);
+  const clientOrigin = resolveClientOrigin(state.client);
 
   if (!FACEBOOK_ENABLED) {
     console.warn("[SOCIAL] Facebook not configured in environment (callback)")
-    ctx.redirect(buildCallbackHashUrl({ error: 'facebook_not_configured' }))
+    ctx.redirect(buildCallbackHashUrl({ error: 'facebook_not_configured' }, clientOrigin))
     return
   }
 
@@ -203,26 +284,18 @@ router.get("/facebook/callback", async (ctx, next) => {
 
       if (err || !isOAuthUser(user)) {
         console.error("[SOCIAL] Facebook auth error:", err)
-        return ctx.redirect(buildCallbackHashUrl({ error: 'facebook_failed' }))
+        return ctx.redirect(buildCallbackHashUrl({ error: 'facebook_failed' }, clientOrigin))
       }
 
-      let nextPath = "/home"
-      try {
-        if (ctx.query.state) {
-          const s = JSON.parse(String(ctx.query.state))
-          if (s?.next && typeof s.next === "string") nextPath = s.next
-        }
-      } catch (e) {
-        console.warn("[SOCIAL] Failed to parse state:", e)
-      }
+      const nextPath = sanitizeNextPath(state.next);
 
       console.log("[SOCIAL] Proceeding with user:", user.email, "nextPath:", nextPath)
-      redirectWithToken(ctx, user, nextPath)
+      redirectWithToken(ctx, user, nextPath, clientOrigin)
     });
     return await runPassportHandler(handler, ctx, next);
   } catch (error) {
     console.error("[SOCIAL] Error in /facebook/callback route:", error)
-    ctx.redirect(buildCallbackHashUrl({ error: 'callback_error' }))
+    ctx.redirect(buildCallbackHashUrl({ error: 'callback_error' }, clientOrigin))
   }
 })
 
@@ -238,6 +311,8 @@ router.get("/providers", (ctx) => {
     facebookCallbackUrl: process.env.FACEBOOK_CALLBACK_URL || null,
     googleClientIdHint: gidMasked,
     hasGoogleSecret: Boolean(process.env.GOOGLE_CLIENT_SECRET || null),
+    defaultClientOrigin,
+    allowedClientOrigins: Array.from(allowedClientOrigins),
     timestamp: new Date().toISOString(),
   }
 })

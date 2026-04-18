@@ -6,13 +6,20 @@ import { transporter } from "../modules/sendEmail"
 
 export function setupPassport() {
   console.log("[PASSPORT] Setting up passport strategies")
+  const buildCallbackUrl = (envValue: string | undefined, fallbackPath: string): string => {
+    if (envValue) return envValue;
+    const apiBase = process.env.API_URL?.replace(/\/$/, '');
+    return apiBase ? `${apiBase}${fallbackPath}` : fallbackPath;
+  };
+
+  const googleCallbackUrl = buildCallbackUrl(process.env.GOOGLE_CALLBACK_URL, '/auth/google/callback');
   const hasGoogle =
-    !!process.env.GOOGLE_CLIENT_ID && !!process.env.GOOGLE_CLIENT_SECRET && !!process.env.GOOGLE_CALLBACK_URL
+    !!process.env.GOOGLE_CLIENT_ID && !!process.env.GOOGLE_CLIENT_SECRET
 
     
   console.log("[PASSPORT] GOOGLE_CLIENT_ID exists:", !!process.env.GOOGLE_CLIENT_ID)
   console.log("[PASSPORT] GOOGLE_CLIENT_SECRET exists:", !!process.env.GOOGLE_CLIENT_SECRET)
-  console.log("[PASSPORT] GOOGLE_CALLBACK_URL:", process.env.GOOGLE_CALLBACK_URL)
+  console.log("[PASSPORT] GOOGLE_CALLBACK_URL:", googleCallbackUrl)
 
   if (hasGoogle) {
     passport.use(
@@ -20,7 +27,7 @@ export function setupPassport() {
         {
           clientID: process.env.GOOGLE_CLIENT_ID!,
           clientSecret: process.env.GOOGLE_CLIENT_SECRET!,
-          callbackURL: process.env.GOOGLE_CALLBACK_URL!,
+          callbackURL: googleCallbackUrl,
           scope: ["profile", "email"],
         },
         async (_accessToken, _refreshToken, profile, done) => {
@@ -118,8 +125,9 @@ export function setupPassport() {
   }
 
   // FACEBOOK (only if env vars exist)
+  const facebookCallbackUrl = buildCallbackUrl(process.env.FACEBOOK_CALLBACK_URL, '/auth/facebook/callback');
   const hasFacebook =
-    !!process.env.FACEBOOK_APP_ID && !!process.env.FACEBOOK_APP_SECRET && !!process.env.FACEBOOK_CALLBACK_URL
+    !!process.env.FACEBOOK_APP_ID && !!process.env.FACEBOOK_APP_SECRET
 
   if (hasFacebook) {
     console.log("[PASSPORT] Setting up Facebook strategy")
@@ -128,7 +136,7 @@ export function setupPassport() {
         {
           clientID: process.env.FACEBOOK_APP_ID!,
           clientSecret: process.env.FACEBOOK_APP_SECRET!,
-          callbackURL: process.env.FACEBOOK_CALLBACK_URL!,
+          callbackURL: facebookCallbackUrl,
           profileFields: ["id", "displayName", "emails", "photos"],
           enableProof: true,
         },
