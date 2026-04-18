@@ -184,7 +184,12 @@ function redirectWithToken(
   console.log("[SOCIAL] Generated token:", token.substring(0, 20) + "...")
 
   // Set cookies on API domain
-  const secure = IS_PRODUCTION
+  const forwardedProto = String(ctx.get('x-forwarded-proto') || '').split(',')[0].trim().toLowerCase();
+  const requestIsSecure = ctx.secure || forwardedProto === 'https';
+  const secure = IS_PRODUCTION ? requestIsSecure : false;
+  if (IS_PRODUCTION && !secure) {
+    console.warn("[SOCIAL] Request not marked secure by proxy; issuing non-secure API cookies to avoid callback failure.")
+  }
   // Set both names for compatibility with existing middleware/clients
   ctx.cookies.set("auth_token", token, {
     path: "/",

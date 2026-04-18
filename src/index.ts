@@ -2,6 +2,9 @@
 // Dependencies: server
 import Koa from "koa"
 const app = new Koa()
+// Trust reverse-proxy headers (x-forwarded-*) so ctx.protocol/ctx.secure are
+// correct in production behind Nginx/PM2/Cloud load balancers.
+app.proxy = true
 import koaBody from "koa-body"
 import router from "./routes"
 import worldRankingRouter from './routes/worldRanking'
