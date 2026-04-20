@@ -2159,16 +2159,10 @@ export const submitCaptainPicks = async (ctx: Context) => {
       return;
     }
 
-    const captainTeam: 'home' | 'away' = isHomeCaptain ? 'home' : 'away';
     const targetTeam = await getPlayerTeamForMatch(targetUserId, matchId);
     if (!targetTeam) {
       ctx.status = 400;
       ctx.body = { success: false, message: 'Selected player is not part of this match' };
-      return;
-    }
-    if (targetTeam !== captainTeam) {
-      ctx.status = 400;
-      ctx.body = { success: false, message: 'You can only pick players from your own team' };
       return;
     }
 
