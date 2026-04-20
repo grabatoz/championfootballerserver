@@ -10,6 +10,8 @@ interface SeasonAttributes {
   seasonNumber: number;
   name: string;
   isActive: boolean;
+  archived?: boolean;
+  deleted?: boolean;
   startDate: Date;
   endDate?: Date;
   maxGames?: number;
@@ -32,6 +34,8 @@ class Season extends Model<SeasonAttributes, SeasonCreationAttributes> {
   declare seasonNumber: number;
   declare name: string;
   declare isActive: boolean;
+  declare archived?: boolean;
+  declare deleted?: boolean;
   declare startDate: Date;
   declare endDate?: Date;
   declare maxGames?: number;
@@ -99,6 +103,16 @@ Season.init(
       type: DataTypes.BOOLEAN,
       defaultValue: true,
     },
+    archived: {
+      type: DataTypes.BOOLEAN,
+      allowNull: false,
+      defaultValue: false,
+    },
+    deleted: {
+      type: DataTypes.BOOLEAN,
+      allowNull: false,
+      defaultValue: false,
+    },
     startDate: {
       type: DataTypes.DATE,
       allowNull: false,
@@ -136,8 +150,12 @@ Season.init(
     timestamps: true,
     indexes: [
       {
+        name: 'seasons_league_id_season_number_active',
         unique: true,
-        fields: ['leagueId', 'seasonNumber']
+        fields: ['leagueId', 'seasonNumber'],
+        where: {
+          deleted: false
+        }
       },
       {
         fields: ['leagueId', 'isActive']

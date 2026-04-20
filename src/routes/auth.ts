@@ -839,7 +839,8 @@ router.get("/auth/data", required, async (ctx: CustomContext) => {
               {
                 model: Season,
                 as: 'seasons',
-                attributes: ['id', 'name', 'seasonNumber', 'isActive', 'startDate', 'endDate', 'createdAt'],
+                attributes: ['id', 'name', 'seasonNumber', 'isActive', 'archived', 'startDate', 'endDate', 'createdAt', 'updatedAt'],
+                where: { deleted: false },
                 required: false
               }
             ],
@@ -859,7 +860,8 @@ router.get("/auth/data", required, async (ctx: CustomContext) => {
               {
                 model: Season,
                 as: 'seasons',
-                attributes: ['id', 'name', 'seasonNumber', 'isActive', 'startDate', 'endDate', 'createdAt'],
+                attributes: ['id', 'name', 'seasonNumber', 'isActive', 'archived', 'startDate', 'endDate', 'createdAt', 'updatedAt'],
+                where: { deleted: false },
                 required: false
               }
             ],
@@ -1195,7 +1197,8 @@ router.get("/auth/status", required, async (ctx: CustomContext) => {
               {
                 model: Season,
                 as: 'seasons',
-                attributes: ['id', 'name', 'seasonNumber', 'isActive', 'startDate', 'endDate', 'createdAt'],
+                attributes: ['id', 'name', 'seasonNumber', 'isActive', 'archived', 'startDate', 'endDate', 'createdAt', 'updatedAt'],
+                where: { deleted: false },
                 required: false
               }
             ]
@@ -1209,7 +1212,8 @@ router.get("/auth/status", required, async (ctx: CustomContext) => {
               {
                 model: Season,
                 as: 'seasons',
-                attributes: ['id', 'name', 'seasonNumber', 'isActive', 'startDate', 'endDate', 'createdAt'],
+                attributes: ['id', 'name', 'seasonNumber', 'isActive', 'archived', 'startDate', 'endDate', 'createdAt', 'updatedAt'],
+                where: { deleted: false },
                 required: false
               }
             ]

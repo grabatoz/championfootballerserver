@@ -35,6 +35,36 @@ router.get('/:id/seasons', required, async (ctx) => {
   await seasonController.getAllSeasons(ctx);
 });
 
+// Update season (league-scoped alias)
+router.patch('/:id/seasons/:seasonId', required, async (ctx) => {
+  ctx.params.leagueId = ctx.params.id;
+  await seasonController.updateSeason(ctx);
+});
+
+// Update season status (league-scoped alias)
+router.patch('/:id/seasons/:seasonId/status', required, async (ctx) => {
+  ctx.params.leagueId = ctx.params.id;
+  await seasonController.updateSeasonStatus(ctx);
+});
+
+// Archive season (league-scoped alias)
+router.post('/:id/seasons/:seasonId/archive', required, async (ctx) => {
+  ctx.params.leagueId = ctx.params.id;
+  await seasonController.archiveSeason(ctx);
+});
+
+// Restore archived season (league-scoped alias)
+router.post('/:id/seasons/:seasonId/restore', required, async (ctx) => {
+  ctx.params.leagueId = ctx.params.id;
+  await seasonController.restoreSeason(ctx);
+});
+
+// Permanent delete season (soft delete, league-scoped alias)
+router.delete('/:id/seasons/:seasonId', required, async (ctx) => {
+  ctx.params.leagueId = ctx.params.id;
+  await seasonController.permanentDeleteSeason(ctx);
+});
+
 // Create league (with optional image upload)
 router.post('/', required, upload.single('image'), leagueController.createLeague);
 

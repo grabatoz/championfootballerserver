@@ -1,8 +1,71 @@
-import { Context } from 'koa';
+﻿import { Context } from 'koa';
 import Season from '../models/Season';
 import League from '../models/League';
 import User from '../models/User';
 import Notification from '../models/Notification';
+import Match from '../models/Match';
+import { Op, QueryTypes } from 'sequelize';
+import { randomUUID } from 'crypto';
+
+const normalizeBoolean = (value: unknown): boolean | undefined => {
+  if (value === true || value === 'true' || value === 1 || value === '1') return true;
+  if (value === false || value === 'false' || value === 0 || value === '0') return false;
+  return undefined;
+};
+
+const getSeasonStatus = (season: Season): 'active' | 'inactive' | 'archived' | 'deleted' => {
+  if ((season as any).deleted) return 'deleted';
+  if ((season as any).archived) return 'archived';
+  if (season.isActive) return 'active';
+  return 'inactive';
+};
+
+const buildSeasonPayload = (season: Season, extra?: Record<string, unknown>) => ({
+  id: season.id,
+  leagueId: season.leagueId,
+  seasonNumber: season.seasonNumber,
+  name: season.name,
+  isActive: season.isActive,
+  archived: Boolean((season as any).archived),
+  deleted: Boolean((season as any).deleted),
+  status: getSeasonStatus(season),
+  startDate: season.startDate,
+  endDate: season.endDate,
+  maxGames: season.maxGames,
+  showPoints: season.showPoints,
+  createdAt: season.createdAt,
+  updatedAt: season.updatedAt,
+  ...(extra || {}),
+});
+
+const checkLeagueAdmin = async (leagueId: string, userId: string): Promise<{ league: League | null; isAdmin: boolean }> => {
+  const league = await League.findByPk(leagueId, {
+    include: [
+      {
+        model: User,
+        as: 'administeredLeagues',
+        attributes: ['id']
+      }
+    ]
+  });
+
+  if (!league) {
+    return { league: null, isAdmin: false };
+  }
+
+  const adminList = (league as any).administeredLeagues || [];
+  let isAdmin = adminList.some((admin: any) => String(admin.id) === String(userId));
+
+  if (!isAdmin) {
+    const directResult = await (League as any).sequelize.query(
+      'SELECT "userId" FROM "LeagueAdmin" WHERE "leagueId" = :leagueId AND "userId" = :userId LIMIT 1',
+      { replacements: { leagueId, userId }, type: (League as any).sequelize.QueryTypes.SELECT }
+    );
+    isAdmin = Array.isArray(directResult) && directResult.length > 0;
+  }
+
+  return { league, isAdmin };
+};
 
 export const getAllSeasons = async (ctx: Context) => {
   const { leagueId } = ctx.params;
@@ -27,7 +90,7 @@ export const getAllSeasons = async (ctx: Context) => {
   const isAdmin = (league as any).administeredLeagues?.some((admin: any) => String(admin.id) === String(userId));
 
   const seasons = await Season.findAll({
-    where: { leagueId },
+    where: { leagueId, deleted: false },
     order: [['seasonNumber', 'DESC']],
     include: [
       {
@@ -48,6 +111,9 @@ export const getAllSeasons = async (ctx: Context) => {
         seasonNumber: season.seasonNumber,
         name: season.name,
         isActive: season.isActive,
+        archived: Boolean((season as any).archived),
+        deleted: Boolean((season as any).deleted),
+        status: getSeasonStatus(season),
         startDate: season.startDate,
         endDate: season.endDate,
         maxGames: season.maxGames,
@@ -78,6 +144,9 @@ export const getAllSeasons = async (ctx: Context) => {
           seasonNumber: season.seasonNumber,
           name: season.name,
           isActive: season.isActive,
+          archived: Boolean((season as any).archived),
+          deleted: Boolean((season as any).deleted),
+          status: getSeasonStatus(season),
           startDate: season.startDate,
           endDate: season.endDate,
           maxGames: season.maxGames,
@@ -119,7 +188,9 @@ export const getActiveSeason = async (ctx: Context) => {
   const activeSeason = await Season.findOne({
     where: {
       leagueId,
-      isActive: true
+      isActive: true,
+      archived: false,
+      deleted: false,
     },
     include: [
       {
@@ -143,17 +214,9 @@ export const getActiveSeason = async (ctx: Context) => {
     ctx.body = {
       success: true,
       season: {
-        id: activeSeason.id,
-        seasonNumber: activeSeason.seasonNumber,
-        name: activeSeason.name,
-        isActive: activeSeason.isActive,
-        startDate: activeSeason.startDate,
-        endDate: activeSeason.endDate,
-        maxGames: activeSeason.maxGames,
-        showPoints: activeSeason.showPoints,
+        ...buildSeasonPayload(activeSeason),
         players: (activeSeason as any).players,
-        createdAt: activeSeason.createdAt
-      }
+      },
     };
     return;
   }
@@ -167,17 +230,9 @@ export const getActiveSeason = async (ctx: Context) => {
     ctx.body = {
       success: true,
       season: {
-        id: activeSeason.id,
-        seasonNumber: activeSeason.seasonNumber,
-        name: activeSeason.name,
-        isActive: activeSeason.isActive,
-        startDate: activeSeason.startDate,
-        endDate: activeSeason.endDate,
-        maxGames: activeSeason.maxGames,
-        showPoints: activeSeason.showPoints,
+        ...buildSeasonPayload(activeSeason),
         players: (activeSeason as any).players,
-        createdAt: activeSeason.createdAt
-      }
+      },
     };
     return;
   }
@@ -186,7 +241,8 @@ export const getActiveSeason = async (ctx: Context) => {
   const previousSeason = await Season.findOne({
     where: {
       leagueId,
-      seasonNumber: activeSeason.seasonNumber - 1
+      seasonNumber: activeSeason.seasonNumber - 1,
+      deleted: false,
     },
     include: [
       {
@@ -201,17 +257,9 @@ export const getActiveSeason = async (ctx: Context) => {
     ctx.body = {
       success: true,
       season: {
-        id: previousSeason.id,
-        seasonNumber: previousSeason.seasonNumber,
-        name: previousSeason.name,
-        isActive: false, // Previous season is not active
-        startDate: previousSeason.startDate,
-        endDate: previousSeason.endDate,
-        maxGames: previousSeason.maxGames,
-        showPoints: previousSeason.showPoints,
+        ...buildSeasonPayload(previousSeason as Season, { isActive: false }),
         players: (previousSeason as any).players,
-        createdAt: previousSeason.createdAt
-      }
+      },
     };
     return;
   }
@@ -226,71 +274,178 @@ export const getActiveSeason = async (ctx: Context) => {
 export const createNewSeason = async (ctx: Context) => {
   const { leagueId } = ctx.params;
   const { copyPlayers = true } = ctx.request.body as { copyPlayers?: boolean };
+  void copyPlayers;
 
-  // Verify user is league admin
-  const league = await League.findByPk(leagueId, {
-    include: [
-      {
-        model: User,
-        as: 'administeredLeagues',
-        where: { id: ctx.state.user.userId }
-      }
-    ]
-  });
+  const adminUserId = String(ctx.state.user?.userId || ctx.state.user?.id || '');
+  const { league, isAdmin } = await checkLeagueAdmin(String(leagueId), adminUserId);
 
-  if (!league) {
+  if (!league || !isAdmin) {
     ctx.throw(403, 'You are not an administrator of this league');
     return;
   }
 
-  // Get current active season
-  const currentSeason = await Season.findOne({
-    where: {
-      leagueId,
-      isActive: true
-    },
-    include: [
-      {
-        model: User,
-        as: 'players'
-      }
-    ]
-  });
+  const sequelizeRef = (Season as any).sequelize;
+  const partialSeasonUniqueIndexRows = await sequelizeRef.query(
+    `
+    SELECT 1
+    FROM pg_indexes
+    WHERE schemaname = 'public'
+      AND tablename = 'Seasons'
+      AND indexname = 'seasons_league_id_season_number_active'
+    LIMIT 1;
+    `,
+    { type: QueryTypes.SELECT }
+  );
+  const usePartialConflictClause = Array.isArray(partialSeasonUniqueIndexRows) && partialSeasonUniqueIndexRows.length > 0;
+  const conflictClause = usePartialConflictClause
+    ? 'ON CONFLICT ("leagueId","seasonNumber") WHERE "deleted" = false DO NOTHING'
+    : 'ON CONFLICT ("leagueId","seasonNumber") DO NOTHING';
 
-  if (!currentSeason) {
-    ctx.throw(400, 'No active season found to end');
+  let currentSeason: Season | null = null;
+  let newSeason: Season | null = null;
+  let newSeasonNumber = 0;
+
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const tx = await sequelizeRef.transaction();
+    try {
+      // Serialize season creation per league to avoid race conditions on seasonNumber.
+      const lockedLeague = await League.findByPk(leagueId, {
+        transaction: tx,
+        lock: tx.LOCK.UPDATE,
+      });
+
+      if (!lockedLeague) {
+        await tx.rollback();
+        ctx.throw(404, 'League not found');
+        return;
+      }
+
+      currentSeason = await Season.findOne({
+        where: {
+          leagueId,
+          isActive: true,
+          archived: false,
+          deleted: false,
+        },
+        order: [['seasonNumber', 'DESC']],
+        transaction: tx,
+      });
+
+      // If an active season exists, end it first. If not, still allow creating a new season.
+      if (currentSeason) {
+        currentSeason.isActive = false;
+        currentSeason.endDate = currentSeason.endDate || new Date();
+        await currentSeason.save({ transaction: tx });
+      }
+
+      // Numbering rule (updated):
+      // Always create the next season after the highest historical season number,
+      // even if some old seasons are archived/deleted.
+      const allSeasons = await Season.findAll({
+        where: { leagueId },
+        attributes: ['seasonNumber'],
+        transaction: tx,
+      });
+
+      let maxSeasonNumber = 0;
+      for (const s of allSeasons) {
+        const n = Number((s as any).seasonNumber || 0);
+        if (Number.isInteger(n) && n > maxSeasonNumber) {
+          maxSeasonNumber = n;
+        }
+      }
+
+      let candidate = maxSeasonNumber + 1;
+      // Insert with ON CONFLICT DO NOTHING so duplicate seasonNumber never aborts the tx.
+      // This handles race conditions and old unique-constraint states safely.
+      let insertedSeasonId = '';
+      let insertGuard = 0;
+      while (!insertedSeasonId && insertGuard < Math.max(maxSeasonNumber + 25, 25)) {
+        const now = new Date();
+        const replacements = {
+          id: randomUUID(),
+          leagueId,
+          seasonNumber: candidate,
+          name: `Season ${candidate}`,
+          startDate: now,
+          snapshot: '{}',
+          createdAt: now,
+          updatedAt: now,
+        };
+
+        const insertRowsRaw = await sequelizeRef.query(
+          `
+          INSERT INTO "Seasons"
+            ("id","leagueId","seasonNumber","name","isActive","archived","deleted","startDate","showPoints","trophyAwardSnapshot","createdAt","updatedAt")
+          VALUES
+            (:id,:leagueId,:seasonNumber,:name,true,false,false,:startDate,false,:snapshot::jsonb,:createdAt,:updatedAt)
+          ${conflictClause}
+          RETURNING "id","seasonNumber";
+          `,
+          {
+            replacements,
+            type: QueryTypes.SELECT,
+            transaction: tx,
+          }
+        );
+        const insertRows = (insertRowsRaw || []) as Array<{ id: string; seasonNumber: number }>;
+
+        if (Array.isArray(insertRows) && insertRows.length > 0) {
+          insertedSeasonId = String(insertRows[0].id);
+          newSeasonNumber = Number(insertRows[0].seasonNumber || candidate);
+          break;
+        }
+
+        candidate += 1;
+        insertGuard += 1;
+      }
+
+      if (!insertedSeasonId) {
+        throw new Error('Unable to allocate a unique season number');
+      }
+
+      const seasonInTx = await Season.findByPk(insertedSeasonId, { transaction: tx });
+      if (!seasonInTx) {
+        throw new Error('New season insert succeeded but record was not found');
+      }
+      newSeason = seasonInTx;
+
+      try {
+        await (newSeason as any).addPlayer(adminUserId, { transaction: tx });
+      } catch (addAdminError) {
+        console.error('Error adding admin to new season:', addAdminError);
+      }
+
+      await tx.commit();
+      break;
+    } catch (error) {
+      try { await tx.rollback(); } catch {}
+      const err = error as { original?: { code?: string; constraint?: string; message?: string }; message?: string };
+      const code = err?.original?.code || '';
+      console.error('[createNewSeason] attempt failed', {
+        attempt: attempt + 1,
+        code,
+        constraint: err?.original?.constraint || '',
+        message: err?.original?.message || err?.message || 'unknown',
+      });
+
+      // Retry transient/transaction issues once or twice with fresh tx.
+      if (['25P02', '40001', '40P01'].includes(code) && attempt < 2) continue;
+      throw error;
+    }
+  }
+
+  if (!newSeason) {
+    ctx.throw(500, 'Failed to create a new season');
     return;
   }
 
-  // End current season
-  currentSeason.isActive = false;
-  currentSeason.endDate = new Date();
-  await currentSeason.save();
-
-  console.log(`✅ Season ${currentSeason.seasonNumber} ended for league ${league.name}`);
-
-  // Create new season
-  const newSeasonNumber = currentSeason.seasonNumber + 1;
-  const newSeason = await Season.create({
-    leagueId,
-    seasonNumber: newSeasonNumber,
-    name: `Season ${newSeasonNumber}`,
-    isActive: true,
-    startDate: new Date()
-  });
-
-  console.log(`✅ Season ${newSeasonNumber} created for league ${league.name}`);
-
-  // Get admin user ID
-  const adminUserId = ctx.state.user.userId;
-
-  // Automatically add admin to new season (admin is always part of every season)
-  try {
-    await (newSeason as any).addPlayer(adminUserId);
-    console.log(`✅ Admin (user ${adminUserId}) automatically added to Season ${newSeasonNumber}`);
-  } catch (addAdminError) {
-    console.error('❌ Error adding admin to new season:', addAdminError);
+  if (currentSeason) {
+    console.log(`Season ${currentSeason.seasonNumber} ended for league ${league.name}`);
+  } else {
+    console.log(`No active season found in league ${league.name}; creating a fresh active season`);
   }
+  console.log(`Season ${newSeasonNumber} created for league ${league.name}`);
 
   // Send notification to all league members (EXCEPT admin) asking if they want to join the new season
   try {
@@ -307,8 +462,8 @@ export const createNewSeason = async (ctx: Context) => {
       subQuery: false
     });
 
-    console.log(`📊 Found ${leagueMembers.length} league members before deduplication`);
-    
+    console.log(`Found ${leagueMembers.length} league members before deduplication`);
+
     // Remove duplicates - ensure each user gets only one notification
     const uniqueMembers = Array.from(
       new Map(leagueMembers.map(member => [member.id, member])).values()
@@ -317,11 +472,10 @@ export const createNewSeason = async (ctx: Context) => {
     // Filter out the admin - admin doesn't need notification as they're auto-added
     const nonAdminMembers = uniqueMembers.filter(member => String(member.id) !== String(adminUserId));
 
-    console.log(`📊 After deduplication and excluding admin: ${nonAdminMembers.length} members to notify`);
+    console.log(`After deduplication and excluding admin: ${nonAdminMembers.length} members to notify`);
 
     // Create notifications for all non-admin league members
     const notificationPromises = nonAdminMembers.map(async (member) => {
-      console.log(`📤 Sending notification to user ${member.id}`);
       return Notification.create({
         user_id: member.id,
         type: 'NEW_SEASON',
@@ -340,9 +494,9 @@ export const createNewSeason = async (ctx: Context) => {
     });
 
     await Promise.all(notificationPromises);
-    console.log(`✅ Sent NEW_SEASON notifications to ${nonAdminMembers.length} league members (admin excluded)`);
+    console.log(`Sent NEW_SEASON notifications to ${nonAdminMembers.length} league members (admin excluded)`);
   } catch (notifError) {
-    console.error('❌ Error sending season notifications:', notifError);
+    console.error('Error sending season notifications:', notifError);
     // Don't fail the season creation if notifications fail
   }
 
@@ -350,9 +504,9 @@ export const createNewSeason = async (ctx: Context) => {
     success: true,
     message: `Season ${newSeasonNumber} created successfully`,
     previousSeason: {
-      id: currentSeason.id,
-      seasonNumber: currentSeason.seasonNumber,
-      endDate: currentSeason.endDate
+      id: currentSeason?.id || null,
+      seasonNumber: currentSeason?.seasonNumber || null,
+      endDate: currentSeason?.endDate || null
     },
     newSeason: {
       id: newSeason.id,
@@ -387,7 +541,9 @@ export const addPlayerToSeason = async (ctx: Context) => {
   const activeSeason = await Season.findOne({
     where: {
       leagueId,
-      isActive: true
+      isActive: true,
+      archived: false,
+      deleted: false,
     }
   });
 
@@ -435,7 +591,9 @@ export const removePlayerFromSeason = async (ctx: Context) => {
   const activeSeason = await Season.findOne({
     where: {
       leagueId,
-      isActive: true
+      isActive: true,
+      archived: false,
+      deleted: false,
     }
   });
 
@@ -455,77 +613,389 @@ export const removePlayerFromSeason = async (ctx: Context) => {
 
 export const updateSeason = async (ctx: Context) => {
   const { seasonId } = ctx.params;
-  const { maxGames, showPoints } = ctx.request.body as { maxGames?: number; showPoints?: boolean };
+  const leagueIdParam = ctx.params.leagueId ? String(ctx.params.leagueId) : '';
+  const body = (ctx.request.body || {}) as Record<string, unknown>;
 
-  // Find the season and its league
-  const season = await Season.findByPk(seasonId, {
-    include: [
-      {
-        model: League,
-        as: 'league',
-        include: [
-          {
-            model: User,
-            as: 'administeredLeagues',
-            attributes: ['id']
-          }
-        ]
-      }
-    ]
-  });
+  if (!seasonId) {
+    ctx.throw(400, 'seasonId is required');
+    return;
+  }
 
+  const season = await Season.findByPk(seasonId);
   if (!season) {
     ctx.throw(404, 'Season not found');
     return;
   }
 
-  // Verify user is league admin
-  const league = (season as any).league;
-  const userId = ctx.state.user.userId || ctx.state.user.id;
-  
-  const adminList = league?.administeredLeagues || [];
-  console.log('🔍 updateSeason admin check:', {
-    userId,
-    leagueId: league?.id,
-    leagueFound: !!league,
-    adminList: adminList.map((a: any) => a.id),
-    adminCount: adminList.length
-  });
-  
-  let isAdmin = adminList.some((admin: any) => String(admin.id) === String(userId));
-  
-  if (!isAdmin && league?.id) {
-    // Fallback: direct query on LeagueAdmin table
-    const directResult = await (League as any).sequelize.query(
-      'SELECT "userId" FROM "LeagueAdmin" WHERE "leagueId" = :leagueId AND "userId" = :userId LIMIT 1',
-      { replacements: { leagueId: league.id, userId }, type: (League as any).sequelize.QueryTypes.SELECT }
-    );
-    console.log('🔍 updateSeason fallback query result:', JSON.stringify(directResult));
-    isAdmin = Array.isArray(directResult) && directResult.length > 0;
+  if (Boolean((season as any).deleted)) {
+    ctx.throw(410, 'Season has been permanently deleted');
+    return;
   }
 
+  if (leagueIdParam && String(season.leagueId) !== leagueIdParam) {
+    ctx.throw(404, 'Season not found in this league');
+    return;
+  }
+
+  const userId = String(ctx.state.user?.userId || ctx.state.user?.id || '');
+  const { isAdmin } = await checkLeagueAdmin(String(season.leagueId), userId);
   if (!isAdmin) {
     ctx.throw(403, 'You are not an administrator of this league');
     return;
   }
 
-  // Update season settings
-  if (maxGames !== undefined) {
-    season.maxGames = maxGames;
-  }
-  if (showPoints !== undefined) {
-    season.showPoints = showPoints;
+  const maxGamesRaw = body.maxGames;
+  const showPointsInput = normalizeBoolean(body.showPoints);
+  const directActive = normalizeBoolean(body.isActive);
+  const activeAlias = normalizeBoolean(body.active);
+  const seasonIsActive = normalizeBoolean(body.seasonIsActive);
+  const seasonActive = normalizeBoolean(body.seasonActive);
+  const directArchived = normalizeBoolean(body.archived);
+  const seasonArchived = normalizeBoolean(body.seasonArchived);
+  const statusRaw = typeof body.status === 'string' ? body.status.trim().toLowerCase() : '';
+  const seasonStatusRaw = typeof body.seasonStatus === 'string' ? body.seasonStatus.trim().toLowerCase() : '';
+  const status = seasonStatusRaw || statusRaw;
+
+  let nextArchived = directArchived ?? seasonArchived;
+  let nextActive = directActive ?? activeAlias ?? seasonIsActive ?? seasonActive;
+
+  if (status === 'archived') {
+    nextArchived = true;
+    nextActive = false;
+  } else if (status === 'active') {
+    nextArchived = false;
+    nextActive = true;
+  } else if (status === 'inactive') {
+    if (nextArchived === undefined) nextArchived = false;
+    nextActive = false;
   }
 
-  await season.save();
+  if (nextArchived === true) {
+    nextActive = false;
+  }
+  if (nextActive === true && nextArchived === undefined) {
+    nextArchived = false;
+  }
 
-  ctx.body = {
-    success: true,
-    message: 'Season settings updated',
-    season: {
-      id: season.id,
-      maxGames: season.maxGames,
-      showPoints: season.showPoints
+  const tx = await (Season as any).sequelize.transaction();
+  try {
+    const seasonInTx = await Season.findByPk(seasonId, { transaction: tx });
+    if (!seasonInTx) {
+      await tx.rollback();
+      ctx.throw(404, 'Season not found');
+      return;
     }
-  };
+
+    if (Boolean((seasonInTx as any).deleted)) {
+      await tx.rollback();
+      ctx.throw(410, 'Season has been permanently deleted');
+      return;
+    }
+
+    if (maxGamesRaw !== undefined && maxGamesRaw !== null && maxGamesRaw !== '') {
+      const parsedMaxGames = Number(maxGamesRaw);
+      if (!Number.isNaN(parsedMaxGames)) {
+        seasonInTx.maxGames = parsedMaxGames;
+      }
+    }
+
+    if (showPointsInput !== undefined) {
+      seasonInTx.showPoints = showPointsInput;
+    }
+
+    if (nextArchived !== undefined) {
+      (seasonInTx as any).archived = nextArchived;
+    }
+    if (nextActive !== undefined) {
+      seasonInTx.isActive = nextActive;
+    }
+
+    if ((seasonInTx as any).archived === true || seasonInTx.isActive === false) {
+      if (!seasonInTx.endDate) {
+        seasonInTx.endDate = new Date();
+      }
+    }
+
+    if (seasonInTx.isActive === true) {
+      await Season.update(
+        { isActive: false },
+        {
+          where: {
+            leagueId: seasonInTx.leagueId,
+            id: { [Op.ne]: seasonInTx.id },
+            deleted: false,
+          },
+          transaction: tx,
+        }
+      );
+    }
+
+    await seasonInTx.save({ transaction: tx });
+
+    if ((seasonInTx as any).archived === true || seasonInTx.isActive === false) {
+      const activeNonArchived = await Season.findOne({
+        where: {
+          leagueId: seasonInTx.leagueId,
+          isActive: true,
+          archived: false,
+          deleted: false,
+        },
+        transaction: tx,
+      });
+
+      if (!activeNonArchived) {
+        const replacement = await Season.findOne({
+          where: {
+            leagueId: seasonInTx.leagueId,
+            archived: false,
+            deleted: false,
+            id: { [Op.ne]: seasonInTx.id },
+          },
+          order: [['seasonNumber', 'DESC']],
+          transaction: tx,
+        });
+
+        if (replacement) {
+          replacement.isActive = true;
+          await replacement.save({ transaction: tx });
+        }
+      }
+    }
+
+    await tx.commit();
+
+    const refreshed = await Season.findByPk(seasonId);
+    const seasonOut = refreshed || seasonInTx;
+    const archivedNow = Boolean((seasonOut as any).archived);
+
+    ctx.body = {
+      success: true,
+      message: archivedNow ? 'Season archived successfully' : 'Season updated successfully',
+      season: buildSeasonPayload(seasonOut as Season),
+    };
+  } catch (error) {
+    try { await tx.rollback(); } catch {}
+    console.error('updateSeason error:', error);
+    ctx.status = 500;
+    ctx.body = {
+      success: false,
+      message: 'Failed to update season',
+    };
+  }
 };
+
+export const updateSeasonStatus = async (ctx: Context) => {
+  await updateSeason(ctx);
+};
+
+export const archiveSeason = async (ctx: Context) => {
+  const incomingBody = (ctx.request.body || {}) as Record<string, unknown>;
+  (ctx.request as any).body = {
+    ...incomingBody,
+    archived: true,
+    isActive: false,
+    seasonStatus: 'archived',
+  };
+  await updateSeason(ctx);
+};
+
+export const restoreSeason = async (ctx: Context) => {
+  const { seasonId } = ctx.params;
+  const leagueIdParam = ctx.params.leagueId ? String(ctx.params.leagueId) : '';
+
+  if (!seasonId) {
+    ctx.throw(400, 'seasonId is required');
+    return;
+  }
+
+  const season = await Season.findByPk(seasonId);
+  if (!season) {
+    ctx.throw(404, 'Season not found');
+    return;
+  }
+
+  if (leagueIdParam && String(season.leagueId) !== leagueIdParam) {
+    ctx.throw(404, 'Season not found in this league');
+    return;
+  }
+
+  if (Boolean((season as any).deleted)) {
+    ctx.throw(400, 'This season is permanently deleted and cannot be restored');
+    return;
+  }
+
+  const userId = String(ctx.state.user?.userId || ctx.state.user?.id || '');
+  const { isAdmin } = await checkLeagueAdmin(String(season.leagueId), userId);
+  if (!isAdmin) {
+    ctx.throw(403, 'You are not an administrator of this league');
+    return;
+  }
+
+  const tx = await (Season as any).sequelize.transaction();
+  try {
+    const seasonInTx = await Season.findByPk(seasonId, { transaction: tx });
+    if (!seasonInTx) {
+      await tx.rollback();
+      ctx.throw(404, 'Season not found');
+      return;
+    }
+
+    if (Boolean((seasonInTx as any).deleted)) {
+      await tx.rollback();
+      ctx.throw(400, 'This season is permanently deleted and cannot be restored');
+      return;
+    }
+
+    (seasonInTx as any).archived = false;
+
+    const existingActive = await Season.findOne({
+      where: {
+        leagueId: seasonInTx.leagueId,
+        isActive: true,
+        archived: false,
+        deleted: false,
+        id: { [Op.ne]: seasonInTx.id },
+      },
+      transaction: tx,
+    });
+
+    seasonInTx.isActive = !existingActive;
+    if (seasonInTx.isActive) {
+      seasonInTx.endDate = null as any;
+      await Season.update(
+        { isActive: false },
+        {
+          where: {
+            leagueId: seasonInTx.leagueId,
+            id: { [Op.ne]: seasonInTx.id },
+            deleted: false,
+          },
+          transaction: tx,
+        }
+      );
+    }
+
+    await seasonInTx.save({ transaction: tx });
+    await tx.commit();
+
+    const refreshed = await Season.findByPk(seasonId);
+    const seasonOut = refreshed || seasonInTx;
+    ctx.body = {
+      success: true,
+      message: 'Season restored successfully',
+      season: buildSeasonPayload(seasonOut as Season),
+    };
+  } catch (error) {
+    try { await tx.rollback(); } catch {}
+    console.error('restoreSeason error:', error);
+    ctx.status = 500;
+    ctx.body = {
+      success: false,
+      message: 'Failed to restore season',
+    };
+  }
+};
+
+export const permanentDeleteSeason = async (ctx: Context) => {
+  const { seasonId } = ctx.params;
+  const leagueIdParam = ctx.params.leagueId ? String(ctx.params.leagueId) : '';
+
+  if (!seasonId) {
+    ctx.throw(400, 'seasonId is required');
+    return;
+  }
+
+  const season = await Season.findByPk(seasonId);
+  if (!season) {
+    ctx.throw(404, 'Season not found');
+    return;
+  }
+
+  if (leagueIdParam && String(season.leagueId) !== leagueIdParam) {
+    ctx.throw(404, 'Season not found in this league');
+    return;
+  }
+
+  const userId = String(ctx.state.user?.userId || ctx.state.user?.id || '');
+  const { isAdmin } = await checkLeagueAdmin(String(season.leagueId), userId);
+  if (!isAdmin) {
+    ctx.throw(403, 'You are not an administrator of this league');
+    return;
+  }
+
+  const tx = await (Season as any).sequelize.transaction();
+  try {
+    const seasonInTx = await Season.findByPk(seasonId, { transaction: tx });
+    if (!seasonInTx) {
+      await tx.rollback();
+      ctx.throw(404, 'Season not found');
+      return;
+    }
+
+    (seasonInTx as any).deleted = true;
+    (seasonInTx as any).archived = true;
+    seasonInTx.isActive = false;
+    if (!seasonInTx.endDate) {
+      seasonInTx.endDate = new Date();
+    }
+    await seasonInTx.save({ transaction: tx });
+
+    await Match.update(
+      { archived: true },
+      {
+        where: {
+          leagueId: seasonInTx.leagueId,
+          seasonId: seasonInTx.id,
+        },
+        transaction: tx,
+      }
+    );
+
+    // After deletion, always keep latest remaining non-archived season as active.
+    const replacement = await Season.findOne({
+      where: {
+        leagueId: seasonInTx.leagueId,
+        deleted: false,
+        archived: false,
+        id: { [Op.ne]: seasonInTx.id },
+      },
+      order: [['seasonNumber', 'DESC']],
+      transaction: tx,
+    });
+
+    if (replacement) {
+      await Season.update(
+        { isActive: false },
+        {
+          where: {
+            leagueId: seasonInTx.leagueId,
+            deleted: false,
+            archived: false,
+            id: { [Op.ne]: replacement.id },
+          },
+          transaction: tx,
+        }
+      );
+
+      replacement.isActive = true;
+      replacement.endDate = null as any;
+      await replacement.save({ transaction: tx });
+    }
+
+    await tx.commit();
+
+    ctx.body = {
+      success: true,
+      message: 'Season permanently deleted (data preserved for history/awards/xp)',
+    };
+  } catch (error) {
+    try { await tx.rollback(); } catch {}
+    console.error('permanentDeleteSeason error:', error);
+    ctx.status = 500;
+    ctx.body = {
+      success: false,
+      message: 'Failed to permanently delete season',
+    };
+  }
+};
+

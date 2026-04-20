@@ -1,4 +1,4 @@
-import { Sequelize, QueryTypes } from 'sequelize';
+﻿import { Sequelize, QueryTypes } from 'sequelize';
 import { QueryInterface, DataTypes } from 'sequelize';
 import { DATABASE_URL } from './env';
 
@@ -20,15 +20,15 @@ const sequelize = new Sequelize(DATABASE_URL, {
     keepAlive: true, // CRITICAL: Keep connection alive on VPS
     keepAliveInitialDelayMs: 10000, // Keep alive every 10s
     application_name: 'championfootballer-api',
-    // 🚀 Performance: Timeouts for queries
+    // ًںڑ€ Performance: Timeouts for queries
     statement_timeout: 30000, // 30 second query timeout
     idle_in_transaction_session_timeout: 10000, // 10 second idle timeout
   },
   // Performance optimizations
   benchmark: false,
   retry: {
-    max: 3, // 🔧 Standard: 3 retries on connection issues
-    timeout: 30000, // 🔧 FIXED: 30s retry timeout (was 10s, causing errors!)
+    max: 3, // ًں”§ Standard: 3 retries on connection issues
+    timeout: 30000, // ًں”§ FIXED: 30s retry timeout (was 10s, causing errors!)
   }
 });
 
@@ -131,10 +131,100 @@ async function ensureLeagueArchivedColumn(): Promise<void> {
     );
     if (!Array.isArray(results) || results.length === 0) {
       await sequelize.query(`ALTER TABLE "Leagues" ADD COLUMN "archived" BOOLEAN NOT NULL DEFAULT false`);
-      console.log('✅ Added "archived" column to Leagues table');
+      console.log('âœ… Added "archived" column to Leagues table');
     }
   } catch (err) {
-    console.warn('⚠️ ensureLeagueArchivedColumn skipped:', (err as any).message);
+    console.warn('âڑ ï¸ڈ ensureLeagueArchivedColumn skipped:', (err as any).message);
+  }
+}
+
+async function ensureSeasonArchivedColumn(): Promise<void> {
+  try {
+    const [results] = await sequelize.query(
+      `SELECT column_name FROM information_schema.columns WHERE table_name = 'Seasons' AND column_name = 'archived'`
+    );
+    if (!Array.isArray(results) || results.length === 0) {
+      await sequelize.query(`ALTER TABLE "Seasons" ADD COLUMN "archived" BOOLEAN NOT NULL DEFAULT false`);
+      console.log('أ¢إ“â€¦ Added "archived" column to Seasons table');
+    }
+  } catch (err) {
+    console.warn('أ¢ع‘آ أ¯آ¸عˆ ensureSeasonArchivedColumn skipped:', (err as any).message);
+  }
+}
+
+async function ensureSeasonDeletedColumn(): Promise<void> {
+  try {
+    const [results] = await sequelize.query(
+      `SELECT column_name FROM information_schema.columns WHERE table_name = 'Seasons' AND column_name = 'deleted'`
+    );
+    if (!Array.isArray(results) || results.length === 0) {
+      await sequelize.query(`ALTER TABLE "Seasons" ADD COLUMN "deleted" BOOLEAN NOT NULL DEFAULT false`);
+      console.log('âœ… Added "deleted" column to Seasons table');
+    }
+  } catch (err) {
+    console.warn('âڑ ï¸ڈ ensureSeasonDeletedColumn skipped:', (err as any).message);
+  }
+}
+
+async function ensureSeasonNumberUniqueIndex(): Promise<void> {
+  try {
+    // Drop any old unique constraints on ("leagueId","seasonNumber"), whatever their names are.
+    await sequelize.query(`
+      DO $$
+      DECLARE r RECORD;
+      BEGIN
+        FOR r IN
+          SELECT con.conname
+          FROM pg_constraint con
+          JOIN pg_class rel ON rel.oid = con.conrelid
+          JOIN pg_namespace nsp ON nsp.oid = rel.relnamespace
+          WHERE nsp.nspname = 'public'
+            AND rel.relname = 'Seasons'
+            AND con.contype = 'u'
+            AND (
+              SELECT array_agg(att.attname ORDER BY u.ordinality)
+              FROM unnest(con.conkey) WITH ORDINALITY AS u(attnum, ordinality)
+              JOIN pg_attribute att ON att.attrelid = rel.oid AND att.attnum = u.attnum
+            ) = ARRAY['leagueId','seasonNumber']
+        LOOP
+          EXECUTE format('ALTER TABLE %I.%I DROP CONSTRAINT %I', 'public', 'Seasons', r.conname);
+        END LOOP;
+      END $$;
+    `);
+
+    // Drop any standalone unique indexes on ("leagueId","seasonNumber"), whatever their names are.
+    await sequelize.query(`
+      DO $$
+      DECLARE r RECORD;
+      BEGIN
+        FOR r IN
+          SELECT idx.relname AS index_name
+          FROM pg_index ind
+          JOIN pg_class idx ON idx.oid = ind.indexrelid
+          JOIN pg_class rel ON rel.oid = ind.indrelid
+          JOIN pg_namespace nsp ON nsp.oid = rel.relnamespace
+          WHERE nsp.nspname = 'public'
+            AND rel.relname = 'Seasons'
+            AND ind.indisunique = true
+            AND ind.indisprimary = false
+            AND (
+              SELECT array_agg(att.attname ORDER BY k.ordinality)
+              FROM unnest(ind.indkey) WITH ORDINALITY AS k(attnum, ordinality)
+              JOIN pg_attribute att ON att.attrelid = rel.oid AND att.attnum = k.attnum
+            ) = ARRAY['leagueId','seasonNumber']
+        LOOP
+          EXECUTE format('DROP INDEX IF EXISTS %I.%I', 'public', r.index_name);
+        END LOOP;
+      END $$;
+    `);
+
+    await sequelize.query(`
+      CREATE UNIQUE INDEX IF NOT EXISTS "seasons_league_id_season_number_active"
+      ON "Seasons" ("leagueId", "seasonNumber")
+      WHERE "deleted" = false;
+    `);
+  } catch (err) {
+    console.warn('âڑ ï¸ڈ ensureSeasonNumberUniqueIndex skipped:', (err as any).message);
   }
 }
 
@@ -157,6 +247,9 @@ export async function initializeDatabase() {
     await ensureUserPhoneColumn();
     await ensureResetCodeColumns();
     await ensureLeagueArchivedColumn();
+    await ensureSeasonArchivedColumn();
+    await ensureSeasonDeletedColumn();
+    await ensureSeasonNumberUniqueIndex();
 
     // Ensure DB NOTIFY/LISTEN infrastructure and triggers (idempotent)
     try {
@@ -265,17 +358,20 @@ export async function initializeDatabase() {
     }
 
     initialized = true;
-    console.log('✅ DB ready - All data safe, schema validated');
+    console.log('âœ… DB ready - All data safe, schema validated');
   } catch (e: any) {
-    console.error('❌ Database initialization error:', e.message);
+    console.error('â‌Œ Database initialization error:', e.message);
     // Continue anyway if it's just an index conflict
     if (e.parent?.code === '42P07') {
-      console.log('⚠️ Note: Some indexes already exist (this is normal)');
+      console.log('âڑ ï¸ڈ Note: Some indexes already exist (this is normal)');
       await ensureUserProviderColumn();
       await ensureUserLocationColumns();
       await ensureUserPhoneColumn();
       await ensureResetCodeColumns();
-      console.log('✅ DB ready');
+      await ensureSeasonArchivedColumn();
+      await ensureSeasonDeletedColumn();
+      await ensureSeasonNumberUniqueIndex();
+      console.log('âœ… DB ready');
     } else {
       throw e;
     }
@@ -286,9 +382,9 @@ export async function initializeDatabase() {
 export async function testConnection() {
   try {
     await initializeDatabase();
-    console.log('✅ PostgreSQL connected successfully.');
+    console.log('âœ… PostgreSQL connected successfully.');
   } catch (error) {
-    console.error('❌ Database connection failed:', error);
+    console.error('â‌Œ Database connection failed:', error);
     process.exit(1);
   }
 }
@@ -342,7 +438,7 @@ export default sequelize;
 //   dialectOptions: {
 //     ssl: {
 //       require: true,
-//       rejectUnauthorized: false, // For Neon — allows self-signed certs
+//       rejectUnauthorized: false, // For Neon â€” allows self-signed certs
 //     },
 //   },
 //   // Performance optimizations
@@ -381,13 +477,13 @@ export default sequelize;
 // export async function testConnection() {
 //   try {
 //     await sequelize.authenticate();
-//     console.log('✅ PostgreSQL connected successfully.');
+//     console.log('âœ… PostgreSQL connected successfully.');
     
 //     // Call initializeDatabase to sync with alter: true
 //     await initializeDatabase();
     
 //   } catch (error) {
-//     console.error('❌ Database connection failed:', error);
+//     console.error('â‌Œ Database connection failed:', error);
 //     process.exit(1);
 //   }
 // }
@@ -451,13 +547,13 @@ export default sequelize;
 // const initializeDatabase = async () => {
 //   try {
 //     await sequelize.authenticate();
-//     console.log('✅ PostgreSQL connected successfully.');
+//     console.log('âœ… PostgreSQL connected successfully.');
     
 //     // Sync all models with database
 //     await sequelize.sync({ alter: true });
-//     console.log('✅ Database synchronized successfully.');
+//     console.log('âœ… Database synchronized successfully.');
 //   } catch (error) {
-//     console.error('❌ Database initialization error:', error);
+//     console.error('â‌Œ Database initialization error:', error);
 //     // Don't exit process, just log error and retry
 //     setTimeout(initializeDatabase, 5000); // Retry after 5 seconds
 //   }
@@ -519,9 +615,9 @@ export default sequelize;
 // const initializeDatabase = async () => {
 //   try {
 //     await sequelize.authenticate();
-//     console.log('✅ Connected to Azure PostgreSQL successfully.');
+//     console.log('âœ… Connected to Azure PostgreSQL successfully.');
 //     await sequelize.sync({ alter: true });
-//     console.log('✅ Database synced.');
+//     console.log('âœ… Database synced.');
 //   } catch (error) {
 //         console.error('Error closing database connection:', error);
 //         process.exit(1);

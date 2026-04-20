@@ -860,7 +860,9 @@ export const getLeagueMatches = async (ctx: Context) => {
         {
           model: Season,
           as: 'seasons',
-          attributes: ['id', 'seasonNumber', 'isActive'],
+          attributes: ['id', 'seasonNumber', 'isActive', 'archived'],
+          where: { deleted: false },
+          required: false,
           include: [
             {
               model: User,
@@ -1525,7 +1527,9 @@ export const getLeagueById = async (ctx: Context) => {
         {
           model: Season,
           as: 'seasons',
-          attributes: ['id', 'seasonNumber', 'name', 'isActive', 'startDate', 'endDate', 'maxGames', 'showPoints', 'createdAt'],
+          attributes: ['id', 'seasonNumber', 'name', 'isActive', 'archived', 'startDate', 'endDate', 'maxGames', 'showPoints', 'createdAt', 'updatedAt'],
+          where: { deleted: false },
+          required: false,
           include: [
             {
               model: User,
@@ -2069,7 +2073,7 @@ export const getLeagueStatistics = async (ctx: Context) => {
         {
           model: Season,
           as: 'seasons',
-          where: { isActive: true },
+          where: { isActive: true, archived: false, deleted: false },
           required: false,
           include: [
             { model: User, as: 'players', attributes: ['id'] }
@@ -2238,7 +2242,7 @@ export const getLeagueXP = async (ctx: Context) => {
         {
           model: Season,
           as: 'seasons',
-          where: { isActive: true },
+          where: { isActive: true, archived: false, deleted: false },
           required: false
         }
       ]
@@ -2387,7 +2391,7 @@ export const getPlayerQuickView = async (ctx: Context) => {
     let seasonId = querySeasonId;
     if (!seasonId) {
       const activeSeason = await Season.findOne({
-        where: { leagueId, isActive: true }
+        where: { leagueId, isActive: true, archived: false, deleted: false }
       });
       if (activeSeason) seasonId = String((activeSeason as any).id);
     }
@@ -2656,7 +2660,20 @@ export const updateLeagueStatus = async (ctx: Context) => {
 // Update league
 export const updateLeague = async (ctx: Context) => {
   const { id } = ctx.params;
-  const { name, maxGames, active, showPoints, removeImage, seasonId, seasonMaxGames, seasonShowPoints } = ctx.request.body as any;
+  const {
+    name,
+    maxGames,
+    active,
+    showPoints,
+    removeImage,
+    seasonId,
+    seasonMaxGames,
+    seasonShowPoints,
+    seasonArchived,
+    seasonStatus,
+    seasonIsActive,
+    seasonActive,
+  } = ctx.request.body as any;
   let { admins } = ctx.request.body as any;
 
   // When sent via FormData, admins arrives as a JSON string — parse it
@@ -2743,11 +2760,48 @@ export const updateLeague = async (ctx: Context) => {
     // Update season settings if provided (handled here to avoid separate request + admin re-check)
     if (seasonId) {
       const season = await Season.findByPk(seasonId);
-      if (season) {
+      if (season && String(season.leagueId) === String(id) && !(season as any).deleted) {
         if (seasonMaxGames !== undefined) season.maxGames = Number(seasonMaxGames);
         if (seasonShowPoints !== undefined) season.showPoints = seasonShowPoints === true || seasonShowPoints === 'true';
+        const seasonArchivedBool = seasonArchived === true || seasonArchived === 'true';
+        const seasonActiveBool = seasonIsActive === true || seasonIsActive === 'true' || seasonActive === true || seasonActive === 'true';
+        const normalizedSeasonStatus = typeof seasonStatus === 'string' ? seasonStatus.trim().toLowerCase() : '';
+
+        if (seasonArchived !== undefined || normalizedSeasonStatus === 'archived') {
+          (season as any).archived = normalizedSeasonStatus === 'archived' ? true : seasonArchivedBool;
+          if ((season as any).archived) {
+            season.isActive = false;
+            if (!season.endDate) season.endDate = new Date();
+          }
+        }
+
+        if (seasonIsActive !== undefined || seasonActive !== undefined || normalizedSeasonStatus === 'active' || normalizedSeasonStatus === 'inactive') {
+          if (normalizedSeasonStatus === 'active') {
+            season.isActive = true;
+            (season as any).archived = false;
+          } else if (normalizedSeasonStatus === 'inactive') {
+            season.isActive = false;
+          } else {
+            season.isActive = seasonActiveBool;
+            if (seasonActiveBool) (season as any).archived = false;
+          }
+        }
+
+        if (season.isActive) {
+          await Season.update(
+            { isActive: false },
+            {
+              where: {
+                leagueId: season.leagueId,
+                id: { [Op.ne]: season.id },
+                deleted: false,
+              },
+            }
+          );
+        }
+
         await season.save();
-        console.log(`✅ Season ${seasonId} settings updated: maxGames=${season.maxGames}, showPoints=${season.showPoints}`);
+        console.log(`✅ Season ${seasonId} settings updated: maxGames=${season.maxGames}, showPoints=${season.showPoints}, archived=${(season as any).archived}, isActive=${season.isActive}`);
       }
     }
 
@@ -2951,7 +3005,7 @@ export const joinLeague = async (ctx: Context) => {
       where: { inviteCode },
       include: [
         { model: User, as: 'members', attributes: ['id'] },
-        { model: Season, as: 'seasons', where: { isActive: true }, required: false }
+        { model: Season, as: 'seasons', where: { isActive: true, archived: false, deleted: false }, required: false }
       ]
     });
 
@@ -3326,7 +3380,9 @@ export const createMatchInLeague = async (ctx: Context) => {
     const activeSeason = await Season.findOne({
       where: {
         leagueId,
-        isActive: true
+        isActive: true,
+        archived: false,
+        deleted: false,
       }
     });
 
