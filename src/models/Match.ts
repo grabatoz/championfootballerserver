@@ -28,6 +28,7 @@ export interface MatchAttributes {
   homeTeamImage?: string;
   awayTeamImage?: string;
   archived?: boolean; // <-- ADDED
+  deleted?: boolean;
   homeCaptainConfirmed?: boolean;
   awayCaptainConfirmed?: boolean;
   resultUploadedAt?: Date | null;
@@ -46,7 +47,7 @@ export interface MatchAttributes {
   awayMentalityId?: string | null;
 }
 
-interface MatchCreationAttributes extends Optional<MatchAttributes, 'id' | 'archived' | 'removed'> {} // <-- added 'removed'
+interface MatchCreationAttributes extends Optional<MatchAttributes, 'id' | 'archived' | 'deleted' | 'removed'> {} // <-- added 'removed'
 
 
 class Match extends Model<MatchAttributes, MatchCreationAttributes> implements MatchAttributes {
@@ -73,6 +74,7 @@ class Match extends Model<MatchAttributes, MatchCreationAttributes> implements M
   public homeTeamImage?: string;
   public awayTeamImage?: string;
   public archived?: boolean; // <-- ADDED
+  public deleted?: boolean;
   public homeCaptainConfirmed?: boolean;
   public awayCaptainConfirmed?: boolean;
   public resultUploadedAt?: Date | null;
@@ -271,6 +273,11 @@ Match.init(
       allowNull: true,
     },
     archived: { // <-- ADDED
+      type: DataTypes.BOOLEAN,
+      defaultValue: false,
+      allowNull: false
+    },
+    deleted: {
       type: DataTypes.BOOLEAN,
       defaultValue: false,
       allowNull: false

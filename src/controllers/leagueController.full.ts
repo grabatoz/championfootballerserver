@@ -434,7 +434,7 @@ export const getTrophyRoom = async (ctx: Context) => {
           {
             model: Match,
             as: 'matches',
-            where: { status: { [Op.in]: ['RESULT_PUBLISHED', 'RESULT_UPLOADED'] } },
+            where: { status: { [Op.in]: ['RESULT_PUBLISHED', 'RESULT_UPLOADED'] }, deleted: false },
             required: false,
             attributes: ['id', 'seasonId', 'status', 'date', 'homeTeamGoals', 'awayTeamGoals'],
             include: [
@@ -469,7 +469,7 @@ export const getTrophyRoom = async (ctx: Context) => {
           {
             model: Match,
             as: 'matches',
-            where: { status: { [Op.in]: ['RESULT_PUBLISHED', 'RESULT_UPLOADED'] } },
+            where: { status: { [Op.in]: ['RESULT_PUBLISHED', 'RESULT_UPLOADED'] }, deleted: false },
             required: false,
             attributes: ['id', 'seasonId', 'status', 'date', 'homeTeamGoals', 'awayTeamGoals'],
             include: [
@@ -911,7 +911,7 @@ export const getLeagueMatches = async (ctx: Context) => {
       return;
     }
 
-    const whereClause: Record<string, unknown> = { leagueId: id };
+    const whereClause: Record<string, unknown> = { leagueId: id, deleted: false };
     if (!includeArchived) {
       whereClause.archived = false;
     }
@@ -1656,6 +1656,7 @@ export const getLeagueById = async (ctx: Context) => {
       const matches = await Match.findAll({
         where: {
           leagueId: id,
+          deleted: false,
           ...(requestedSeasonId ? { seasonId: requestedSeasonId } : {})
         },
         attributes: { exclude: [] },
@@ -1883,6 +1884,7 @@ export const getLeagueById = async (ctx: Context) => {
     const matches = await Match.findAll({
       where: {
         leagueId: id,
+        deleted: false,
         seasonId:
           selectedMemberSeasonId
             ? selectedMemberSeasonId
@@ -3491,6 +3493,7 @@ export const createMatchInLeague = async (ctx: Context) => {
         where: {
           leagueId,
           seasonId: activeSeason.id,
+          deleted: false,
           archived: { [Op.not]: true }
         },
         attributes: ['id', 'createdAt', 'date', 'start'],

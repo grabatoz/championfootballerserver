@@ -766,7 +766,7 @@ export const setMatchAvailability = async (ctx: Context) => {
 
   try {
     const match = await Match.findByPk(matchId);
-    if (!match) {
+    if (!match || Boolean((match as any).deleted)) {
       ctx.throw(404, 'Match not found');
       return;
     }
@@ -806,8 +806,16 @@ export const updateMatchGoals = async (ctx: Context) => {
       include: [{ model: League, as: 'league', include: [{ model: User, as: 'administeredLeagues', attributes: ['id'] }] }]
     });
 
-    if (!match) {
+    if (!match || Boolean((match as any).deleted)) {
       ctx.throw(404, 'Match not found');
+      return;
+    }
+
+    if (Boolean((match as any).deleted)) {
+      ctx.body = {
+        success: true,
+        message: 'Match already deleted'
+      };
       return;
     }
 
@@ -1704,6 +1712,7 @@ export const getAllMatches = async (ctx: Context) => {
     if (leagueId) where.leagueId = leagueId;
     else where.leagueId = { [Op.in]: Array.from(accessibleLeagueIds) };
     if (seasonId) where.seasonId = seasonId;
+    where.deleted = false;
 
     const total = await Match.count({ where });
     const matches = await Match.findAll({
@@ -1942,6 +1951,15 @@ export const updateMatch = async (ctx: Context) => {
       return;
     }
 
+    if (Boolean((match as any).deleted)) {
+      ctx.status = 410;
+      ctx.body = {
+        success: false,
+        message: 'This match is permanently deleted and cannot be restored or updated'
+      };
+      return;
+    }
+
     const isAdmin = (match as any).league?.administeredLeagues?.some((a: any) => String(a.id) === String(ctx.state.user.userId));
     if (!isAdmin) {
       ctx.throw(403, 'Only league admins can update matches');
@@ -2019,11 +2037,14 @@ export const deleteMatch = async (ctx: Context) => {
       return;
     }
 
-    await match.destroy();
+    await match.update({
+      deleted: true as any,
+      archived: true as any
+    });
 
     ctx.body = {
       success: true,
-      message: 'Match deleted successfully'
+      message: 'Match permanently deleted (stats/history preserved)'
     };
   } catch (err) {
     console.error('Delete match error', err);
@@ -2074,7 +2095,7 @@ export const getCaptainPicks = async (ctx: Context) => {
 
   try {
     const match = await Match.findByPk(matchId);
-    if (!match) {
+    if (!match || Boolean((match as any).deleted)) {
       ctx.status = 404;
       ctx.body = { success: false, message: 'Match not found' };
       return;

@@ -166,6 +166,20 @@ async function ensureSeasonDeletedColumn(): Promise<void> {
   }
 }
 
+async function ensureMatchDeletedColumn(): Promise<void> {
+  try {
+    const [results] = await sequelize.query(
+      `SELECT column_name FROM information_schema.columns WHERE table_name = 'Matches' AND column_name = 'deleted'`
+    );
+    if (!Array.isArray(results) || results.length === 0) {
+      await sequelize.query(`ALTER TABLE "Matches" ADD COLUMN "deleted" BOOLEAN NOT NULL DEFAULT false`);
+      console.log('✅ Added "deleted" column to Matches table');
+    }
+  } catch (err) {
+    console.warn('⚠️ ensureMatchDeletedColumn skipped:', (err as any).message);
+  }
+}
+
 async function ensureSeasonNumberUniqueIndex(): Promise<void> {
   try {
     // Drop any old unique constraints on ("leagueId","seasonNumber"), whatever their names are.
@@ -249,6 +263,7 @@ export async function initializeDatabase() {
     await ensureLeagueArchivedColumn();
     await ensureSeasonArchivedColumn();
     await ensureSeasonDeletedColumn();
+    await ensureMatchDeletedColumn();
     await ensureSeasonNumberUniqueIndex();
 
     // Ensure DB NOTIFY/LISTEN infrastructure and triggers (idempotent)
@@ -370,6 +385,7 @@ export async function initializeDatabase() {
       await ensureResetCodeColumns();
       await ensureSeasonArchivedColumn();
       await ensureSeasonDeletedColumn();
+      await ensureMatchDeletedColumn();
       await ensureSeasonNumberUniqueIndex();
       console.log('âœ… DB ready');
     } else {

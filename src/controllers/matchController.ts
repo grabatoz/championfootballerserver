@@ -30,6 +30,7 @@ export const createMatch = async (ctx: Context) => {
 
 export const getAllMatches = async (ctx: Context) => {
   const matches = await Match.findAll({
+    where: { deleted: false as any },
     include: [
       { model: League, as: 'league' },
       { model: Season, as: 'season' }
@@ -55,7 +56,7 @@ export const getMatchById = async (ctx: Context) => {
     ]
   });
 
-  if (!match) {
+  if (!match || Boolean((match as any).deleted)) {
     ctx.throw(404, 'Match not found');
     return;
   }
@@ -75,6 +76,15 @@ export const updateMatch = async (ctx: Context) => {
     return;
   }
 
+  if (Boolean((match as any).deleted)) {
+    ctx.status = 410;
+    ctx.body = {
+      success: false,
+      message: 'This match is permanently deleted and cannot be restored or updated'
+    };
+    return;
+  }
+
   // Update logic here
   ctx.body = {
     success: true,
@@ -86,21 +96,24 @@ export const deleteMatch = async (ctx: Context) => {
   const { id } = ctx.params;
   
   const match = await Match.findByPk(id);
-  if (!match) {
+  if (!match || Boolean((match as any).deleted)) {
     ctx.throw(404, 'Match not found');
     return;
   }
 
-  await match.destroy();
+  await match.update({ deleted: true as any, archived: true as any });
 
-  ctx.status = 204;
+  ctx.body = {
+    success: true,
+    message: 'Match permanently deleted (stats/history preserved)'
+  };
 };
 
 export const getMatchesBySeason = async (ctx: Context) => {
   const { seasonId } = ctx.params;
   
   const matches = await Match.findAll({
-    where: { seasonId },
+    where: { seasonId, deleted: false as any },
     include: [
       { model: League, as: 'league' },
       { model: Season, as: 'season' }
