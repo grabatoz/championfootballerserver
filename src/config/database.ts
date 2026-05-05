@@ -100,6 +100,24 @@ async function ensureUserPhoneColumn(): Promise<void> {
   }
 }
 
+async function ensureUserPhoneCountryCodeColumn(): Promise<void> {
+  const qi = sequelize.getQueryInterface() as QueryInterface;
+  try {
+    const table = await qi.describeTable('users');
+    if (!table.phoneCountryCode) {
+      await qi.addColumn('users', 'phoneCountryCode', {
+        type: DataTypes.STRING(10),
+        allowNull: true,
+      });
+    }
+  } catch (err: any) {
+    if (err?.message?.includes('does not exist') || err?.original?.code === '42P01') {
+      return;
+    }
+    throw err;
+  }
+}
+
 async function ensureResetCodeColumns(): Promise<void> {
   const qi = sequelize.getQueryInterface() as QueryInterface;
   try {
@@ -259,6 +277,7 @@ export async function initializeDatabase() {
     await ensureUserProviderColumn();
     await ensureUserLocationColumns();
     await ensureUserPhoneColumn();
+    await ensureUserPhoneCountryCodeColumn();
     await ensureResetCodeColumns();
     await ensureLeagueArchivedColumn();
     await ensureSeasonArchivedColumn();

@@ -14,6 +14,7 @@ export interface UserAttributes {
   state?: string | null;
   city?: string | null;
   phone?: string | null;
+  phoneCountryCode?: string | null;
   position?: string;
   positionType?: string;
   style?: string;
@@ -51,6 +52,7 @@ export class User extends Model<UserAttributes> implements UserAttributes {
   public state!: string | null;
   public city!: string | null;
   public phone!: string | null;
+  public phoneCountryCode!: string | null;
   public position!: string;
   public positionType!: string;
   public style!: string;
@@ -165,6 +167,10 @@ User.init(
       allowNull: true,
     },
     phone: {
+      type: DataTypes.STRING,
+      allowNull: true,
+    },
+    phoneCountryCode: {
       type: DataTypes.STRING,
       allowNull: true,
     },

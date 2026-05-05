@@ -139,38 +139,93 @@ router.post("/auth/register", none, async (ctx: Context) => {
     const userData = ctx.request.body.user || ctx.request.body;
     console.log('Parsed user data:', userData);
 
-    if (!userData || !userData.email || !userData.password) {
-      console.log('Missing required fields:', { userData });
-      ctx.throw(400, "Email and password are required");
+    if (!userData || typeof userData !== "object") {
+      ctx.throw(400, "Invalid registration payload");
+    }
+
+    const normalizeString = (value: unknown): string => (typeof value === "string" ? value.trim() : "");
+
+    const email = normalizeString(userData.email).toLowerCase();
+    const password = typeof userData.password === "string" ? userData.password : "";
+    const firstName = normalizeString(userData.firstName);
+    const lastName = normalizeString(userData.lastName);
+    const gender = normalizeString(userData.gender).toLowerCase();
+    const country = normalizeString(userData.country);
+    const city = normalizeString(userData.city);
+    const state = normalizeString(userData.state) || city; // keep backward compatibility
+    const phone = String(userData.phone ?? "").replace(/\D/g, "");
+    const phoneCountryCode = normalizeString(userData.phoneCountryCode).toUpperCase();
+    const ageInput = String(userData.age ?? "").trim();
+    const age = Number.parseInt(ageInput, 10);
+
+    const missingFields: string[] = [];
+    if (!firstName) missingFields.push("firstName");
+    if (!lastName) missingFields.push("lastName");
+    if (!email) missingFields.push("email");
+    if (!password) missingFields.push("password");
+    if (!phoneCountryCode) missingFields.push("phoneCountryCode");
+    if (!phone) missingFields.push("phone");
+    if (!ageInput) missingFields.push("age");
+    if (!gender) missingFields.push("gender");
+    if (!country) missingFields.push("country");
+    if (!city) missingFields.push("city");
+
+    if (missingFields.length > 0) {
+      ctx.throw(400, `Please fill required fields: ${missingFields.join(", ")}`);
     }
 
     // Validate email format
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    if (!emailRegex.test(userData.email)) {
+    if (!emailRegex.test(email)) {
       ctx.throw(400, "Invalid email format");
     }
 
     // Validate password strength - min 7 chars, must contain letters and digits
-    if (userData.password.length < 7) {
+    if (password.length < 7) {
       ctx.throw(400, "Password must be at least 7 characters long");
     }
-    if (!/[a-zA-Z]/.test(userData.password) || !/[0-9]/.test(userData.password)) {
+    if (!/[a-zA-Z]/.test(password) || !/[0-9]/.test(password)) {
       ctx.throw(400, "Password must contain letters and numbers. Consider also using upper and lower case and other characters (-, _, @, ?, etc)");
     }
 
     // Validate name length
-    if (userData.firstName && userData.firstName.length > 20) {
+    if (firstName.length > 20) {
       ctx.throw(400, "First name must be 20 characters or less");
     }
-    if (userData.lastName && userData.lastName.length > 20) {
+    if (lastName.length > 20) {
       ctx.throw(400, "Last name must be 20 characters or less");
     }
 
-    // Convert email to lowercase
-    userData.email = userData.email.toLowerCase();
+    // Validate age
+    if (!Number.isInteger(age) || age < 18 || age > 65) {
+      ctx.throw(400, "Age must be between 18 and 65");
+    }
+
+    // Validate gender
+    if (gender !== "male" && gender !== "female") {
+      ctx.throw(400, "Gender must be male or female");
+    }
+
+    // Validate phone country code
+    if (!/^[A-Z]{2}$/.test(phoneCountryCode)) {
+      ctx.throw(400, "Invalid phone country code");
+    }
+
+    // Validate phone
+    if (phone.startsWith("0")) {
+      ctx.throw(400, "Please enter phone number without leading 0");
+    }
+    if (!/^\d{6,15}$/.test(phone)) {
+      ctx.throw(400, "Phone number must be 6 to 15 digits");
+    }
+
+    // Validate location strings length
+    if (country.length > 100 || city.length > 100 || state.length > 100) {
+      ctx.throw(400, "Country/City/State must be 100 characters or less");
+    }
 
     // Check if user already exists
-    const existingUser = await User.findOne({ where: { email: userData.email } });
+    const existingUser = await User.findOne({ where: { email } });
     if (existingUser) {
       // If user exists but is not verified, resend verification code
       if (!existingUser.isVerified) {
@@ -217,29 +272,31 @@ router.post("/auth/register", none, async (ctx: Context) => {
     }
 
     console.log('Creating new user with data:', {
-      email: userData.email,
-      firstName: userData.firstName,
-      lastName: userData.lastName,
-      age: userData.age,
-      gender: userData.gender,
-      country: userData.country,
-      state: userData.state,
-      city: userData.city,
-      phone: userData.phone
+      email,
+      firstName,
+      lastName,
+      age,
+      gender,
+      country,
+      state,
+      city,
+      phone,
+      phoneCountryCode,
     });
 
     // Create user with isVerified = false (requires email verification)
     const newUser = await User.create({
-      email: userData.email,
-      password: await hash(userData.password, 10),
-      firstName: userData.firstName || '',
-      lastName: userData.lastName || '',
-      age: userData.age ? parseInt(userData.age) : undefined,
-      gender: userData.gender,
-      country: userData.country ?? undefined,
-      state: userData.state ?? undefined,
-      city: userData.city ?? undefined,
-      phone: userData.phone ?? undefined,
+      email,
+      password: await hash(password, 10),
+      firstName,
+      lastName,
+      age,
+      gender,
+      country,
+      state,
+      city,
+      phone,
+      phoneCountryCode,
       position: userData.position || undefined,
       positionType: userData.positionType || undefined,
       style: userData.style || undefined,
@@ -436,6 +493,7 @@ router.post("/auth/verify-registration", none, async (ctx: CustomContext) => {
         state: user.state,
         city: user.city,
         phone: user.phone,
+        phoneCountryCode: (user as any).phoneCountryCode ?? null,
         position: user.position,
         positionType: user.positionType,
         style: user.style,
@@ -656,7 +714,7 @@ router.post("/auth/login", none, async (ctx: CustomContext) => {
   const userEmail = email.toLowerCase();
   const user = await User.findOne({
     where: { email },
-    attributes: ['id','firstName','lastName','email','password','age','gender','country','state','city','position','positionType','style','preferredFoot','shirtNumber','profilePicture','skills','xp','achievements','provider','isVerified'] // removed providerId
+    attributes: ['id','firstName','lastName','email','password','age','gender','country','state','city','phone','phoneCountryCode','position','positionType','style','preferredFoot','shirtNumber','profilePicture','skills','xp','achievements','provider','isVerified'] // removed providerId
   });
 
   if (!user) {
@@ -730,6 +788,8 @@ router.post("/auth/login", none, async (ctx: CustomContext) => {
       country: (user as any).country,
       state: (user as any).state,
       city: (user as any).city,
+      phone: (user as any).phone ?? null,
+      phoneCountryCode: (user as any).phoneCountryCode ?? null,
       position: user.position,
       positionType: user.positionType,
       style: user.style,
@@ -813,6 +873,8 @@ router.get("/auth/data", required, async (ctx: CustomContext) => {
           'country',
           'state',
           'city',
+          'phone',
+          'phoneCountryCode',
           'position',
           'positionType',
           'style',
@@ -1183,7 +1245,7 @@ router.get("/auth/status", required, async (ctx: CustomContext) => {
       const user = await User.findByPk(userId, {
         attributes: [
           'id', 'firstName', 'lastName', 'email', 'age', 'gender',
-          'country', 'state', 'city', 'position', 'positionType',
+          'country', 'state', 'city', 'phone', 'phoneCountryCode', 'position', 'positionType',
           'style', 'preferredFoot', 'shirtNumber', 'profilePicture',
           'skills', 'xp', 'updatedAt'
         ],
@@ -1276,6 +1338,8 @@ router.get("/auth/status", required, async (ctx: CustomContext) => {
           country: (user as any).country,
           state: (user as any).state,
           city: (user as any).city,
+          phone: (user as any).phone ?? null,
+          phoneCountryCode: (user as any).phoneCountryCode ?? null,
           position: user.position,
           positionType: user.positionType,
           style: user.style,

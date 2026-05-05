@@ -96,6 +96,18 @@ export const updateProfile = async (ctx: Context) => {
     delete updateData.password;
   }
 
+  if (Object.prototype.hasOwnProperty.call(updateData, 'phoneCountryCode')) {
+    const normalizedCode = String(updateData.phoneCountryCode ?? '').trim().toUpperCase();
+    if (!normalizedCode) {
+      updateData.phoneCountryCode = null;
+    } else if (!/^[A-Z]{2}$/.test(normalizedCode)) {
+      ctx.throw(400, 'Invalid phone country code');
+      return;
+    } else {
+      updateData.phoneCountryCode = normalizedCode;
+    }
+  }
+
   await user.update(updateData);
 
   // Clear user cache
