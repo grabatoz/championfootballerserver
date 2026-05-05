@@ -154,7 +154,16 @@ router.post("/auth/register", none, async (ctx: Context) => {
     const city = normalizeString(userData.city);
     const state = normalizeString(userData.state) || city; // keep backward compatibility
     const phone = String(userData.phone ?? "").replace(/\D/g, "");
-    const phoneCountryCode = normalizeString(userData.phoneCountryCode).toUpperCase();
+    const rawPhoneCountryCode = normalizeString(userData.phoneCountryCode);
+    const phoneCountryCodeUpper = rawPhoneCountryCode.toUpperCase();
+    const phoneCountryDigits = rawPhoneCountryCode.replace(/\D/g, "");
+    let normalizedPhoneCountryCode = "";
+    if (/^[A-Z]{2}$/.test(phoneCountryCodeUpper)) {
+      normalizedPhoneCountryCode = phoneCountryCodeUpper;
+    } else if (phoneCountryDigits && /^\d{1,4}$/.test(phoneCountryDigits)) {
+      // Backward compatibility: some clients may send dial code format (+44 / 44)
+      normalizedPhoneCountryCode = `+${phoneCountryDigits}`;
+    }
     const ageInput = String(userData.age ?? "").trim();
     const age = Number.parseInt(ageInput, 10);
 
@@ -163,7 +172,7 @@ router.post("/auth/register", none, async (ctx: Context) => {
     if (!lastName) missingFields.push("lastName");
     if (!email) missingFields.push("email");
     if (!password) missingFields.push("password");
-    if (!phoneCountryCode) missingFields.push("phoneCountryCode");
+    if (!rawPhoneCountryCode) missingFields.push("phoneCountryCode");
     if (!phone) missingFields.push("phone");
     if (!ageInput) missingFields.push("age");
     if (!gender) missingFields.push("gender");
@@ -207,8 +216,8 @@ router.post("/auth/register", none, async (ctx: Context) => {
     }
 
     // Validate phone country code
-    if (!/^[A-Z]{2}$/.test(phoneCountryCode)) {
-      ctx.throw(400, "Invalid phone country code");
+    if (!normalizedPhoneCountryCode) {
+      ctx.throw(400, "Invalid phone country code. Use ISO2 (e.g., GB) or dial code (e.g., +44)");
     }
 
     // Validate phone
@@ -281,7 +290,7 @@ router.post("/auth/register", none, async (ctx: Context) => {
       state,
       city,
       phone,
-      phoneCountryCode,
+      phoneCountryCode: normalizedPhoneCountryCode,
     });
 
     // Create user with isVerified = false (requires email verification)
@@ -296,7 +305,7 @@ router.post("/auth/register", none, async (ctx: Context) => {
       state,
       city,
       phone,
-      phoneCountryCode,
+      phoneCountryCode: normalizedPhoneCountryCode,
       position: userData.position || undefined,
       positionType: userData.positionType || undefined,
       style: userData.style || undefined,
