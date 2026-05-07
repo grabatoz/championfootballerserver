@@ -181,7 +181,17 @@ export const handleSeasonAction = async (ctx: Context) => {
     if (action === 'join') {
       // Add user to the target season
       console.log(`📌 Adding user ${userId} to season ${targetSeason.id} (Season ${seasonNumber})`);
-      await (targetSeason as any).addPlayer(userId);
+      try {
+        await (targetSeason as any).addPlayer(userId);
+      } catch (addError) {
+        const err = addError as { message?: string; original?: { code?: string }; parent?: { code?: string } };
+        const msg = String(err?.message || '').toLowerCase();
+        const code = String(err?.original?.code || err?.parent?.code || '').toLowerCase();
+        const isDuplicateMembership = code === '23505' || msg.includes('duplicate') || msg.includes('unique');
+        if (!isDuplicateMembership) {
+          throw addError;
+        }
+      }
       console.log(`✅ User ${userId} successfully added to season ${targetSeason.id}`);
       
       // Mark notification as read and update meta to show action taken
@@ -201,6 +211,13 @@ export const handleSeasonAction = async (ctx: Context) => {
         seasonId: targetSeason.id
       };
     } else if (action === 'decline') {
+      try {
+        await (targetSeason as any).removePlayer(userId);
+        console.log(`Removed user ${userId} from season ${targetSeason.id} after decline`);
+      } catch (removeError) {
+        console.error(`Error removing user ${userId} from season ${targetSeason.id}:`, removeError);
+      }
+
       // Just mark as read and update meta
       await notification.update({ 
         read: true,

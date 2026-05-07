@@ -132,6 +132,33 @@ export const getAllSeasons = async (ctx: Context) => {
   }
 
   // For non-admin members - only show seasons where user is a member
+  const seasonInviteStatusBySeasonId = new Map<string, string>();
+  try {
+    const seasonNotifications = await Notification.findAll({
+      where: {
+        user_id: userId,
+        type: 'NEW_SEASON',
+      },
+      order: [['created_at', 'DESC']],
+      attributes: ['meta', 'created_at'],
+    });
+
+    seasonNotifications.forEach((notification) => {
+      const meta = (notification as any)?.meta;
+      if (!meta || typeof meta !== 'object') return;
+      const metaRecord = meta as Record<string, unknown>;
+      const metaLeagueId = String(metaRecord.leagueId || '').trim();
+      const metaSeasonId = String(metaRecord.seasonId || '').trim();
+      if (!metaSeasonId || metaLeagueId !== String(leagueId)) return;
+      if (seasonInviteStatusBySeasonId.has(metaSeasonId)) return;
+
+      const actionTaken = String(metaRecord.actionTaken || '').trim().toLowerCase();
+      seasonInviteStatusBySeasonId.set(metaSeasonId, actionTaken || 'pending');
+    });
+  } catch (notificationLookupError) {
+    console.error('Error checking season invite notifications:', notificationLookupError);
+  }
+
   const filteredSeasons = await Promise.all(
     seasons.map(async (season) => {
       const players = (season as any).players || [];
@@ -152,6 +179,50 @@ export const getAllSeasons = async (ctx: Context) => {
           maxGames: season.maxGames,
           showPoints: season.showPoints,
           playerCount: players.length,
+          createdAt: season.createdAt,
+          isMember: true
+        };
+      }
+
+      const seasonId = String((season as any).id || '').trim();
+      const inviteStatus = seasonInviteStatusBySeasonId.get(seasonId) || '';
+      const isDeclined = inviteStatus === 'declined';
+      const shouldAutoEnroll =
+        season.isActive === true &&
+        !isDeclined &&
+        inviteStatus !== '';
+
+      if (shouldAutoEnroll) {
+        try {
+          await (season as any).addPlayer(userId);
+        } catch (addPlayerError) {
+          const err = addPlayerError as { message?: string; original?: { code?: string }; parent?: { code?: string } };
+          const msg = String(err?.message || '').toLowerCase();
+          const code = String(err?.original?.code || err?.parent?.code || '').toLowerCase();
+          const isDuplicate = code === '23505' || msg.includes('duplicate') || msg.includes('unique');
+          if (!isDuplicate) {
+            console.error(`Error auto-enrolling user ${userId} into season ${seasonId}:`, addPlayerError);
+            return null;
+          }
+        }
+
+        const refreshedPlayers = await (season as any).getPlayers({
+          attributes: ['id', 'email', 'firstName', 'lastName']
+        });
+
+        return {
+          id: season.id,
+          seasonNumber: season.seasonNumber,
+          name: season.name,
+          isActive: season.isActive,
+          archived: Boolean((season as any).archived),
+          deleted: Boolean((season as any).deleted),
+          status: getSeasonStatus(season),
+          startDate: season.startDate,
+          endDate: season.endDate,
+          maxGames: season.maxGames,
+          showPoints: season.showPoints,
+          playerCount: refreshedPlayers.length,
           createdAt: season.createdAt,
           isMember: true
         };
@@ -273,8 +344,8 @@ export const getActiveSeason = async (ctx: Context) => {
 
 export const createNewSeason = async (ctx: Context) => {
   const { leagueId } = ctx.params;
-  const { copyPlayers = true } = ctx.request.body as { copyPlayers?: boolean };
-  void copyPlayers;
+  const { copyPlayers = true } = ctx.request.body as { copyPlayers?: boolean | string | number };
+  const shouldCopyPlayers = normalizeBoolean(copyPlayers) ?? true;
 
   const adminUserId = String(ctx.state.user?.userId || ctx.state.user?.id || '');
   const { league, isAdmin } = await checkLeagueAdmin(String(leagueId), adminUserId);
@@ -304,10 +375,13 @@ export const createNewSeason = async (ctx: Context) => {
   let currentSeason: Season | null = null;
   let newSeason: Season | null = null;
   let newSeasonNumber = 0;
+  let transferredPlayersCount = 0;
 
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const tx = await sequelizeRef.transaction();
     try {
+      let sourceSeasonForCopy: Season | null = null;
+
       // Serialize season creation per league to avoid race conditions on seasonNumber.
       const lockedLeague = await League.findByPk(leagueId, {
         transaction: tx,
@@ -336,6 +410,18 @@ export const createNewSeason = async (ctx: Context) => {
         currentSeason.isActive = false;
         currentSeason.endDate = currentSeason.endDate || new Date();
         await currentSeason.save({ transaction: tx });
+      }
+      sourceSeasonForCopy = currentSeason;
+
+      if (!sourceSeasonForCopy && shouldCopyPlayers) {
+        sourceSeasonForCopy = await Season.findOne({
+          where: {
+            leagueId,
+            deleted: false,
+          },
+          order: [['seasonNumber', 'DESC']],
+          transaction: tx,
+        });
       }
 
       // Numbering rule (updated):
@@ -410,11 +496,36 @@ export const createNewSeason = async (ctx: Context) => {
       }
       newSeason = seasonInTx;
 
-      try {
-        await (newSeason as any).addPlayer(adminUserId, { transaction: tx });
-      } catch (addAdminError) {
-        console.error('Error adding admin to new season:', addAdminError);
+      const playerIdsToAdd = new Set<string>();
+      playerIdsToAdd.add(String(adminUserId));
+
+      if (shouldCopyPlayers && sourceSeasonForCopy) {
+        try {
+          const previousSeasonPlayers = await (sourceSeasonForCopy as any).getPlayers({
+            attributes: ['id'],
+            joinTableAttributes: [],
+            transaction: tx,
+          });
+
+          previousSeasonPlayers.forEach((player: any) => {
+            const id = String(player?.id || '').trim();
+            if (id) playerIdsToAdd.add(id);
+          });
+        } catch (copyError) {
+          console.error('Error reading previous season players for copy:', copyError);
+        }
       }
+
+      let addedPlayersCounter = 0;
+      for (const playerId of playerIdsToAdd) {
+        try {
+          await (newSeason as any).addPlayer(playerId, { transaction: tx });
+          addedPlayersCounter += 1;
+        } catch (addPlayerError) {
+          console.error(`Error adding player ${playerId} to new season:`, addPlayerError);
+        }
+      }
+      transferredPlayersCount = Math.max(addedPlayersCounter - 1, 0); // Exclude admin from transferred count
 
       await tx.commit();
       break;
@@ -476,17 +587,22 @@ export const createNewSeason = async (ctx: Context) => {
 
     // Create notifications for all non-admin league members
     const notificationPromises = nonAdminMembers.map(async (member) => {
+      const notificationBody = shouldCopyPlayers
+        ? `Season ${newSeasonNumber} has just begun! You have been moved automatically. If you decline, you will be removed from this season.`
+        : `Season ${newSeasonNumber} has just begun! Would you like to join this season? If you don't respond, you won't be automatically added.`;
+
       return Notification.create({
         user_id: member.id,
         type: 'NEW_SEASON',
         title: `New Season Started in ${league.name}!`,
-        body: `Season ${newSeasonNumber} has just begun! Would you like to join this season? If you don't respond, you won't be automatically added.`,
+        body: notificationBody,
         meta: {
           leagueId,
           leagueName: league.name,
           seasonId: newSeason.id,
           seasonNumber: newSeasonNumber,
-          actionRequired: true
+          actionRequired: true,
+          autoTransferred: shouldCopyPlayers
         },
         read: false,
         created_at: new Date()
@@ -514,7 +630,9 @@ export const createNewSeason = async (ctx: Context) => {
       name: newSeason.name,
       startDate: newSeason.startDate,
       isActive: newSeason.isActive
-    }
+    },
+    copiedPlayers: shouldCopyPlayers,
+    transferredPlayersCount
   };
 };
 
