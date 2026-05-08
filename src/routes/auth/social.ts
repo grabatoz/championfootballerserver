@@ -405,6 +405,8 @@ router.get("/facebook/callback", async (ctx, next) => {
 router.get("/providers", (ctx) => {
   const gcid = process.env.GOOGLE_CLIENT_ID || "";
   const gidMasked = gcid ? `${gcid.slice(0, 4)}...${gcid.slice(-6)}` : null;
+  const fbid = process.env.FACEBOOK_APP_ID || "";
+  const fbidMasked = fbid ? `${fbid.slice(0, 4)}...${fbid.slice(-6)}` : null;
   const effectiveGoogleCallback = normalizeAbsoluteUrl(process.env.GOOGLE_CALLBACK_URL)
     || `${defaultApiOrigin}/auth/google/callback`;
   const effectiveFacebookCallback = normalizeAbsoluteUrl(process.env.FACEBOOK_CALLBACK_URL)
@@ -418,7 +420,9 @@ router.get("/providers", (ctx) => {
     effectiveGoogleCallback,
     effectiveFacebookCallback,
     googleClientIdHint: gidMasked,
+    facebookAppIdHint: fbidMasked,
     hasGoogleSecret: Boolean(process.env.GOOGLE_CLIENT_SECRET || null),
+    hasFacebookSecret: Boolean(process.env.FACEBOOK_APP_SECRET || null),
     defaultClientOrigin,
     allowedClientOrigins: Array.from(allowedClientOrigins),
     timestamp: new Date().toISOString(),
