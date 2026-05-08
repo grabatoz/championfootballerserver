@@ -31,6 +31,7 @@ const normalizeAbsoluteUrl = (value?: string | null): string | null => {
 };
 
 const defaultClientOrigin = normalizeOrigin(CLIENT_URL) || 'http://localhost:3000';
+const defaultApiOrigin = normalizeOrigin(process.env.API_URL) || 'http://localhost:5000';
 
 const configuredClientOrigins = [
   process.env.CLIENT_URL,
@@ -114,6 +115,10 @@ const getRequestOrigin = (ctx: Router.RouterContext): string => {
 };
 
 const buildProviderCallbackUrl = (ctx: Router.RouterContext, path: string): string => {
+  const apiOrigin = normalizeOrigin(process.env.API_URL);
+  if (apiOrigin) {
+    return `${apiOrigin}${path}`;
+  }
   return `${getRequestOrigin(ctx)}${path}`;
 };
 
@@ -248,6 +253,7 @@ router.get("/google", async (ctx, next) => {
   const clientOrigin = resolveClientOrigin(String(ctx.query.client || ''));
   const nextPath = sanitizeNextPath(ctx.query.next);
   const callbackURL = resolveProviderCallbackUrl(process.env.GOOGLE_CALLBACK_URL, ctx, '/auth/google/callback');
+  console.log("[SOCIAL] Google callbackURL resolved:", callbackURL);
 
   if (!GOOGLE_ENABLED) {
     console.warn("[SOCIAL] Google not configured in environment")
@@ -278,6 +284,7 @@ router.get("/google/callback", async (ctx, next) => {
   const state = parseOAuthState(ctx.query.state);
   const clientOrigin = resolveClientOrigin(state.client);
   const callbackURL = resolveProviderCallbackUrl(process.env.GOOGLE_CALLBACK_URL, ctx, '/auth/google/callback');
+  console.log("[SOCIAL] Google callbackURL resolved (callback):", callbackURL);
 
   const oauthError = toSafeErrorCode(ctx.query.error, '');
   if (oauthError) {
@@ -327,6 +334,7 @@ router.get("/facebook", async (ctx, next) => {
   const clientOrigin = resolveClientOrigin(String(ctx.query.client || ''));
   const nextPath = sanitizeNextPath(ctx.query.next);
   const callbackURL = resolveProviderCallbackUrl(process.env.FACEBOOK_CALLBACK_URL, ctx, '/auth/facebook/callback');
+  console.log("[SOCIAL] Facebook callbackURL resolved:", callbackURL);
 
   if (!FACEBOOK_ENABLED) {
     console.warn("[SOCIAL] Facebook not configured in environment")
@@ -354,6 +362,7 @@ router.get("/facebook/callback", async (ctx, next) => {
   const state = parseOAuthState(ctx.query.state);
   const clientOrigin = resolveClientOrigin(state.client);
   const callbackURL = resolveProviderCallbackUrl(process.env.FACEBOOK_CALLBACK_URL, ctx, '/auth/facebook/callback');
+  console.log("[SOCIAL] Facebook callbackURL resolved (callback):", callbackURL);
 
   const oauthError = toSafeErrorCode(ctx.query.error, '');
   if (oauthError) {
@@ -397,9 +406,9 @@ router.get("/providers", (ctx) => {
   const gcid = process.env.GOOGLE_CLIENT_ID || "";
   const gidMasked = gcid ? `${gcid.slice(0, 4)}...${gcid.slice(-6)}` : null;
   const effectiveGoogleCallback = normalizeAbsoluteUrl(process.env.GOOGLE_CALLBACK_URL)
-    || `${defaultClientOrigin}/auth/google/callback`;
+    || `${defaultApiOrigin}/auth/google/callback`;
   const effectiveFacebookCallback = normalizeAbsoluteUrl(process.env.FACEBOOK_CALLBACK_URL)
-    || `${defaultClientOrigin}/auth/facebook/callback`;
+    || `${defaultApiOrigin}/auth/facebook/callback`;
   ctx.body = {
     google: GOOGLE_ENABLED,
     facebook: FACEBOOK_ENABLED,
