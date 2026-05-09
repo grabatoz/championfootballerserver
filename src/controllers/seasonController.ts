@@ -4,6 +4,7 @@ import League from '../models/League';
 import User from '../models/User';
 import Notification from '../models/Notification';
 import Match from '../models/Match';
+import cache from '../utils/cache';
 import { Op, QueryTypes } from 'sequelize';
 import { randomUUID } from 'crypto';
 
@@ -65,6 +66,61 @@ const checkLeagueAdmin = async (leagueId: string, userId: string): Promise<{ lea
   }
 
   return { league, isAdmin };
+};
+
+const invalidateAuthRelatedCaches = (rawUserIds: Array<string | number | null | undefined>) => {
+  const userIds = Array.from(
+    new Set(
+      rawUserIds
+        .map((id) => String(id ?? '').trim())
+        .filter((id) => id.length > 0),
+    ),
+  );
+
+  userIds.forEach((id) => {
+    cache.del(`auth_data_${id}_ultra_fast`);
+    cache.del(`auth_status_${id}_fast`);
+    cache.del(`user_leagues_${id}`);
+  });
+};
+
+const invalidateLeagueMutationCaches = async (
+  leagueId: string,
+  extraUserIds: Array<string | number | null | undefined> = [],
+) => {
+  const gatheredUserIds: Array<string | number | null | undefined> = [...extraUserIds];
+  try {
+    const leagueWithUsers = await League.findByPk(leagueId, {
+      attributes: ['id'],
+      include: [
+        {
+          model: User,
+          as: 'members',
+          attributes: ['id'],
+          through: { attributes: [] },
+          required: false,
+        },
+        {
+          model: User,
+          as: 'administeredLeagues',
+          attributes: ['id'],
+          through: { attributes: [] },
+          required: false,
+        },
+      ],
+    });
+
+    const members = ((leagueWithUsers as any)?.members || []) as Array<{ id?: string | number }>;
+    const admins = ((leagueWithUsers as any)?.administeredLeagues || []) as Array<{ id?: string | number }>;
+    members.forEach((m) => gatheredUserIds.push(m?.id));
+    admins.forEach((a) => gatheredUserIds.push(a?.id));
+  } catch (cacheInvalidateError) {
+    console.warn('[seasonController] Failed to gather league users for cache invalidation:', cacheInvalidateError);
+  }
+
+  invalidateAuthRelatedCaches(gatheredUserIds);
+  cache.clearPattern(`league_${leagueId}`);
+  cache.clearPattern(`matches_league_${leagueId}`);
 };
 
 export const getAllSeasons = async (ctx: Context) => {
@@ -616,6 +672,8 @@ export const createNewSeason = async (ctx: Context) => {
     // Don't fail the season creation if notifications fail
   }
 
+  await invalidateLeagueMutationCaches(String(leagueId), [adminUserId]);
+
   ctx.body = {
     success: true,
     message: `Season ${newSeasonNumber} created successfully`,
@@ -679,6 +737,7 @@ export const addPlayerToSeason = async (ctx: Context) => {
 
   // Add player to season
   await (activeSeason as any).addPlayer(userId);
+  await invalidateLeagueMutationCaches(String(leagueId), [userId, ctx.state.user?.userId]);
 
   ctx.body = {
     success: true,
@@ -722,6 +781,7 @@ export const removePlayerFromSeason = async (ctx: Context) => {
 
   // Remove player from season
   await (activeSeason as any).removePlayer(userId);
+  await invalidateLeagueMutationCaches(String(leagueId), [userId, ctx.state.user?.userId]);
 
   ctx.body = {
     success: true,
@@ -881,6 +941,7 @@ export const updateSeason = async (ctx: Context) => {
     }
 
     await tx.commit();
+    await invalidateLeagueMutationCaches(String(seasonInTx.leagueId), [userId]);
 
     const refreshed = await Season.findByPk(seasonId);
     const seasonOut = refreshed || seasonInTx;
@@ -995,6 +1056,7 @@ export const restoreSeason = async (ctx: Context) => {
 
     await seasonInTx.save({ transaction: tx });
     await tx.commit();
+    await invalidateLeagueMutationCaches(String(seasonInTx.leagueId), [userId]);
 
     const refreshed = await Season.findByPk(seasonId);
     const seasonOut = refreshed || seasonInTx;
@@ -1101,6 +1163,7 @@ export const permanentDeleteSeason = async (ctx: Context) => {
     }
 
     await tx.commit();
+    await invalidateLeagueMutationCaches(String(seasonInTx.leagueId), [userId]);
 
     ctx.body = {
       success: true,
