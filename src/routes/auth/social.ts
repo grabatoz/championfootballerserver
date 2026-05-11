@@ -154,6 +154,12 @@ const GOOGLE_ENABLED = Boolean(
 const FACEBOOK_ENABLED = Boolean(
   process.env.FACEBOOK_APP_ID && process.env.FACEBOOK_APP_SECRET,
 )
+const APPLE_ENABLED = Boolean(
+  process.env.APPLE_CLIENT_ID &&
+  process.env.APPLE_TEAM_ID &&
+  process.env.APPLE_KEY_ID &&
+  process.env.APPLE_PRIVATE_KEY,
+)
 
 type OAuthUser = {
   id: string;
@@ -186,6 +192,7 @@ console.log("[SOCIAL] JWT_SECRET exists:", Boolean(JWT_SECRET))
 console.log("[SOCIAL] Providers enabled:", {
   google: GOOGLE_ENABLED,
   facebook: FACEBOOK_ENABLED,
+  apple: APPLE_ENABLED,
 })
 console.log("[SOCIAL] Routes being registered...")
 
@@ -401,6 +408,28 @@ router.get("/facebook/callback", async (ctx, next) => {
   }
 })
 
+// Apple OAuth fallback route (strategy can be added once credentials are configured)
+router.get("/apple", async (ctx) => {
+  const clientOrigin = resolveClientOrigin(String(ctx.query.client || ''));
+  if (!APPLE_ENABLED) {
+    ctx.redirect(buildCallbackHashUrl({ error: 'apple_not_configured' }, clientOrigin))
+    return
+  }
+
+  ctx.redirect(buildCallbackHashUrl({ error: 'apple_not_supported' }, clientOrigin))
+})
+
+router.get("/apple/callback", async (ctx) => {
+  const state = parseOAuthState(ctx.query.state);
+  const clientOrigin = resolveClientOrigin(state.client);
+  if (!APPLE_ENABLED) {
+    ctx.redirect(buildCallbackHashUrl({ error: 'apple_not_configured' }, clientOrigin))
+    return
+  }
+
+  ctx.redirect(buildCallbackHashUrl({ error: 'apple_not_supported' }, clientOrigin))
+})
+
 // Provider status route to help diagnose production quickly
 router.get("/providers", (ctx) => {
   const gcid = process.env.GOOGLE_CLIENT_ID || "";
@@ -411,16 +440,25 @@ router.get("/providers", (ctx) => {
     || `${defaultApiOrigin}/auth/google/callback`;
   const effectiveFacebookCallback = normalizeAbsoluteUrl(process.env.FACEBOOK_CALLBACK_URL)
     || `${defaultApiOrigin}/auth/facebook/callback`;
+  const effectiveAppleCallback = normalizeAbsoluteUrl(process.env.APPLE_CALLBACK_URL)
+    || `${defaultApiOrigin}/auth/apple/callback`;
   ctx.body = {
     google: GOOGLE_ENABLED,
     facebook: FACEBOOK_ENABLED,
+    apple: APPLE_ENABLED,
     clientUrl: CLIENT_URL,
     googleCallbackUrl: process.env.GOOGLE_CALLBACK_URL || null,
     facebookCallbackUrl: process.env.FACEBOOK_CALLBACK_URL || null,
+    appleCallbackUrl: process.env.APPLE_CALLBACK_URL || null,
     effectiveGoogleCallback,
     effectiveFacebookCallback,
+    effectiveAppleCallback,
     googleClientIdHint: gidMasked,
     facebookAppIdHint: fbidMasked,
+    hasAppleClientId: Boolean(process.env.APPLE_CLIENT_ID || null),
+    hasAppleTeamId: Boolean(process.env.APPLE_TEAM_ID || null),
+    hasAppleKeyId: Boolean(process.env.APPLE_KEY_ID || null),
+    hasApplePrivateKey: Boolean(process.env.APPLE_PRIVATE_KEY || null),
     hasGoogleSecret: Boolean(process.env.GOOGLE_CLIENT_SECRET || null),
     hasFacebookSecret: Boolean(process.env.FACEBOOK_APP_SECRET || null),
     defaultClientOrigin,
@@ -439,6 +477,8 @@ console.log("- GET /auth/google")
 console.log("- GET /auth/google/callback")
 console.log("- GET /auth/facebook")
 console.log("- GET /auth/facebook/callback")
+console.log("- GET /auth/apple")
+console.log("- GET /auth/apple/callback")
 console.log("- GET /auth/providers")
 
 export default router

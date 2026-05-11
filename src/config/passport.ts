@@ -83,7 +83,7 @@ export function setupPassport() {
                   html: `
                     <div style="font-family:Arial,sans-serif;line-height:1.6;color:#111;background:#f7f7f9;padding:24px">
                       <div style="max-width:560px;margin:0 auto;background:#ffffff;border:1px solid #e5e7eb;border-radius:8px;padding:24px">
-                        <h1 style="margin:0 0 12px;font-size:22px;color:#111;">Welcome, ${user.firstName || 'Player'}! ⚽</h1>
+                        <h1 style="margin:0 0 12px;font-size:22px;color:#111;">Welcome, ${user.firstName || 'Player'}!</h1>
                         <p style="margin:0 0 8px;">Your account has been created successfully via Google.</p>
                         <p style="margin:0 0 8px;">Quick start:</p>
                         <ol style="padding-left:18px;margin:0 0 16px;">
@@ -189,7 +189,7 @@ export function setupPassport() {
                   html: `
                     <div style="font-family:Arial,sans-serif;line-height:1.6;color:#111;background:#f7f7f9;padding:24px">
                       <div style="max-width:560px;margin:0 auto;background:#ffffff;border:1px solid #e5e7eb;border-radius:8px;padding:24px">
-                        <h1 style="margin:0 0 12px;font-size:22px;color:#111;">Welcome, ${user.firstName || 'Player'}! ⚽</h1>
+                        <h1 style="margin:0 0 12px;font-size:22px;color:#111;">Welcome, ${user.firstName || 'Player'}!</h1>
                         <p style="margin:0 0 8px;">Your account has been created successfully via Facebook.</p>
                         <p style="margin:0 0 8px;">Quick start:</p>
                         <ol style="padding-left:18px;margin:0 0 16px;">
@@ -402,3 +402,4 @@ export default passport
 // }
 
 // export default passport;
+

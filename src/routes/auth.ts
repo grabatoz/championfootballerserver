@@ -302,7 +302,7 @@ router.post("/auth/register", none, async (ctx: Context) => {
           html: `
             <div style="font-family:Arial,sans-serif;line-height:1.6;color:#111;background:#f7f7f9;padding:24px">
               <div style="max-width:480px;margin:0 auto;background:#ffffff;border:1px solid #e5e7eb;border-radius:8px;padding:32px;text-align:center">
-                <h1 style="margin:0 0 8px;font-size:22px;color:#111;">Welcome to Champion Footballer! âڑ½</h1>
+                <h1 style="margin:0 0 8px;font-size:22px;color:#111;">Welcome to Champion Footballer!</h1>
                 <p style="margin:0 0 8px;color:#6b7280;">Hi ${newUser.firstName || 'Player'}, thanks for signing up!</p>
                 <p style="margin:0 0 24px;color:#6b7280;">Use the 6-digit code below to verify your account. It expires in 10 minutes.</p>
                 <div style="background:#f0fdf4;border:2px solid #00a77f;border-radius:8px;padding:16px 24px;display:inline-block;margin:0 0 24px">
@@ -418,7 +418,7 @@ router.post("/auth/verify-registration", none, async (ctx: CustomContext) => {
         html: `
           <div style="font-family:Arial,sans-serif;line-height:1.6;color:#111;background:#f7f7f9;padding:24px">
             <div style="max-width:560px;margin:0 auto;background:#ffffff;border:1px solid #e5e7eb;border-radius:8px;padding:24px">
-              <h1 style="margin:0 0 12px;font-size:22px;color:#111;">Welcome, ${user.firstName || 'Player'}! âڑ½</h1>
+              <h1 style="margin:0 0 12px;font-size:22px;color:#111;">Welcome, ${user.firstName || 'Player'}!</h1>
               <p style="margin:0 0 8px;">Your account has been verified and you are all set!</p>
               <p style="margin:0 0 8px;">Quick start:</p>
               <ol style="padding-left:18px;margin:0 0 16px;">
@@ -563,7 +563,7 @@ router.post("/auth/reset-password", none, async (ctx: CustomContext) => {
     ctx.throw(404, "We can't find a user with that email.");
   }
 
-  // Store OTP code (hashed) with 10 minute expiry أ¢â‚¬â€‌ don't change the actual password yet
+  // Store OTP code (hashed) with 10 minute expiry; don't change the actual password yet
   const resetCodeExpiry = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
   await user.update({
     resetCode: await hash(otpCode, 10),
@@ -629,7 +629,7 @@ router.post("/auth/verify-reset-code", none, async (ctx: CustomContext) => {
     ctx.throw(400, "Invalid verification code.");
   }
 
-  // Code is valid أ¢â‚¬â€‌ update the password and clear the reset code
+  // Code is valid; update the password and clear the reset code
   await user.update({
     password: await hash(newPassword, 10),
     resetCode: null,
@@ -1361,7 +1361,7 @@ router.get("/me", required, async (ctx: CustomContext) => {
     }
     const userId = ctx.state.user.userId;
     
-    console.log(`ظ‹ع؛â€œâ€¹ Fetching /me for user: ${userId}`);
+    console.log(`[AUTH] Fetching /me for user: ${userId}`);
     
     // OPTIMIZED: Removed heavy nested includes to prevent timeout
     const user = await User.findOne({ 
@@ -1468,10 +1468,10 @@ router.get("/me", required, async (ctx: CustomContext) => {
     user: user,
   };
   
-  console.log(`أ¢إ“â€¦ /me successful for user: ${userId}`);
+  console.log(`[AUTH] /me successful for user: ${userId}`);
   
   } catch (error: any) {
-    console.error(`أ¢â€Œإ’ /me endpoint error for user ${ctx.state.user?.userId}:`, error.message);
+    console.error(`[AUTH] /me endpoint error for user ${ctx.state.user?.userId}:`, error.message);
     console.error('Stack:', error.stack);
     ctx.status = 500;
     ctx.body = {
