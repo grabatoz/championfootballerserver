@@ -6,7 +6,6 @@ import { v4 as uuidv4 } from 'uuid';
 import { xpPointsTable } from '../utils/xpPointsTable';
 import cache from '../utils/cache';
 import { sendCaptainConfirmations, notifyCaptainConfirmed, notifyCaptainRevision } from '../modules/notifications';
-import Notification from '../models/Notification';
 import Season from '../models/Season';
 import { checkAndCompleteLeagueAfterMatch, isLeagueLocked } from '../utils/leagueCompletion';
 
@@ -772,60 +771,9 @@ export const voteForMotm = async (ctx: Context) => {
     console.warn('MOTM leaderboard cache update failed', e);
   }
 
-  try {
-    const match = await Match.findByPk(matchId, {
-      include: [{ model: League, as: 'league', attributes: ['id', 'name'] }]
-    });
+  // Disabled by product request:
+  // do not generate notifications that reveal who a user selected as MOTM.
 
-    if (match) {
-      const homePlayerIds = await sequelize.query<{ userId: string }>(
-        `SELECT DISTINCT "userId" FROM "UserHomeMatches" WHERE "matchId" = :matchId`,
-        { replacements: { matchId }, type: QueryTypes.SELECT }
-      );
-
-      const awayPlayerIds = await sequelize.query<{ userId: string }>(
-        `SELECT DISTINCT "userId" FROM "UserAwayMatches" WHERE "matchId" = :matchId`,
-        { replacements: { matchId }, type: QueryTypes.SELECT }
-      );
-
-      const allPlayerIds = [
-        ...homePlayerIds.map(p => p.userId),
-        ...awayPlayerIds.map(p => p.userId)
-      ];
-
-      const uniquePlayerIds = Array.from(new Set(allPlayerIds))
-        .filter(id => id !== targetUserId);
-
-      const votedForPlayer = await User.findByPk(String(targetUserId));
-      const voterPlayer = await User.findByPk(voterId);
-
-      if (votedForPlayer && voterPlayer) {
-        const notificationPromises = uniquePlayerIds.map(playerId =>
-          Notification.create({
-            user_id: playerId,
-            type: 'MOTM_VOTE',
-            title: 'Man of the Match Vote',
-            body: `${voterPlayer.firstName} ${voterPlayer.lastName} voted for ${votedForPlayer.firstName} ${votedForPlayer.lastName} as MOTM`,
-            meta: JSON.stringify({
-              matchId,
-              leagueId: match.leagueId,
-              leagueName: (match as any).league?.name,
-              voterId,
-              votedForId: targetUserId,
-              voterName: `${voterPlayer.firstName} ${voterPlayer.lastName}`,
-              votedForName: `${votedForPlayer.firstName} ${votedForPlayer.lastName}`
-            }),
-            read: false
-          } as any)
-        );
-
-        await Promise.all(notificationPromises);
-        console.log(`✅ Sent ${uniquePlayerIds.length} MOTM vote notifications`);
-      }
-    }
-  } catch (notifErr) {
-    console.error('Error sending MOTM vote notifications:', notifErr);
-  }
 
   try { cache.clearPattern(`match_votes_${matchId}_`); } catch {}
 
@@ -2951,3 +2899,4 @@ export const getMatchXPBreakdown = async (ctx: Context) => {
 export {
   // All exported above
 };
+

@@ -10,6 +10,16 @@ const { User: UserModel, Match: MatchModel, MatchStatistics, League: LeagueModel
 
 const router = new Router({ prefix: '/players' });
 
+const hasForceRefreshFlag = (query: Record<string, unknown> | undefined): boolean => {
+  if (!query || typeof query !== 'object') return false;
+  const raw = query as Record<string, unknown>;
+  const keys = ['_t', 'bust', 'ts', 'timestamp', 'refresh'];
+  return keys.some((key) => {
+    const value = raw[key];
+    return typeof value === 'string' ? value.trim() !== '' : value !== undefined && value !== null;
+  });
+};
+
 // Get all players with caching
 router.get('/', getAllPlayers);
 
@@ -464,11 +474,12 @@ router.get('/:id/trophies', required, async (ctx) => {
   try {
     const { id: playerId } = ctx.params as { id: string };
     const { leagueId, year, seasonId } = ctx.query as { leagueId?: string; year?: string; seasonId?: string };
+    const forceRefresh = hasForceRefreshFlag(ctx.query as Record<string, unknown> | undefined);
 
     console.log('ًںڈ† [Trophies] Request:', { playerId, leagueId: leagueId || 'all', year: year || 'all', seasonId: seasonId || 'all' });
 
     const cacheKey = `player_trophies_${playerId}_${leagueId || 'all'}_${year || 'all'}_${seasonId || 'all'}`;
-    const cached = cache.get(cacheKey);
+    const cached = forceRefresh ? null : cache.get(cacheKey);
     if (cached) {
       console.log('âœ… [Trophies] Returning cached data');
       ctx.body = cached;
@@ -916,8 +927,16 @@ router.get('/:id/trophies', required, async (ctx) => {
         // No seasons exist — use all matches as one block (legacy)
         const leagueMaxGames = Number((l as any)?.maxGames ?? 0);
         const completedCount = countCompletedMatches(allMatches);
+        const leagueStatus = String((l as any)?.status || '').toLowerCase();
+        const inactiveByFlags =
+          (l as any)?.active === false ||
+          (l as any)?.archived === true ||
+          leagueStatus.includes('complete') ||
+          leagueStatus.includes('finish') ||
+          leagueStatus.includes('archive') ||
+          leagueStatus.includes('inactive');
         const isLegacyLeagueCompleted =
-          leagueMaxGames > 0 ? completedCount >= leagueMaxGames : completedCount > 0;
+          leagueMaxGames > 0 ? completedCount >= leagueMaxGames : (inactiveByFlags && completedCount > 0);
         if (isLegacyLeagueCompleted) {
           processMatches(allMatches, undefined, undefined);
         }
@@ -1002,12 +1021,10 @@ router.get('/:id/achievements', required, async (ctx) => {
       matchWhere.leagueId = leagueId;
     }
     
-    // Apply season filter (only if league is also specified)
-    if (seasonId && seasonId !== 'all' && leagueId && leagueId !== 'all') {
+    // Apply season filter
+    if (seasonId && seasonId !== 'all') {
       console.log('[Achievements] ًں“… Applying season filter:', seasonId);
       matchWhere.seasonId = seasonId;
-    } else if (seasonId && seasonId !== 'all') {
-      console.log('[Achievements] âڑ ï¸ڈ Season filter ignored (league not specified):', seasonId);
     }
     
     console.log('[Achievements] ًں”ژ Match where clause:', JSON.stringify(matchWhere));
@@ -1190,7 +1207,10 @@ const SYNERGY_TTL_MS = 60_000; // 1 min cache
  */
 router.get('/:playerId/simple-synergy', async (ctx) => {
   const { playerId } = ctx.params;
-  const { leagueId } = ctx.query as { leagueId?: string };
+  const { leagueId, year, seasonId } = ctx.query as { leagueId?: string; year?: string; seasonId?: string };
+  const selectedYear = year && year !== 'all' ? Number(year) : null;
+  const selectedSeasonId = seasonId && seasonId !== 'all' ? String(seasonId) : null;
+  const forceRefresh = hasForceRefreshFlag(ctx.query as Record<string, unknown> | undefined);
 
   if (!playerId) {
     ctx.status = 400;
@@ -1198,8 +1218,8 @@ router.get('/:playerId/simple-synergy', async (ctx) => {
     return;
   }
 
-  const cacheKey = `synergy:leagues:${playerId}:${leagueId || 'ALL'}`;
-  const cached = inMemorySynergyCache.get(cacheKey);
+  const cacheKey = `synergy:leagues:${playerId}:${leagueId || 'ALL'}:${selectedYear || 'all'}:${selectedSeasonId || 'all'}`;
+  const cached = forceRefresh ? null : inMemorySynergyCache.get(cacheKey);
   if (cached && (Date.now() - cached.ts) < SYNERGY_TTL_MS) {
     ctx.body = cached.data;
     return;
@@ -1235,8 +1255,9 @@ router.get('/:playerId/simple-synergy', async (ctx) => {
     // 2. Fetch matches (filtered by league if requested)
     const matchWhere: any = { id: { [Op.in]: allMatchIds } };
     if (leagueId) matchWhere.leagueId = leagueId;
+    if (selectedSeasonId) matchWhere.seasonId = selectedSeasonId;
 
-    const matches = await MatchModel.findAll({
+    let matches = await MatchModel.findAll({
       where: matchWhere,
       include: [
         { model: models.User, as: 'homeTeamUsers', attributes: ['id', 'firstName', 'lastName'] },
@@ -1244,6 +1265,13 @@ router.get('/:playerId/simple-synergy', async (ctx) => {
       ],
       order: [['date', 'ASC']]
     });
+
+    if (selectedYear && Number.isFinite(selectedYear)) {
+      matches = matches.filter((m: any) => {
+        const t = new Date(m?.date).getFullYear();
+        return Number.isFinite(t) && t === selectedYear;
+      });
+    }
 
     if (!matches.length) {
       const emptyPayload = leagueId
@@ -1436,6 +1464,7 @@ router.get('/:playerId/history-records', async (ctx) => {
   const leagueId = typeof ctx.request.query?.leagueId === 'string' ? ctx.request.query.leagueId.trim() : '';
   const year = typeof ctx.request.query?.year === 'string' ? ctx.request.query.year.trim() : '';
   const seasonId = typeof ctx.request.query?.seasonId === 'string' ? ctx.request.query.seasonId.trim() : '';
+  const forceRefresh = hasForceRefreshFlag(ctx.request.query as Record<string, unknown> | undefined);
 
   console.log('[history-records] ًں”چ Request received:', { playerId, leagueId: leagueId || 'all', year: year || 'all', seasonId: seasonId || 'all' });
 
@@ -1448,7 +1477,7 @@ router.get('/:playerId/history-records', async (ctx) => {
   try {
     // Check cache first (include filters in cache key)
     const cacheKey = `history-records:${playerId}:${leagueId || 'all'}:${year || 'all'}:${seasonId || 'all'}`;
-    const cachedData = await cache.get(cacheKey);
+    const cachedData = forceRefresh ? null : await cache.get(cacheKey);
     if (cachedData) {
       console.log('[history-records] Returning cached data for', playerId, 'league:', leagueId || 'all', 'year:', year || 'all', 'season:', seasonId || 'all');
       ctx.body = { success: true, data: cachedData };
@@ -1488,19 +1517,17 @@ router.get('/:playerId/history-records', async (ctx) => {
       matchWhere.leagueId = leagueId;
     }
     
-    // Apply season filter (only if league is also specified)
-    if (seasonId && seasonId !== 'all' && leagueId && leagueId !== 'all') {
+    // Apply season filter
+    if (seasonId && seasonId !== 'all') {
       console.log('[history-records] ًں“… Applying season filter:', seasonId);
       matchWhere.seasonId = seasonId;
-    } else if (seasonId && seasonId !== 'all') {
-      console.log('[history-records] âڑ ï¸ڈ Season filter ignored (league not specified):', seasonId);
     }
     
     console.log('[history-records] ًں”ژ Final match where clause:', JSON.stringify(matchWhere, null, 2));
     
     const matches = await Match.findAll({
       where: matchWhere,
-      attributes: ['id', 'leagueId', 'homeTeamGoals', 'awayTeamGoals', 'date', 'start', 'createdAt'],
+      attributes: ['id', 'leagueId', 'seasonId', 'homeTeamGoals', 'awayTeamGoals', 'date', 'start', 'createdAt'],
       include: [
         { model: UserModel, as: 'homeTeamUsers', attributes: ['id'] },
         { model: UserModel, as: 'awayTeamUsers', attributes: ['id'] },
@@ -1567,7 +1594,7 @@ router.get('/:playerId/history-records', async (ctx) => {
       const t = new Date(d).getTime();
       return Number.isFinite(t) ? t : 0;
     };
-    const sortedMatches = [...matches].sort((a: any, b: any) => timeOf(a) - timeOf(b));
+    const sortedMatches = [...filteredMatches].sort((a: any, b: any) => timeOf(a) - timeOf(b));
 
     let processedMatchCount = 0;
     let skippedNoTeam = 0;
@@ -1711,3 +1738,4 @@ router.get('/:playerId/history-records', async (ctx) => {
 });
 
 export default router;
+

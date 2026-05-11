@@ -300,6 +300,7 @@ export const getPlayerProfile = async (ctx: Context) => {
         attributes: [
           'id', 
           'date', 
+          'seasonId',
           'homeTeamName', 
           'awayTeamName', 
           'location', 
@@ -382,6 +383,7 @@ export const getPlayerProfile = async (ctx: Context) => {
       leaguesMap.get(leagueId).matches.push({
         id: match.id,
         date: match.date,
+        seasonId: match.seasonId,
         homeTeamName: match.homeTeamName,
         awayTeamName: match.awayTeamName,
         location: match.location,
