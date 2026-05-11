@@ -263,14 +263,45 @@ async function getTeamResultForUserInMatch(
 // Recompute canonical XP for this match from current stats + votes + captain picks.
 // This keeps users.xp and match_statistics.xp_awarded in sync whenever votes/scores change.
 async function recalculateMatchXPForCurrentState(matchId: string, ensureUserIds: Array<string | null | undefined> = []): Promise<void> {
-  const dedupEnsureIds = Array.from(new Set(
+  const participantIds = new Set<string>(
     ensureUserIds
       .map((v) => String(v || '').trim())
       .filter(Boolean)
-  ));
+  );
 
-  // Ensure rows exist for any explicitly passed users (for vote-only players).
-  for (const uid of dedupEnsureIds) {
+  // Include all registered match participants so XP can be computed immediately
+  // even before individual stats rows are submitted.
+  const homeTeamUserIds = await sequelize.query<{ userId: string }>(
+    `SELECT DISTINCT "userId" FROM "UserHomeMatches" WHERE "matchId" = $1`,
+    { bind: [matchId], type: QueryTypes.SELECT }
+  );
+  const awayTeamUserIds = await sequelize.query<{ userId: string }>(
+    `SELECT DISTINCT "userId" FROM "UserAwayMatches" WHERE "matchId" = $1`,
+    { bind: [matchId], type: QueryTypes.SELECT }
+  );
+  homeTeamUserIds.forEach((u) => participantIds.add(String(u.userId)));
+  awayTeamUserIds.forEach((u) => participantIds.add(String(u.userId)));
+
+  // Also include guest mirror users so captain picks and base XP can apply consistently.
+  const matchGuests = await MatchGuest.findAll({ where: { matchId }, attributes: ['id'] as any });
+  const guestIds = (matchGuests || [])
+    .map((g: any) => String(g?.id || '').trim())
+    .filter(Boolean);
+  if (guestIds.length > 0) {
+    const guestMirrors = await User.findAll({
+      where: {
+        provider: 'guest',
+        providerId: { [Op.in]: guestIds }
+      } as any,
+      attributes: ['id']
+    } as any);
+    (guestMirrors || []).forEach((u: any) => {
+      const id = String(u?.id || '').trim();
+      if (id) participantIds.add(id);
+    });
+  }
+
+  for (const uid of participantIds) {
     await MatchStatistics.findOrCreate({
       where: { match_id: matchId, user_id: uid },
       defaults: {
@@ -1625,13 +1656,42 @@ export const getMatchById = async (ctx: Context) => {
       return;
     }
 
+    let seasonMatchNumber: number | null = null;
+    try {
+      if (match.leagueId && match.seasonId) {
+        const seasonMatches = await Match.findAll({
+          where: { leagueId: match.leagueId, seasonId: match.seasonId },
+          attributes: ['id', 'date', 'createdAt'],
+          order: [['date', 'ASC'], ['createdAt', 'ASC']]
+        });
+        const idx = seasonMatches.findIndex((m: any) => String(m.id) === String(match.id));
+        if (idx >= 0) seasonMatchNumber = idx + 1;
+      }
+    } catch (seasonErr) {
+      console.warn('Could not compute season match number:', seasonErr);
+    }
+
     ctx.body = {
       success: true,
       match: {
         id: match.id,
+        leagueId: match.leagueId,
+        seasonId: match.seasonId,
+        seasonMatchNumber,
         date: match.date,
+        start: (match as any).start,
+        end: (match as any).end,
+        location: (match as any).location,
+        homeTeamName: (match as any).homeTeamName,
+        awayTeamName: (match as any).awayTeamName,
+        homeTeamImage: (match as any).homeTeamImage,
+        awayTeamImage: (match as any).awayTeamImage,
         homeTeamGoals: match.homeTeamGoals,
         awayTeamGoals: match.awayTeamGoals,
+        homeCaptainId: match.homeCaptainId,
+        awayCaptainId: match.awayCaptainId,
+        homeCaptainConfirmed: (match as any).homeCaptainConfirmed ?? false,
+        awayCaptainConfirmed: (match as any).awayCaptainConfirmed ?? false,
         status: match.status,
         league: (match as any).league,
         homeTeamUsers: (match as any).homeTeamUsers,
@@ -2142,20 +2202,20 @@ export const submitCaptainPicks = async (ctx: Context) => {
   const userId = ctx.state.user.userId || ctx.state.user.id;
 
   try {
-    const match = await Match.findByPk(matchId);
+    const match = await Match.findByPk(matchId, {
+      include: [{ model: League, as: 'league', include: [{ model: User, as: 'administeredLeagues', attributes: ['id'] }] }]
+    });
     if (!match) {
       ctx.status = 404;
       ctx.body = { success: false, message: 'Match not found' };
       return;
     }
 
-    // Check if user is a captain
-    const isHomeCaptain = String(match.homeCaptainId || '') === String(userId);
-    const isAwayCaptain = String(match.awayCaptainId || '') === String(userId);
-
-    if (!isHomeCaptain && !isAwayCaptain) {
+    const isAdmin = (match as any).league?.administeredLeagues?.some((a: any) => String(a.id) === String(userId));
+    const requesterTeam = await getPlayerTeamForMatch(String(userId), String(matchId));
+    if (!isAdmin && !requesterTeam) {
       ctx.status = 403;
-      ctx.body = { success: false, message: 'Only team captains can save picks' };
+      ctx.body = { success: false, message: 'Only match participants or league admins can save picks' };
       return;
     }
 
@@ -2187,19 +2247,32 @@ export const submitCaptainPicks = async (ctx: Context) => {
       return;
     }
 
-    // Update appropriate field based on team and category
-    if (isHomeCaptain) {
+    const previousPickId = (() => {
+      if (category === 'defence') {
+        return targetTeam === 'home' ? String((match as any).homeDefensiveImpactId || '') : String((match as any).awayDefensiveImpactId || '');
+      }
+      return targetTeam === 'home' ? String((match as any).homeMentalityId || '') : String((match as any).awayMentalityId || '');
+    })();
+
+    // Save pick into selected player's team slot.
+    if (targetTeam === 'home') {
       if (category === 'defence') {
         await match.update({ homeDefensiveImpactId: targetUserId });
-      } else if (category === 'influence') {
+      } else {
         await match.update({ homeMentalityId: targetUserId });
       }
-    } else if (isAwayCaptain) {
+    } else {
       if (category === 'defence') {
         await match.update({ awayDefensiveImpactId: targetUserId });
-      } else if (category === 'influence') {
+      } else {
         await match.update({ awayMentalityId: targetUserId });
       }
+    }
+
+    try {
+      await recalculateMatchXPForCurrentState(matchId, [targetUserId, previousPickId]);
+    } catch (recalcErr) {
+      console.error('Could not recalculate match XP after captain pick:', recalcErr);
     }
 
     // Clear cache
