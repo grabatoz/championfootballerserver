@@ -2566,6 +2566,14 @@ export const createLeague = async (ctx: Context) => {
     }
 
     cache.clearPattern(`user_leagues_${userId}`);
+    cache.clearPattern(`user_leagues_`);
+    cache.clearPattern(`auth_status_`);
+    cache.clearPattern(`league_${league.id}`);
+    cache.clearPattern(`matches_league_${league.id}`);
+    try {
+      invalidateServerCache('/leagues');
+      invalidateServerCache('/matches');
+    } catch {}
 
     ctx.status = 201;
     ctx.body = {
@@ -2643,6 +2651,15 @@ export const updateLeagueStatus = async (ctx: Context) => {
     }
 
     await league.update(updateData);
+
+    cache.clearPattern(`user_leagues_`);
+    cache.clearPattern(`auth_status_`);
+    cache.clearPattern(`league_${id}`);
+    cache.clearPattern(`matches_league_${id}`);
+    try {
+      invalidateServerCache('/leagues');
+      invalidateServerCache('/matches');
+    } catch {}
 
     ctx.body = {
       success: true,
@@ -2812,6 +2829,15 @@ export const updateLeague = async (ctx: Context) => {
       include: [{ model: User, as: 'administeredLeagues', attributes: ['id', 'firstName', 'lastName'] }]
     });
 
+    cache.clearPattern(`user_leagues_`);
+    cache.clearPattern(`auth_status_`);
+    cache.clearPattern(`league_${id}`);
+    cache.clearPattern(`matches_league_${id}`);
+    try {
+      invalidateServerCache('/leagues');
+      invalidateServerCache('/matches');
+    } catch {}
+
     ctx.body = {
       success: true,
       league: {
@@ -2894,8 +2920,13 @@ export const deleteLeague = async (ctx: Context) => {
       }
 
       cache.clearPattern(`user_leagues_`);
+      cache.clearPattern(`auth_status_`);
       cache.clearPattern(`league_${id}`);
       cache.clearPattern(`matches_league_${id}`);
+      try {
+        invalidateServerCache('/leagues');
+        invalidateServerCache('/matches');
+      } catch {}
 
       ctx.body = {
         success: true,
@@ -2972,8 +3003,13 @@ export const deleteLeague = async (ctx: Context) => {
     }
 
     cache.clearPattern(`user_leagues_`);
+    cache.clearPattern(`auth_status_`);
     cache.clearPattern(`league_${id}`);
     cache.clearPattern(`matches_league_${id}`);
+    try {
+      invalidateServerCache('/leagues');
+      invalidateServerCache('/matches');
+    } catch {}
 
     ctx.body = {
       success: true,
@@ -3036,6 +3072,14 @@ export const joinLeague = async (ctx: Context) => {
     }
 
     cache.clearPattern(`user_leagues_${userId}`);
+    cache.clearPattern(`user_leagues_`);
+    cache.clearPattern(`auth_status_`);
+    cache.clearPattern(`league_${league.id}`);
+    cache.clearPattern(`matches_league_${league.id}`);
+    try {
+      invalidateServerCache('/leagues');
+      invalidateServerCache('/matches');
+    } catch {}
 
     ctx.body = {
       success: true,
@@ -3094,6 +3138,13 @@ export const leaveLeague = async (ctx: Context) => {
           await (league as any).removeAdministeredLeagues(user);
         }
         cache.clearPattern(`user_leagues_`);
+        cache.clearPattern(`auth_status_`);
+        cache.clearPattern(`league_${id}`);
+        cache.clearPattern(`matches_league_${id}`);
+        try {
+          invalidateServerCache('/leagues');
+          invalidateServerCache('/matches');
+        } catch {}
         ctx.body = {
           success: true,
           message: 'You were the last member. League has been archived.',
@@ -3164,6 +3215,7 @@ export const leaveLeague = async (ctx: Context) => {
 
     cache.clearPattern(`user_leagues_${userId}`);
     cache.clearPattern(`user_leagues_`);
+    cache.clearPattern(`auth_status_`);
     cache.clearPattern(`league_${id}`);
     cache.clearPattern(`matches_league_${id}`);
     try {

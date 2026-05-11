@@ -1183,7 +1183,12 @@ router.get("/auth/status", required, async (ctx: CustomContext) => {
 
   // Check for manual bypass: /auth/status?refresh=1
   const q = ctx.query as Record<string, string | undefined>;
-  const forceRefresh = q?.refresh === '1' || q?.nocache === '1';
+  const hasTimestampBypass =
+    (typeof q?._t === 'string' && q._t.trim() !== '') ||
+    (typeof q?.bust === 'string' && q.bust.trim() !== '') ||
+    (typeof q?.ts === 'string' && q.ts.trim() !== '') ||
+    (typeof q?.timestamp === 'string' && q.timestamp.trim() !== '');
+  const forceRefresh = q?.refresh === '1' || q?.nocache === '1' || hasTimestampBypass;
 
   // Serve from cache if available (unless bypassed)
   if (!forceRefresh) {
