@@ -520,7 +520,7 @@ export const createNewSeason = async (ctx: Context) => {
           INSERT INTO "Seasons"
             ("id","leagueId","seasonNumber","name","isActive","archived","deleted","startDate","showPoints","trophyAwardSnapshot","createdAt","updatedAt")
           VALUES
-            (:id,:leagueId,:seasonNumber,:name,true,false,false,:startDate,false,:snapshot::jsonb,:createdAt,:updatedAt)
+            (:id,:leagueId,:seasonNumber,:name,true,false,false,:startDate,true,:snapshot::jsonb,:createdAt,:updatedAt)
           ${conflictClause}
           RETURNING "id","seasonNumber";
           `,

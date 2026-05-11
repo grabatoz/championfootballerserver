@@ -128,7 +128,7 @@ Season.init(
     showPoints: {
       type: DataTypes.BOOLEAN,
       allowNull: true,
-      defaultValue: false,
+      defaultValue: true,
     },
     trophyAwardSnapshot: {
       type: DataTypes.JSONB,

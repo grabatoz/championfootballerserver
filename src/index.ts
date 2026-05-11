@@ -309,6 +309,15 @@ app.use(async (ctx, next) => {
     }
     ctx.set('Vary', 'Origin');
     ctx.set('Access-Control-Allow-Credentials', 'true');
+
+    const uploadErr = error as { code?: string; name?: string; message?: string };
+    if (uploadErr?.code === 'LIMIT_FILE_SIZE') {
+      ctx.response.status = 400;
+      ctx.response.body = {
+        message: 'Unable to upload image. Please ensure the file size is under 5MB.',
+      };
+      return;
+    }
     
     // If there isn't a status, set it to 500 with default message
     const err = error as { status?: number; message?: string; expose?: boolean };

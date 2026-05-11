@@ -2557,7 +2557,8 @@ export const createLeague = async (ctx: Context) => {
       seasonNumber: 1,
       name: 'Season 1',
       isActive: true,
-      startDate: new Date()
+      startDate: new Date(),
+      showPoints: true,
     } as any);
 
     // Add creator to Season 1
@@ -2929,6 +2930,17 @@ export const deleteLeague = async (ctx: Context) => {
     }
 
     const members: any[] = (league as any).members || [];
+    const totalMatchesCreated = await Match.count({ where: { leagueId: id } });
+    const hasAnyMatchesCreated = totalMatchesCreated > 0;
+
+    if (hasAnyMatchesCreated && !softDelete) {
+      ctx.status = 409;
+      ctx.body = {
+        success: false,
+        message: 'This league already has matches and cannot be permanently deleted. Please archive it from League Settings.',
+      };
+      return;
+    }
 
     if (softDelete) {
       await league.update({ active: false, archived: true });
@@ -3466,6 +3478,15 @@ export const createMatchInLeague = async (ctx: Context) => {
     const league = await League.findByPk(leagueId);
     if (!league) {
       ctx.throw(404, 'League not found');
+      return;
+    }
+
+    if (league.active === false) {
+      ctx.status = 400;
+      ctx.body = {
+        success: false,
+        message: 'This league is currently inactive. To create new matches, please reactivate the league in League Settings.',
+      };
       return;
     }
 
