@@ -65,6 +65,12 @@ router.delete('/:id/seasons/:seasonId', required, async (ctx) => {
   await seasonController.permanentDeleteSeason(ctx);
 });
 
+// Leave season (league-scoped alias)
+router.post('/:id/seasons/:seasonId/leave', required, async (ctx) => {
+  ctx.params.leagueId = ctx.params.id;
+  await seasonController.leaveSeason(ctx);
+});
+
 // Create league (with optional image upload)
 router.post('/', required, upload.single('image'), leagueController.createLeague);
 

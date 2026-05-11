@@ -21,6 +21,7 @@ router.patch('/:seasonId/status', required, seasonController.updateSeasonStatus)
 router.post('/:seasonId/archive', required, seasonController.archiveSeason);
 router.post('/:seasonId/restore', required, seasonController.restoreSeason);
 router.delete('/:seasonId', required, seasonController.permanentDeleteSeason);
+router.post('/:seasonId/leave', required, seasonController.leaveSeason);
 
 // Add player to current active season
 router.post('/players/:userId', required, seasonController.addPlayerToSeason);
@@ -37,6 +38,7 @@ directSeasonRouter.patch('/:seasonId/status', required, seasonController.updateS
 directSeasonRouter.post('/:seasonId/archive', required, seasonController.archiveSeason);
 directSeasonRouter.post('/:seasonId/restore', required, seasonController.restoreSeason);
 directSeasonRouter.delete('/:seasonId', required, seasonController.permanentDeleteSeason);
+directSeasonRouter.post('/:seasonId/leave', required, seasonController.leaveSeason);
 
 // Export both routers
 export default router;

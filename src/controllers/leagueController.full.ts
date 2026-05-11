@@ -2769,10 +2769,49 @@ export const updateLeague = async (ctx: Context) => {
       });
       const validAdminIds = validAdmins.map((u: any) => u.id);
 
-      if (validAdminIds.length > 0) {
+      let scopedAdminIds = validAdminIds;
+      if (seasonId) {
+        const seasonForAdmins = await Season.findByPk(seasonId, {
+          include: [
+            {
+              model: User,
+              as: 'players',
+              attributes: ['id'],
+              through: { attributes: [] },
+              required: false,
+            }
+          ]
+        });
+
+        if (!seasonForAdmins || String(seasonForAdmins.leagueId) !== String(id) || Boolean((seasonForAdmins as any).deleted)) {
+          ctx.status = 400;
+          ctx.body = { success: false, message: 'Selected season is invalid for this league' };
+          return;
+        }
+
+        const seasonPlayerIds = new Set(
+          (((seasonForAdmins as any).players || []) as Array<{ id?: string | number }>)
+            .map((player) => String(player.id || '').trim())
+            .filter((playerId) => playerId.length > 0)
+        );
+
+        const invalidAdminIds = validAdminIds.filter((adminCandidateId: string) => !seasonPlayerIds.has(String(adminCandidateId)));
+        if (invalidAdminIds.length > 0) {
+          ctx.status = 400;
+          ctx.body = {
+            success: false,
+            message: 'Selected league admin must be an active player in the selected season',
+          };
+          return;
+        }
+
+        scopedAdminIds = validAdminIds;
+      }
+
+      if (scopedAdminIds.length > 0) {
         // Replace all current admins with the new admin(s)
-        await (league as any).setAdministeredLeagues(validAdminIds);
-        console.log(`✅ League ${id} admin(s) updated to:`, validAdminIds);
+        await (league as any).setAdministeredLeagues(scopedAdminIds);
+        console.log(`✅ League ${id} admin(s) updated to:`, scopedAdminIds);
       }
     }
 

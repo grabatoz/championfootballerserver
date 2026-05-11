@@ -242,11 +242,11 @@ export const getAllSeasons = async (ctx: Context) => {
 
       const seasonId = String((season as any).id || '').trim();
       const inviteStatus = seasonInviteStatusBySeasonId.get(seasonId) || '';
-      const isDeclined = inviteStatus === 'declined';
+      const isDeclined = inviteStatus === 'declined' || inviteStatus === 'left';
       const shouldAutoEnroll =
         season.isActive === true &&
         !isDeclined &&
-        inviteStatus !== '';
+        inviteStatus === 'joined';
 
       if (shouldAutoEnroll) {
         try {
@@ -786,6 +786,163 @@ export const removePlayerFromSeason = async (ctx: Context) => {
   ctx.body = {
     success: true,
     message: `Player removed from ${activeSeason.name}`
+  };
+};
+
+export const leaveSeason = async (ctx: Context) => {
+  const { leagueId, seasonId } = ctx.params;
+  const userId = String(ctx.state.user?.userId || ctx.state.user?.id || '');
+
+  if (!userId) {
+    ctx.throw(401, 'Unauthorized');
+    return;
+  }
+
+  if (!seasonId) {
+    ctx.throw(400, 'seasonId is required');
+    return;
+  }
+
+  const season = await Season.findByPk(seasonId, {
+    include: [
+      {
+        model: User,
+        as: 'players',
+        attributes: ['id'],
+        through: { attributes: [] },
+        required: false,
+      }
+    ]
+  });
+
+  if (!season) {
+    ctx.throw(404, 'Season not found');
+    return;
+  }
+
+  const resolvedLeagueId = String(leagueId || season.leagueId || '').trim();
+  if (!resolvedLeagueId || String(season.leagueId) !== resolvedLeagueId) {
+    ctx.throw(404, 'Season not found in this league');
+    return;
+  }
+
+  if (Boolean((season as any).deleted)) {
+    ctx.throw(410, 'Season has been permanently deleted');
+    return;
+  }
+
+  const league = await League.findByPk(resolvedLeagueId, {
+    include: [
+      {
+        model: User,
+        as: 'members',
+        attributes: ['id'],
+        through: { attributes: [] },
+        required: false,
+      },
+      {
+        model: User,
+        as: 'administeredLeagues',
+        attributes: ['id'],
+        through: { attributes: [] },
+        required: false,
+      }
+    ]
+  });
+
+  if (!league) {
+    ctx.throw(404, 'League not found');
+    return;
+  }
+
+  const leagueMembers = ((league as any).members || []) as Array<{ id?: string | number }>;
+  const leagueAdmins = ((league as any).administeredLeagues || []) as Array<{ id?: string | number }>;
+  const seasonPlayers = ((season as any).players || []) as Array<{ id?: string | number }>;
+
+  const isLeagueMember = leagueMembers.some((member) => String(member.id) === userId);
+  const isLeagueAdmin = leagueAdmins.some((admin) => String(admin.id) === userId);
+
+  if (!isLeagueMember && !isLeagueAdmin) {
+    ctx.throw(403, 'Access denied');
+    return;
+  }
+
+  const seasonPlayerIds = new Set(
+    seasonPlayers
+      .map((player) => String(player.id || '').trim())
+      .filter((id) => id.length > 0)
+  );
+
+  if (!seasonPlayerIds.has(userId)) {
+    ctx.status = 400;
+    ctx.body = {
+      success: false,
+      message: 'You are not participating in this season',
+    };
+    return;
+  }
+
+  if (isLeagueAdmin) {
+    const otherAdminsInSeason = leagueAdmins
+      .map((admin) => String(admin.id || '').trim())
+      .filter((adminId) => adminId.length > 0 && adminId !== userId && seasonPlayerIds.has(adminId));
+    const remainingSeasonPlayers = seasonPlayerIds.size - 1;
+
+    if (remainingSeasonPlayers > 0 && otherAdminsInSeason.length === 0) {
+      ctx.status = 400;
+      ctx.body = {
+        success: false,
+        message: 'Before leaving, assign league admin access to another active player in this season.',
+      };
+      return;
+    }
+  }
+
+  await (season as any).removePlayer(userId);
+
+  try {
+    const seasonNotifications = await Notification.findAll({
+      where: {
+        user_id: userId,
+        type: 'NEW_SEASON',
+      },
+      order: [['created_at', 'DESC']],
+      attributes: ['id', 'meta'],
+    });
+
+    const targetLeagueId = String(resolvedLeagueId);
+    const targetSeasonId = String(seasonId);
+
+    await Promise.all(
+      seasonNotifications.map(async (notification) => {
+        const metaRaw = (notification as any)?.meta;
+        if (!metaRaw || typeof metaRaw !== 'object') return;
+        const metaRecord = metaRaw as Record<string, unknown>;
+        const metaLeagueId = String(metaRecord.leagueId || '').trim();
+        const metaSeasonId = String(metaRecord.seasonId || '').trim();
+        if (metaLeagueId !== targetLeagueId || metaSeasonId !== targetSeasonId) return;
+
+        await notification.update({
+          meta: {
+            ...metaRecord,
+            actionTaken: 'declined',
+            actionSource: 'leave-season',
+            leftAt: new Date().toISOString(),
+          },
+          read: true,
+        } as any);
+      })
+    );
+  } catch (notificationUpdateError) {
+    console.warn('[leaveSeason] failed to update NEW_SEASON notification state:', notificationUpdateError);
+  }
+
+  await invalidateLeagueMutationCaches(resolvedLeagueId, [userId]);
+
+  ctx.body = {
+    success: true,
+    message: `You have left ${season.name}`,
+    season: buildSeasonPayload(season),
   };
 };
 
