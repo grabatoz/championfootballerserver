@@ -184,6 +184,63 @@ async function ensureSeasonDeletedColumn(): Promise<void> {
   }
 }
 
+const generateSeasonInviteCode = (): string => {
+  const chars = '1234567890ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+  let result = '';
+  for (let i = 0; i < 6; i += 1) {
+    result += chars[Math.floor(Math.random() * chars.length)];
+  }
+  return result;
+};
+
+async function ensureSeasonInviteCodeColumn(): Promise<void> {
+  try {
+    const [columnRows] = await sequelize.query(
+      `SELECT column_name FROM information_schema.columns WHERE table_name = 'Seasons' AND column_name = 'inviteCode'`
+    );
+    const hasInviteCodeColumn = Array.isArray(columnRows) && columnRows.length > 0;
+
+    if (!hasInviteCodeColumn) {
+      await sequelize.query(`ALTER TABLE "Seasons" ADD COLUMN "inviteCode" VARCHAR(16)`);
+      console.log('✅ Added "inviteCode" column to Seasons table');
+    }
+
+    // Backfill missing invite codes for existing rows.
+    const seasonsMissingCode = (await sequelize.query(
+      `SELECT id::text AS id FROM "Seasons" WHERE COALESCE("inviteCode", '') = ''`,
+      { type: QueryTypes.SELECT }
+    )) as Array<{ id: string }>;
+
+    for (const seasonRow of seasonsMissingCode) {
+      let assignedCode = '';
+      for (let attempt = 0; attempt < 80; attempt += 1) {
+        const codeCandidate = generateSeasonInviteCode();
+        const existingCode = (await sequelize.query(
+          `SELECT id::text AS id FROM "Seasons" WHERE "inviteCode" = :code LIMIT 1`,
+          { replacements: { code: codeCandidate }, type: QueryTypes.SELECT }
+        )) as Array<{ id: string }>;
+        if (existingCode.length === 0) {
+          assignedCode = codeCandidate;
+          break;
+        }
+      }
+      if (!assignedCode) {
+        throw new Error(`Unable to allocate season invite code for season ${seasonRow.id}`);
+      }
+
+      await sequelize.query(
+        `UPDATE "Seasons" SET "inviteCode" = :code WHERE id = :id`,
+        { replacements: { code: assignedCode, id: seasonRow.id }, type: QueryTypes.UPDATE }
+      );
+    }
+
+    await sequelize.query(`ALTER TABLE "Seasons" ALTER COLUMN "inviteCode" SET NOT NULL`);
+    await sequelize.query(`CREATE UNIQUE INDEX IF NOT EXISTS "seasons_invite_code_unique" ON "Seasons" ("inviteCode")`);
+  } catch (err) {
+    console.warn('⚠️ ensureSeasonInviteCodeColumn skipped:', (err as any).message);
+  }
+}
+
 async function ensureMatchDeletedColumn(): Promise<void> {
   try {
     const [results] = await sequelize.query(
@@ -282,6 +339,7 @@ export async function initializeDatabase() {
     await ensureLeagueArchivedColumn();
     await ensureSeasonArchivedColumn();
     await ensureSeasonDeletedColumn();
+    await ensureSeasonInviteCodeColumn();
     await ensureMatchDeletedColumn();
     await ensureSeasonNumberUniqueIndex();
 
@@ -404,6 +462,7 @@ export async function initializeDatabase() {
       await ensureResetCodeColumns();
       await ensureSeasonArchivedColumn();
       await ensureSeasonDeletedColumn();
+      await ensureSeasonInviteCodeColumn();
       await ensureMatchDeletedColumn();
       await ensureSeasonNumberUniqueIndex();
       console.log('âœ… DB ready');

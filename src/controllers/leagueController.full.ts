@@ -130,6 +130,19 @@ const toUserBasic = (p: any) => ({
   xp: typeof p?.xp === 'number' ? p.xp : (p?.xp ? Number(p.xp) : undefined),
 });
 
+const generateUniqueSeasonInviteCode = async (): Promise<string> => {
+  for (let attempt = 0; attempt < 80; attempt += 1) {
+    const candidate = String(getInviteCode() || '').trim().toUpperCase();
+    if (!candidate) continue;
+    const existing = await Season.findOne({
+      where: { inviteCode: candidate } as any,
+      attributes: ['id'],
+    });
+    if (!existing) return candidate;
+  }
+  throw new Error('Unable to generate a unique season invite code');
+};
+
 type LeagueListRow = {
   id: string;
   name: string;
@@ -491,8 +504,8 @@ export const getTrophyRoom = async (ctx: Context) => {
       seasonTableInfo && (seasonTableInfo as Record<string, unknown>)['trophyAwardSnapshot']
     );
     const seasonAttributes = hasTrophySnapshotColumn
-      ? ['id', 'leagueId', 'seasonNumber', 'name', 'isActive', 'maxGames', 'showPoints', 'trophyAwardSnapshot']
-      : ['id', 'leagueId', 'seasonNumber', 'name', 'isActive', 'maxGames', 'showPoints'];
+      ? ['id', 'leagueId', 'seasonNumber', 'name', 'inviteCode', 'isActive', 'maxGames', 'showPoints', 'trophyAwardSnapshot']
+      : ['id', 'leagueId', 'seasonNumber', 'name', 'inviteCode', 'isActive', 'maxGames', 'showPoints'];
 
     const leagueIds = leagues.map((l: any) => String(l.id));
     const allSeasons = leagueIds.length > 0 ? await Season.findAll({
@@ -860,7 +873,7 @@ export const getLeagueMatches = async (ctx: Context) => {
         {
           model: Season,
           as: 'seasons',
-          attributes: ['id', 'seasonNumber', 'isActive', 'archived'],
+          attributes: ['id', 'seasonNumber', 'name', 'inviteCode', 'isActive', 'archived'],
           where: { deleted: false },
           required: false,
           include: [
@@ -1527,7 +1540,7 @@ export const getLeagueById = async (ctx: Context) => {
         {
           model: Season,
           as: 'seasons',
-          attributes: ['id', 'seasonNumber', 'name', 'isActive', 'archived', 'startDate', 'endDate', 'maxGames', 'showPoints', 'createdAt', 'updatedAt'],
+          attributes: ['id', 'seasonNumber', 'name', 'inviteCode', 'isActive', 'archived', 'startDate', 'endDate', 'maxGames', 'showPoints', 'createdAt', 'updatedAt'],
           where: { deleted: false },
           required: false,
           include: [
@@ -1585,7 +1598,7 @@ export const getLeagueById = async (ctx: Context) => {
           league: {
             id: league.id,
             name: league.name,
-            inviteCode: league.inviteCode,
+            inviteCode: (currentSeason as any)?.inviteCode || league.inviteCode,
             active: league.active,
             archived: Boolean((league as any).archived),
             image: (league as any).image,
@@ -1630,7 +1643,7 @@ export const getLeagueById = async (ctx: Context) => {
         league: {
           id: league.id,
           name: league.name,
-          inviteCode: league.inviteCode,
+          inviteCode: (currentSeason as any)?.inviteCode || league.inviteCode,
           active: league.active,
           archived: Boolean((league as any).archived),
           image: (league as any).image,
@@ -1794,7 +1807,7 @@ export const getLeagueById = async (ctx: Context) => {
         league: {
           id: league.id,
           name: league.name,
-          inviteCode: league.inviteCode,
+          inviteCode: ((activeSeason || (seasons.length > 0 ? seasons[0] : null)) as any)?.inviteCode || league.inviteCode,
           active: league.active,
           archived: Boolean((league as any).archived),
           image: (league as any).image,
@@ -2033,7 +2046,7 @@ export const getLeagueById = async (ctx: Context) => {
       league: {
         id: league.id,
         name: league.name,
-        inviteCode: league.inviteCode,
+        inviteCode: (userCurrentSeason as any)?.inviteCode || league.inviteCode,
         active: league.active,
         archived: Boolean((league as any).archived),
         image: (league as any).image,
@@ -2534,8 +2547,9 @@ export const createLeague = async (ctx: Context) => {
     // Default maxGames to 20 if not provided
     const leagueMaxGames = maxGames ? Number(maxGames) : 20;
 
-    // Generate invite code
+    // Legacy league invite code (season codes are now primary for joining)
     const inviteCode = getInviteCode();
+    const seasonInviteCode = await generateUniqueSeasonInviteCode();
 
     const league = await League.create({
       name,
@@ -2556,6 +2570,7 @@ export const createLeague = async (ctx: Context) => {
       leagueId: league.id,
       seasonNumber: 1,
       name: 'Season 1',
+      inviteCode: seasonInviteCode,
       isActive: true,
       startDate: new Date(),
       showPoints: true,
@@ -2582,9 +2597,12 @@ export const createLeague = async (ctx: Context) => {
       league: {
         id: league.id,
         name: league.name,
+        inviteCode: seasonInviteCode,
+        seasonInviteCode,
         maxGames: league.maxGames,
         image: imageUrl,
-        seasonId: season1.id
+        seasonId: season1.id,
+        seasonNumber: season1.seasonNumber,
       }
     };
   } catch (err: any) {
@@ -3082,51 +3100,172 @@ export const joinLeague = async (ctx: Context) => {
 
   const userId = ctx.state.user.userId;
   const { inviteCode } = ctx.request.body as any;
+  const normalizedInviteCode = String(inviteCode || '').trim().toUpperCase();
 
-  if (!inviteCode) {
+  if (!normalizedInviteCode) {
     ctx.status = 400;
     ctx.body = { success: false, message: 'Please enter an invite code' };
     return;
   }
 
   try {
-    const league = await League.findOne({
-      where: { inviteCode },
+    // Primary: season invite codes
+    let targetSeason = await Season.findOne({
+      where: { inviteCode: normalizedInviteCode, deleted: false } as any,
       include: [
-        { model: User, as: 'members', attributes: ['id'] },
-        { model: Season, as: 'seasons', where: { isActive: true, archived: false, deleted: false }, required: false }
+        {
+          model: League,
+          as: 'league',
+          attributes: ['id', 'name', 'active', 'archived'],
+        },
+        {
+          model: User,
+          as: 'players',
+          attributes: ['id'],
+          through: { attributes: [] },
+          required: false,
+        }
       ]
     });
 
-    if (!league) {
+    let league = ((targetSeason as any)?.league || null) as any;
+
+    // Backward compatibility: legacy league-level invite codes
+    if (!targetSeason) {
+      league = await League.findOne({
+        where: { inviteCode: normalizedInviteCode },
+        include: [
+          { model: User, as: 'members', attributes: ['id'] },
+          {
+            model: Season,
+            as: 'seasons',
+            where: { isActive: true, archived: false, deleted: false },
+            required: false,
+            include: [
+              {
+                model: User,
+                as: 'players',
+                attributes: ['id'],
+                through: { attributes: [] },
+                required: false,
+              }
+            ]
+          }
+        ]
+      });
+
+      if (league) {
+        targetSeason = ((league as any).seasons?.[0] || null) as any;
+      }
+    }
+
+    if (!league || !targetSeason) {
       ctx.status = 404;
-      ctx.body = { success: false, message: 'No league found with this invite code. Please check and try again.' };
+      ctx.body = { success: false, message: 'No season found with this invite code. Please check and try again.' };
       return;
     }
 
-    const isMember = (league as any).members?.some((m: any) => String(m.id) === String(userId));
-    if (isMember) {
+    // Ensure league includes members for membership checks.
+    if (!(league as any).members) {
+      league = await League.findByPk(String(league.id), {
+        include: [{ model: User, as: 'members', attributes: ['id'] }]
+      });
+    }
+    if (!league) {
+      ctx.status = 404;
+      ctx.body = { success: false, message: 'League not found' };
+      return;
+    }
+
+    if ((league as any).active === false || Boolean((league as any).archived)) {
+      ctx.status = 400;
+      ctx.body = { success: false, message: 'This league is currently inactive. Please contact the admin.' };
+      return;
+    }
+
+    if (targetSeason.isActive === false || Boolean((targetSeason as any).archived) || Boolean((targetSeason as any).deleted)) {
+      ctx.status = 400;
+      ctx.body = { success: false, message: 'This season is not active for new joins.' };
+      return;
+    }
+
+    let seasonPlayers = ((targetSeason as any).players || []) as Array<{ id?: string | number }>;
+    if (seasonPlayers.length === 0) {
+      try {
+        seasonPlayers = await (targetSeason as any).getPlayers({
+          attributes: ['id'],
+          joinTableAttributes: [],
+        });
+      } catch {
+        seasonPlayers = [];
+      }
+    }
+
+    const isMember = ((league as any).members || []).some((m: any) => String(m.id) === String(userId));
+    const isSeasonMember = seasonPlayers.some((p: any) => String(p.id) === String(userId));
+    if (isSeasonMember) {
       ctx.status = 409;
-      ctx.body = { success: false, message: 'You are already joined to this league' };
+      ctx.body = { success: false, message: 'You are already joined to this season' };
       return;
     }
 
     const user = await User.findByPk(userId);
     if (user) {
-      await (league as any).addMember(user);
-
-      // Add to active season
-      const activeSeason = (league as any).seasons?.[0];
-      if (activeSeason) {
-        await (activeSeason as any).addPlayer(user);
+      if (!isMember) {
+        await (league as any).addMember(user);
       }
+      try {
+        await (targetSeason as any).addPlayer(user);
+      } catch (addError) {
+        const err = addError as { message?: string; original?: { code?: string }; parent?: { code?: string } };
+        const msg = String(err?.message || '').toLowerCase();
+        const code = String(err?.original?.code || err?.parent?.code || '').toLowerCase();
+        const isDuplicateMembership = code === '23505' || msg.includes('duplicate') || msg.includes('unique');
+        if (!isDuplicateMembership) {
+          throw addError;
+        }
+      }
+    }
+
+    // Mark related NEW_SEASON notification as joined (if present).
+    try {
+      const seasonNotifications = await Notification.findAll({
+        where: { user_id: userId, type: 'NEW_SEASON' },
+        order: [['created_at', 'DESC']],
+        attributes: ['id', 'meta'],
+      });
+
+      const targetLeagueId = String((league as any).id || '').trim();
+      const targetSeasonId = String((targetSeason as any).id || '').trim();
+
+      await Promise.all(
+        seasonNotifications.map(async (notification) => {
+          const metaRaw = (notification as any)?.meta;
+          if (!metaRaw || typeof metaRaw !== 'object') return;
+          const metaRecord = metaRaw as Record<string, unknown>;
+          const metaLeagueId = String(metaRecord.leagueId || '').trim();
+          const metaSeasonId = String(metaRecord.seasonId || '').trim();
+          if (metaLeagueId !== targetLeagueId || metaSeasonId !== targetSeasonId) return;
+          await notification.update({
+            meta: {
+              ...metaRecord,
+              actionTaken: 'joined',
+              actionSource: 'invite-code',
+              joinedAt: new Date().toISOString(),
+            },
+            read: true,
+          } as any);
+        })
+      );
+    } catch (notificationUpdateError) {
+      console.warn('[joinLeague] failed to update NEW_SEASON notification state:', notificationUpdateError);
     }
 
     cache.clearPattern(`user_leagues_${userId}`);
     cache.clearPattern(`user_leagues_`);
     cache.clearPattern(`auth_status_`);
-    cache.clearPattern(`league_${league.id}`);
-    cache.clearPattern(`matches_league_${league.id}`);
+    cache.clearPattern(`league_${(league as any).id}`);
+    cache.clearPattern(`matches_league_${(league as any).id}`);
     try {
       invalidateServerCache('/leagues');
       invalidateServerCache('/matches');
@@ -3134,11 +3273,17 @@ export const joinLeague = async (ctx: Context) => {
 
     ctx.body = {
       success: true,
-      message: 'Successfully joined league',
+      message: 'Successfully joined season',
       league: {
-        id: league.id,
-        name: league.name
-      }
+        id: (league as any).id,
+        name: (league as any).name,
+      },
+      season: {
+        id: (targetSeason as any).id,
+        seasonNumber: (targetSeason as any).seasonNumber,
+        name: (targetSeason as any).name,
+        inviteCode: (targetSeason as any).inviteCode || '',
+      },
     };
   } catch (err) {
     console.error('Join league error', err);

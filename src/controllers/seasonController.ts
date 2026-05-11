@@ -7,6 +7,7 @@ import Match from '../models/Match';
 import cache from '../utils/cache';
 import { Op, QueryTypes } from 'sequelize';
 import { randomUUID } from 'crypto';
+import { getInviteCode } from '../modules/utils';
 
 const normalizeBoolean = (value: unknown): boolean | undefined => {
   if (value === true || value === 'true' || value === 1 || value === '1') return true;
@@ -26,6 +27,7 @@ const buildSeasonPayload = (season: Season, extra?: Record<string, unknown>) => 
   leagueId: season.leagueId,
   seasonNumber: season.seasonNumber,
   name: season.name,
+  inviteCode: (season as any).inviteCode || '',
   isActive: season.isActive,
   archived: Boolean((season as any).archived),
   deleted: Boolean((season as any).deleted),
@@ -38,6 +40,25 @@ const buildSeasonPayload = (season: Season, extra?: Record<string, unknown>) => 
   updatedAt: season.updatedAt,
   ...(extra || {}),
 });
+
+const generateUniqueSeasonInviteCode = async (transaction?: any): Promise<string> => {
+  for (let attempt = 0; attempt < 80; attempt += 1) {
+    const candidate = String(getInviteCode() || '').trim().toUpperCase();
+    if (!candidate) continue;
+
+    const existing = await Season.findOne({
+      where: { inviteCode: candidate } as any,
+      attributes: ['id'],
+      transaction,
+    });
+
+    if (!existing) {
+      return candidate;
+    }
+  }
+
+  throw new Error('Unable to generate a unique season invite code');
+};
 
 const checkLeagueAdmin = async (leagueId: string, userId: string): Promise<{ league: League | null; isAdmin: boolean }> => {
   const league = await League.findByPk(leagueId, {
@@ -166,6 +187,7 @@ export const getAllSeasons = async (ctx: Context) => {
         id: season.id,
         seasonNumber: season.seasonNumber,
         name: season.name,
+        inviteCode: (season as any).inviteCode || '',
         isActive: season.isActive,
         archived: Boolean((season as any).archived),
         deleted: Boolean((season as any).deleted),
@@ -226,6 +248,7 @@ export const getAllSeasons = async (ctx: Context) => {
           id: season.id,
           seasonNumber: season.seasonNumber,
           name: season.name,
+          inviteCode: (season as any).inviteCode || '',
           isActive: season.isActive,
           archived: Boolean((season as any).archived),
           deleted: Boolean((season as any).deleted),
@@ -270,6 +293,7 @@ export const getAllSeasons = async (ctx: Context) => {
           id: season.id,
           seasonNumber: season.seasonNumber,
           name: season.name,
+          inviteCode: (season as any).inviteCode || '',
           isActive: season.isActive,
           archived: Boolean((season as any).archived),
           deleted: Boolean((season as any).deleted),
@@ -504,11 +528,13 @@ export const createNewSeason = async (ctx: Context) => {
       let insertGuard = 0;
       while (!insertedSeasonId && insertGuard < Math.max(maxSeasonNumber + 25, 25)) {
         const now = new Date();
+        const seasonInviteCode = await generateUniqueSeasonInviteCode(tx);
         const replacements = {
           id: randomUUID(),
           leagueId,
           seasonNumber: candidate,
           name: `Season ${candidate}`,
+          inviteCode: seasonInviteCode,
           startDate: now,
           snapshot: '{}',
           createdAt: now,
@@ -518,9 +544,9 @@ export const createNewSeason = async (ctx: Context) => {
         const insertRowsRaw = await sequelizeRef.query(
           `
           INSERT INTO "Seasons"
-            ("id","leagueId","seasonNumber","name","isActive","archived","deleted","startDate","showPoints","trophyAwardSnapshot","createdAt","updatedAt")
+            ("id","leagueId","seasonNumber","name","inviteCode","isActive","archived","deleted","startDate","showPoints","trophyAwardSnapshot","createdAt","updatedAt")
           VALUES
-            (:id,:leagueId,:seasonNumber,:name,true,false,false,:startDate,true,:snapshot::jsonb,:createdAt,:updatedAt)
+            (:id,:leagueId,:seasonNumber,:name,:inviteCode,true,false,false,:startDate,true,:snapshot::jsonb,:createdAt,:updatedAt)
           ${conflictClause}
           RETURNING "id","seasonNumber";
           `,
@@ -686,6 +712,7 @@ export const createNewSeason = async (ctx: Context) => {
       id: newSeason.id,
       seasonNumber: newSeason.seasonNumber,
       name: newSeason.name,
+      inviteCode: (newSeason as any).inviteCode || '',
       startDate: newSeason.startDate,
       isActive: newSeason.isActive
     },

@@ -9,6 +9,7 @@ interface SeasonAttributes {
   leagueId: string;
   seasonNumber: number;
   name: string;
+  inviteCode: string;
   isActive: boolean;
   archived?: boolean;
   deleted?: boolean;
@@ -33,6 +34,7 @@ class Season extends Model<SeasonAttributes, SeasonCreationAttributes> {
   declare leagueId: string;
   declare seasonNumber: number;
   declare name: string;
+  declare inviteCode: string;
   declare isActive: boolean;
   declare archived?: boolean;
   declare deleted?: boolean;
@@ -98,6 +100,11 @@ Season.init(
     name: {
       type: DataTypes.STRING,
       allowNull: false,
+    },
+    inviteCode: {
+      type: DataTypes.STRING(16),
+      allowNull: false,
+      unique: true,
     },
     isActive: {
       type: DataTypes.BOOLEAN,
