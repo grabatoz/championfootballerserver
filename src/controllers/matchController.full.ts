@@ -20,6 +20,71 @@ const MIN_REGISTERED_PLAYERS_FOR_SCORE_UPLOAD = 6;
 const MIN_REGISTERED_PLAYERS_MESSAGE = 'A minimum of 6 registered players is required to choose teams';
 const MIN_TOTAL_PLAYERS_FOR_SCORE_MESSAGE = 'A minimum of 8 total players (including at least 6 registered league players) is required before uploading match scores.';
 const clampPercentage = (value: number): number => Math.max(0, Math.min(100, Math.round(value)));
+const FINALIZED_MATCH_STATUSES = new Set(['RESULT_UPLOADED', 'RESULT_PUBLISHED']);
+
+const isFinalizedMatchStatus = (status: unknown): boolean =>
+  FINALIZED_MATCH_STATUSES.has(String(status || '').toUpperCase());
+
+type TeamPredictionResult = {
+  homeAvg: number;
+  awayAvg: number;
+  homeSum: number;
+  awaySum: number;
+  homeCount: number;
+  awayCount: number;
+  matchupPct: number;
+  predicted: 'home' | 'away' | 'draw';
+  predictedScore: string;
+};
+
+const buildPredictionFromMatchupPct = (inputPct: number): Pick<TeamPredictionResult, 'matchupPct' | 'predicted' | 'predictedScore'> => {
+  const matchupPct = clampPercentage(inputPct);
+  const awayPct = 100 - matchupPct;
+  const diff = Math.abs(matchupPct - awayPct);
+
+  let predicted: 'home' | 'away' | 'draw' = 'draw';
+  if (diff >= 6) {
+    predicted = matchupPct > awayPct ? 'home' : 'away';
+  }
+
+  // Keep winner label and scoreline consistent:
+  // if a side is predicted to win, score must not be a draw.
+  const scoreGap = predicted === 'draw' ? 0 : (diff >= 25 ? 2 : 1);
+  let predictedScore = '1 - 1';
+  if (predicted === 'home') {
+    predictedScore = scoreGap >= 2 ? '3 - 1' : scoreGap === 1 ? '2 - 1' : '1 - 1';
+  } else if (predicted === 'away') {
+    predictedScore = scoreGap >= 2 ? '1 - 3' : scoreGap === 1 ? '1 - 2' : '1 - 1';
+  }
+
+  return { matchupPct, predicted, predictedScore };
+};
+
+const buildPredictionFromAverages = (
+  homeAvg: number,
+  awayAvg: number,
+  homeSum: number,
+  awaySum: number,
+  homeCount: number,
+  awayCount: number
+): TeamPredictionResult => {
+  const totalAvg = homeAvg + awayAvg;
+  const rawHomePct = totalAvg > 0 ? (homeAvg / totalAvg) * 100 : 50;
+  const matchupPct = totalAvg > 0 ? Math.round(Math.max(20, Math.min(80, rawHomePct))) : 50;
+  const prediction = buildPredictionFromMatchupPct(matchupPct);
+
+  return {
+    homeAvg,
+    awayAvg,
+    homeSum,
+    awaySum,
+    homeCount,
+    awayCount,
+    matchupPct: prediction.matchupPct,
+    predicted: prediction.predicted,
+    predictedScore: prediction.predictedScore,
+  };
+};
 
 const getMatchPlayerCounts = async (matchId: string): Promise<{ registeredPlayers: number; totalPlayers: number }> => {
   const homeTeamUserIds = await sequelize.query<{ userId: string }>(
@@ -1635,6 +1700,13 @@ export const getMatchVotes = async (ctx: Context) => {
 // Get match by ID
 export const getMatchById = async (ctx: Context) => {
   const { matchId } = ctx.params;
+  const cacheKey = `match_${matchId}`;
+  const cached = cache.get(cacheKey);
+  if (cached) {
+    ctx.set('X-Cache', 'HIT');
+    ctx.body = cached;
+    return;
+  }
 
   try {
     console.log('🔍 Fetching match with ID:', matchId);
@@ -1671,7 +1743,7 @@ export const getMatchById = async (ctx: Context) => {
       console.warn('Could not compute season match number:', seasonErr);
     }
 
-    ctx.body = {
+    const payload = {
       success: true,
       match: {
         id: match.id,
@@ -1698,6 +1770,9 @@ export const getMatchById = async (ctx: Context) => {
         awayTeamUsers: (match as any).awayTeamUsers
       }
     };
+    cache.set(cacheKey, payload, 10);
+    ctx.set('X-Cache', 'MISS');
+    ctx.body = payload;
   } catch (err) {
     console.error('❌ Get match error:', err);
     ctx.status = 500;
@@ -2315,6 +2390,10 @@ export const getMatchPrediction = async (ctx: Context) => {
 
     const homePlayers: any[] = (match as any).homeTeamUsers || [];
     const awayPlayers: any[] = (match as any).awayTeamUsers || [];
+    const homeXpSum = homePlayers.reduce((s: number, p: any) => s + (Number(p.xp) || 0), 0);
+    const awayXpSum = awayPlayers.reduce((s: number, p: any) => s + (Number(p.xp) || 0), 0);
+    const homeAvg = homePlayers.length > 0 ? homeXpSum / homePlayers.length : 0;
+    const awayAvg = awayPlayers.length > 0 ? awayXpSum / awayPlayers.length : 0;
 
     // Match number within the league
     let matchNumber: number | null = null;
@@ -2328,6 +2407,29 @@ export const getMatchPrediction = async (ctx: Context) => {
       if (idx >= 0) matchNumber = idx + 1;
     }
 
+    const storedHomePctRaw = Number((match as any).homeWinPct);
+    const storedAwayPctRaw = Number((match as any).awayWinPct);
+    const hasStoredPrediction =
+      Number.isFinite(storedHomePctRaw) &&
+      Number.isFinite(storedAwayPctRaw) &&
+      storedHomePctRaw >= 0 &&
+      storedAwayPctRaw >= 0;
+
+    if (hasStoredPrediction) {
+      const storedPrediction = buildPredictionFromMatchupPct(storedHomePctRaw);
+      ctx.body = {
+        success: true,
+        available: true,
+        matchNumber,
+        home: { average: Math.round(homeAvg), total: homeXpSum, count: homePlayers.length },
+        away: { average: Math.round(awayAvg), total: awayXpSum, count: awayPlayers.length },
+        matchupPct: storedPrediction.matchupPct,
+        predicted: storedPrediction.predicted,
+        predictedScore: storedPrediction.predictedScore,
+      };
+      return;
+    }
+
     // Need at least 1 player on each side
     if (homePlayers.length === 0 || awayPlayers.length === 0) {
       ctx.body = {
@@ -2339,11 +2441,6 @@ export const getMatchPrediction = async (ctx: Context) => {
       return;
     }
 
-    // Compute XP sums and averages
-    const homeXpSum = homePlayers.reduce((s: number, p: any) => s + (Number(p.xp) || 0), 0);
-    const awayXpSum = awayPlayers.reduce((s: number, p: any) => s + (Number(p.xp) || 0), 0);
-    const homeAvg = homePlayers.length > 0 ? homeXpSum / homePlayers.length : 0;
-    const awayAvg = awayPlayers.length > 0 ? awayXpSum / awayPlayers.length : 0;
     const totalAvg = homeAvg + awayAvg;
 
     // If both teams have 0 XP total, not enough data
@@ -2357,56 +2454,35 @@ export const getMatchPrediction = async (ctx: Context) => {
       return;
     }
 
-    // Home win %, clamped between 20-80 to avoid extreme predictions
-    const rawHomePct = (homeAvg / totalAvg) * 100;
-    const matchupPct = Math.round(Math.max(20, Math.min(80, rawHomePct)));
+    const prediction = buildPredictionFromAverages(
+      homeAvg,
+      awayAvg,
+      homeXpSum,
+      awayXpSum,
+      homePlayers.length,
+      awayPlayers.length
+    );
 
-    // Determine predicted winner
-    const diff = homeAvg - awayAvg;
-    const drawThreshold = totalAvg * 0.05; // within 5% is a draw
-    let predicted: 'home' | 'away' | 'draw';
-    if (Math.abs(diff) < drawThreshold) {
-      predicted = 'draw';
-    } else if (diff > 0) {
-      predicted = 'home';
-    } else {
-      predicted = 'away';
-    }
-
-    // Generate predicted score based on strength ratio
-    // Base goals ~ 1-4, scaled by team player count and XP ratio
-    const playerCountFactor = Math.min(homePlayers.length, awayPlayers.length);
-    const baseGoals = Math.max(1, Math.min(4, Math.round(playerCountFactor / 3)));
-    const ratio = totalAvg > 0 ? homeAvg / totalAvg : 0.5;
-
-    let homeGoals: number;
-    let awayGoals: number;
-    if (predicted === 'draw') {
-      homeGoals = baseGoals;
-      awayGoals = baseGoals;
-    } else {
-      const strongerGoals = baseGoals + Math.round(Math.abs(ratio - 0.5) * 4);
-      const weakerGoals = Math.max(0, baseGoals - Math.round(Math.abs(ratio - 0.5) * 3));
-      if (predicted === 'home') {
-        homeGoals = strongerGoals;
-        awayGoals = weakerGoals;
-      } else {
-        homeGoals = weakerGoals;
-        awayGoals = strongerGoals;
+    if (!isFinalizedMatchStatus((match as any).status)) {
+      try {
+        await (match as any).update({
+          homeWinPct: prediction.matchupPct,
+          awayWinPct: 100 - prediction.matchupPct,
+        });
+      } catch (persistErr) {
+        console.warn('Could not persist match prediction snapshot:', persistErr);
       }
     }
-
-    const predictedScore = `${homeGoals} - ${awayGoals}`;
 
     ctx.body = {
       success: true,
       available: true,
       matchNumber,
-      home: { average: Math.round(homeAvg), total: homeXpSum, count: homePlayers.length },
-      away: { average: Math.round(awayAvg), total: awayXpSum, count: awayPlayers.length },
-      matchupPct,
-      predicted,
-      predictedScore,
+      home: { average: Math.round(prediction.homeAvg), total: prediction.homeSum, count: prediction.homeCount },
+      away: { average: Math.round(prediction.awayAvg), total: prediction.awaySum, count: prediction.awayCount },
+      matchupPct: prediction.matchupPct,
+      predicted: prediction.predicted,
+      predictedScore: prediction.predictedScore,
     };
   } catch (err) {
     console.error('Get prediction error', err);
@@ -2437,6 +2513,16 @@ export const submitMatchPrediction = async (ctx: Context) => {
   // Check if this is a team strength analysis request (homeIds/awayIds provided)
   if (body.homeIds !== undefined || body.awayIds !== undefined) {
     try {
+      const match = await Match.findByPk(matchId, {
+        attributes: ['id', 'status', 'homeWinPct', 'awayWinPct']
+      });
+
+      if (!match) {
+        ctx.status = 404;
+        ctx.body = { success: false, message: 'Match not found' };
+        return;
+      }
+
       const homeIds = body.homeIds || [];
       const awayIds = body.awayIds || [];
       const homeTotal = body.homeTotal || homeIds.length;
@@ -2467,22 +2553,34 @@ export const submitMatchPrediction = async (ctx: Context) => {
       // Calculate averages
       const homeAvg = homeTotal > 0 ? homeXPSum / homeTotal : 0;
       const awayAvg = awayTotal > 0 ? awayXPSum / awayTotal : 0;
+      const prediction = buildPredictionFromAverages(
+        homeAvg,
+        awayAvg,
+        homeXPSum,
+        awayXPSum,
+        Number(homeTotal) || 0,
+        Number(awayTotal) || 0
+      );
 
-      // Calculate win percentages
-      const total = homeAvg + awayAvg;
-      const homeWinPct = total > 0 ? Math.round((homeAvg / total) * 100) : 50;
-      const awayWinPct = total > 0 ? Math.round((awayAvg / total) * 100) : 50;
+      if (!isFinalizedMatchStatus((match as any).status)) {
+        await (match as any).update({
+          homeWinPct: prediction.matchupPct,
+          awayWinPct: 100 - prediction.matchupPct,
+        });
+      }
 
       ctx.body = {
         success: true,
         home: {
-          average: homeAvg,
-          winPct: homeWinPct
+          average: prediction.homeAvg,
+          winPct: prediction.matchupPct
         },
         away: {
-          average: awayAvg,
-          winPct: awayWinPct
-        }
+          average: prediction.awayAvg,
+          winPct: 100 - prediction.matchupPct
+        },
+        predicted: prediction.predicted,
+        predictedScore: prediction.predictedScore,
       };
       return;
     } catch (err) {

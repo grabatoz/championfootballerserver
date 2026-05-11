@@ -46,6 +46,7 @@ const MIN_TOTAL_PLAYERS_FOR_TEAM_UPLOAD = 8;
 const MIN_REGISTERED_PLAYERS_FOR_TEAM_UPLOAD = 6;
 const MIN_REGISTERED_PLAYERS_MESSAGE = 'A minimum of 6 registered players is required to choose teams';
 const MIN_TOTAL_PLAYERS_MESSAGE = 'A minimum of 8 total players (including at least 6 registered league players) is required to save teams.';
+const FINALIZED_MATCH_STATUSES = new Set(['RESULT_UPLOADED', 'RESULT_PUBLISHED']);
 
 const parseJsonArrayField = (value: unknown, fieldName: string): any[] => {
   if (value === undefined || value === null || value === '') return [];
@@ -72,6 +73,77 @@ const validateTeamUploadThresholds = (registeredPlayers: number, totalPlayers: n
     return MIN_TOTAL_PLAYERS_MESSAGE;
   }
   return null;
+};
+
+const isFinalizedMatchStatus = (status: unknown): boolean =>
+  FINALIZED_MATCH_STATUSES.has(String(status || '').toUpperCase());
+
+const clampPredictionPct = (value: number): number =>
+  Math.round(Math.max(20, Math.min(80, Number.isFinite(value) ? value : 50)));
+
+const computeTeamWinPercentages = async (params: {
+  homeIds: string[];
+  awayIds: string[];
+  homeTotal: number;
+  awayTotal: number;
+}): Promise<{ homeWinPct: number; awayWinPct: number }> => {
+  const homeIds = (params.homeIds || []).filter(Boolean);
+  const awayIds = (params.awayIds || []).filter(Boolean);
+  const homeTotal = Math.max(0, Number(params.homeTotal) || 0);
+  const awayTotal = Math.max(0, Number(params.awayTotal) || 0);
+
+  let homeXPSum = 0;
+  let awayXPSum = 0;
+
+  if (homeIds.length > 0) {
+    const homePlayers = await User.findAll({
+      where: { id: { [Op.in]: homeIds } },
+      attributes: ['id', 'xp'],
+    });
+    homeXPSum = homePlayers.reduce((sum: number, player: any) => sum + (Number(player?.xp) || 0), 0);
+  }
+
+  if (awayIds.length > 0) {
+    const awayPlayers = await User.findAll({
+      where: { id: { [Op.in]: awayIds } },
+      attributes: ['id', 'xp'],
+    });
+    awayXPSum = awayPlayers.reduce((sum: number, player: any) => sum + (Number(player?.xp) || 0), 0);
+  }
+
+  const homeAvg = homeTotal > 0 ? homeXPSum / homeTotal : 0;
+  const awayAvg = awayTotal > 0 ? awayXPSum / awayTotal : 0;
+  const total = homeAvg + awayAvg;
+
+  const homeWinPct = total > 0 ? clampPredictionPct((homeAvg / total) * 100) : 50;
+  return {
+    homeWinPct,
+    awayWinPct: 100 - homeWinPct,
+  };
+};
+
+const getMatchTeamManagementContext = async (matchId: string): Promise<any | null> => {
+  return Match.findByPk(matchId, {
+    attributes: ['id', 'leagueId', 'status', 'homeCaptainId', 'awayCaptainId'],
+    include: [
+      {
+        model: League,
+        as: 'league',
+        attributes: ['id'],
+        include: [{ model: User, as: 'administeredLeagues', attributes: ['id'] }],
+      },
+    ],
+  });
+};
+
+const hasTeamManagementPermission = (match: any, userId: string, team: 'home' | 'away'): boolean => {
+  const isAdmin = Boolean(
+    match?.league?.administeredLeagues?.some((admin: any) => String(admin?.id) === String(userId))
+  );
+  if (isAdmin) return true;
+
+  const captainId = team === 'away' ? String(match?.awayCaptainId || '') : String(match?.homeCaptainId || '');
+  return captainId !== '' && captainId === String(userId);
 };
 
 const removeUserFromLeagueMatchAssignments = async (leagueId: string, userId: string): Promise<void> => {
@@ -441,9 +513,9 @@ export const getTrophyRoom = async (ctx: Context) => {
     if (leagueIdQ && leagueIdQ !== 'all') {
       // FAST PATH: fetch only the specific league directly (avoid loading ALL user leagues)
       const league = await League.findByPk(leagueIdQ, {
-        attributes: ['id', 'name', 'maxGames'],
+        attributes: ['id', 'name', 'maxGames', 'active', 'archived'],
         include: [
-          { model: User, as: 'members', attributes: ['id', 'firstName', 'lastName', 'position', 'positionType', 'xp'] },
+          { model: User, as: 'members', attributes: ['id', 'firstName', 'lastName', 'email', 'position', 'positionType', 'xp'] },
           {
             model: Match,
             as: 'matches',
@@ -451,8 +523,8 @@ export const getTrophyRoom = async (ctx: Context) => {
             required: false,
             attributes: ['id', 'seasonId', 'status', 'date', 'homeTeamGoals', 'awayTeamGoals'],
             include: [
-              { model: User, as: 'homeTeamUsers', attributes: ['id', 'firstName', 'lastName', 'position', 'positionType'] },
-              { model: User, as: 'awayTeamUsers', attributes: ['id', 'firstName', 'lastName', 'position', 'positionType'] }
+              { model: User, as: 'homeTeamUsers', attributes: ['id', 'firstName', 'lastName', 'email', 'position', 'positionType'] },
+              { model: User, as: 'awayTeamUsers', attributes: ['id', 'firstName', 'lastName', 'email', 'position', 'positionType'] }
             ]
           }
         ]
@@ -476,9 +548,9 @@ export const getTrophyRoom = async (ctx: Context) => {
       }
       const fetchedLeagues = await League.findAll({
         where: { id: { [Op.in]: userLeagueIds } },
-        attributes: ['id', 'name', 'maxGames'],
+        attributes: ['id', 'name', 'maxGames', 'active', 'archived'],
         include: [
-          { model: User, as: 'members', attributes: ['id', 'firstName', 'lastName', 'position', 'positionType', 'xp'] },
+          { model: User, as: 'members', attributes: ['id', 'firstName', 'lastName', 'email', 'position', 'positionType', 'xp'] },
           {
             model: Match,
             as: 'matches',
@@ -486,8 +558,8 @@ export const getTrophyRoom = async (ctx: Context) => {
             required: false,
             attributes: ['id', 'seasonId', 'status', 'date', 'homeTeamGoals', 'awayTeamGoals'],
             include: [
-              { model: User, as: 'homeTeamUsers', attributes: ['id', 'firstName', 'lastName', 'position', 'positionType'] },
-              { model: User, as: 'awayTeamUsers', attributes: ['id', 'firstName', 'lastName', 'position', 'positionType'] }
+              { model: User, as: 'homeTeamUsers', attributes: ['id', 'firstName', 'lastName', 'email', 'position', 'positionType'] },
+              { model: User, as: 'awayTeamUsers', attributes: ['id', 'firstName', 'lastName', 'email', 'position', 'positionType'] }
             ]
           }
         ]
@@ -595,6 +667,26 @@ export const getTrophyRoom = async (ctx: Context) => {
         console.log(`🔍 [Trophy Room] Using active season ${currentSeasonName} with ${matchesToUse.length} matches`);
       }
 
+      // Awards should only be calculated for completed season/league scopes.
+      const completedMatches = countCompleted(matchesToUse);
+      const scopedMaxGames = Number(currentSeasonRow?.maxGames ?? league.maxGames ?? 0);
+      const scopeCompleted = (() => {
+        if (scopedMaxGames > 0) return completedMatches >= scopedMaxGames;
+        if (currentSeasonRow) {
+          if (currentSeasonRow.archived === true || currentSeasonRow.isActive === false) {
+            return completedMatches > 0;
+          }
+          return false;
+        }
+        const leagueArchivedOrInactive = Boolean((league as any)?.archived === true || (league as any)?.active === false);
+        return leagueArchivedOrInactive && completedMatches > 0;
+      })();
+
+      if (!scopeCompleted) {
+        console.log(`[Trophy Room] Skip incomplete scope: league=${league.name}, season=${currentSeasonName || 'n/a'}, completed=${completedMatches}, maxGames=${scopedMaxGames}`);
+        return;
+      }
+
       const stats = calcStats(matchesToUse, league.members || []);
       const playerIds = Object.keys(stats).filter(id => stats[id].played > 0);
 
@@ -628,7 +720,7 @@ export const getTrophyRoom = async (ctx: Context) => {
       
       const isGoalkeeperRole = (rawRole: unknown) => {
         const role = String(rawRole || '').trim().toLowerCase();
-        return role === 'gk' || role.includes('goalkeeper');
+        return role === 'gk' || role.includes('goalkeeper') || role.includes('keeper');
       };
 
       // Calculate GK-specific stats for Star Keeper
@@ -652,16 +744,27 @@ export const getTrophyRoom = async (ctx: Context) => {
       // lowest average team goals conceded among all players who played.
       const shieldCandidateIds: string[] = playerIds.filter((id: string) => stats[id]?.played > 0);
 
+      const toDisplayName = (row: Record<string, unknown> | null | undefined): string => {
+        const r = row || {};
+        const full = `${String(r.firstName || '').trim()} ${String(r.lastName || '').trim()}`.trim();
+        if (full) return full;
+        const alt = String(r.displayName || r.name || r.username || '').trim();
+        if (alt) return alt;
+        const email = String(r.email || '').trim();
+        if (email.includes('@')) return email.split('@')[0];
+        return '';
+      };
+
       const nameMap = new Map<string, string>();
       (league.members || []).forEach((p: any) => {
         const pid = String(p.id);
-        const nm = `${p.firstName || ''} ${p.lastName || ''}`.trim();
+        const nm = toDisplayName(p);
         if (pid && nm) nameMap.set(pid, nm);
       });
       (matchesToUse || []).forEach((m: any) => {
         [...(m.homeTeamUsers || []), ...(m.awayTeamUsers || [])].forEach((u: any) => {
           const pid = String(u.id);
-          const nm = `${u.firstName || ''} ${u.lastName || ''}`.trim();
+          const nm = toDisplayName(u);
           if (pid && nm && !nameMap.has(pid)) nameMap.set(pid, nm);
         });
       });
@@ -757,10 +860,12 @@ export const getTrophyRoom = async (ctx: Context) => {
       awards.forEach((award) => {
         const rawWinnerId = award.winnerId ? String(award.winnerId) : null;
         const winnerId = rawWinnerId && meetsAwardRequirement(award.title, rawWinnerId) ? rawWinnerId : null;
-        const winnerName = winnerId ? getPlayerName(winnerId) : '';
-        const hasValidWinner = Boolean(winnerId && winnerName);
-
         const prev = existingSnapshot[award.title];
+        const winnerName = winnerId ? getPlayerName(winnerId) : '';
+        const resolvedWinnerName = winnerId
+          ? (winnerName || (prev?.winner && prev.winner !== 'TBC' ? prev.winner : 'Player'))
+          : 'TBC';
+        const hasValidWinner = Boolean(winnerId);
         const prevWinnerId = prev?.winnerId ? String(prev.winnerId) : null;
         const winnerChanged = (hasValidWinner ? winnerId : null) !== prevWinnerId;
 
@@ -777,7 +882,7 @@ export const getTrophyRoom = async (ctx: Context) => {
 
         nextSnapshot[award.title] = {
           winnerId: hasValidWinner ? winnerId : null,
-          winner: hasValidWinner ? winnerName : 'TBC',
+          winner: hasValidWinner ? resolvedWinnerName : 'TBC',
           awardedAt,
           updatedAt,
         };
@@ -785,7 +890,7 @@ export const getTrophyRoom = async (ctx: Context) => {
         trophyWinners.push({
           title: award.title,
           winnerId: hasValidWinner ? winnerId : null,
-          winner: hasValidWinner ? winnerName : 'TBC',
+          winner: hasValidWinner ? resolvedWinnerName : 'TBC',
           leagueId: String(league.id),
           leagueName: league.name,
           seasonId: currentSeasonId || undefined,
@@ -1248,6 +1353,26 @@ export const saveLayout = async (ctx: Context) => {
   const side = team === 'away' ? 'away' : 'home';
 
   try {
+    const actorId = String(ctx.state.user?.userId || '');
+    if (!actorId) {
+      ctx.status = 401;
+      ctx.body = { success: false, message: 'Unauthorized' };
+      return;
+    }
+
+    const permissionMatch = await getMatchTeamManagementContext(matchId);
+    if (!permissionMatch) {
+      ctx.status = 404;
+      ctx.body = { success: false, message: 'Match not found' };
+      return;
+    }
+
+    if (!hasTeamManagementPermission(permissionMatch, actorId, side)) {
+      ctx.status = 403;
+      ctx.body = { success: false, message: 'Only league admins or team captains can update formation.' };
+      return;
+    }
+
     const sequelizeInstance = MatchPlayerLayout.sequelize!;
 
     // Ensure table exists (createIfNotExists)
@@ -1299,8 +1424,21 @@ export const removePlayerFromTeam = async (ctx: Context) => {
   const side = team === 'away' ? 'away' : 'home';
 
   try {
-    const match = await Match.findByPk(matchId);
-    if (!match) { ctx.status = 404; ctx.body = { success: false }; return; }
+    const actorId = String(ctx.state.user?.userId || '');
+    if (!actorId) {
+      ctx.status = 401;
+      ctx.body = { success: false, message: 'Unauthorized' };
+      return;
+    }
+
+    const match = await getMatchTeamManagementContext(matchId);
+    if (!match) { ctx.status = 404; ctx.body = { success: false, message: 'Match not found' }; return; }
+
+    if (!hasTeamManagementPermission(match, actorId, side)) {
+      ctx.status = 403;
+      ctx.body = { success: false, message: 'Only league admins or team captains can move players.' };
+      return;
+    }
 
     const removed: { home: string[]; away: string[] } = (match as any).removed || { home: [], away: [] };
     if (!removed[side].includes(String(userId))) {
@@ -1326,10 +1464,24 @@ export const makeCaptain = async (ctx: Context) => {
   }
 
   try {
-    const match = await Match.findByPk(matchId);
-    if (!match) { ctx.status = 404; ctx.body = { success: false }; return; }
+    const actorId = String(ctx.state.user?.userId || '');
+    if (!actorId) {
+      ctx.status = 401;
+      ctx.body = { success: false, message: 'Unauthorized' };
+      return;
+    }
 
-    const field = team === 'away' ? 'awayCaptainId' : 'homeCaptainId';
+    const side = team === 'away' ? 'away' : 'home';
+    const match = await getMatchTeamManagementContext(matchId);
+    if (!match) { ctx.status = 404; ctx.body = { success: false, message: 'Match not found' }; return; }
+
+    if (!hasTeamManagementPermission(match, actorId, side)) {
+      ctx.status = 403;
+      ctx.body = { success: false, message: 'Only league admins or team captains can assign captains.' };
+      return;
+    }
+
+    const field = side === 'away' ? 'awayCaptainId' : 'homeCaptainId';
     await match.update({ [field]: userId } as any);
     ctx.body = { success: true };
   } catch (err) {
@@ -1352,10 +1504,21 @@ export const switchPlayerTeam = async (ctx: Context) => {
   const toSide = fromSide === 'home' ? 'away' : 'home';
 
   try {
-    const match = await Match.findOne({
-      where: { id: matchId, leagueId: id },
-    });
-    if (!match) { ctx.status = 404; ctx.body = { success: false }; return; }
+    const actorId = String(ctx.state.user?.userId || '');
+    if (!actorId) {
+      ctx.status = 401;
+      ctx.body = { success: false, message: 'Unauthorized' };
+      return;
+    }
+
+    const match = await getMatchTeamManagementContext(matchId);
+    if (!match || String((match as any).leagueId) !== String(id)) { ctx.status = 404; ctx.body = { success: false }; return; }
+
+    if (!hasTeamManagementPermission(match, actorId, fromSide)) {
+      ctx.status = 403;
+      ctx.body = { success: false, message: 'Only league admins or team captains can move players.' };
+      return;
+    }
 
     const sequelizeInst = Match.sequelize!;
     const homeJoin = 'MatchHomeTeamUsers';
@@ -1395,8 +1558,21 @@ export const replacePlayer = async (ctx: Context) => {
   const joinTable = side === 'home' ? 'MatchHomeTeamUsers' : 'MatchAwayTeamUsers';
 
   try {
-    const match = await Match.findOne({ where: { id: matchId, leagueId: id } });
-    if (!match) { ctx.status = 404; ctx.body = { success: false }; return; }
+    const actorId = String(ctx.state.user?.userId || '');
+    if (!actorId) {
+      ctx.status = 401;
+      ctx.body = { success: false, message: 'Unauthorized' };
+      return;
+    }
+
+    const match = await getMatchTeamManagementContext(matchId);
+    if (!match || String((match as any).leagueId) !== String(id)) { ctx.status = 404; ctx.body = { success: false }; return; }
+
+    if (!hasTeamManagementPermission(match, actorId, side)) {
+      ctx.status = 403;
+      ctx.body = { success: false, message: 'Only league admins or team captains can move players.' };
+      return;
+    }
 
     const sequelizeInst = Match.sequelize!;
 
@@ -1531,28 +1707,17 @@ export const getLeagueById = async (ctx: Context) => {
   }
 
   const userId = ctx.state.user.userId;
+  const cacheKey = `league_${id}_${userId}_${requestedSeasonId || 'all'}_${includeMatches ? 'with_matches' : 'meta'}`;
+  const cached = cache.get(cacheKey);
+  if (cached) {
+    ctx.set('X-Cache', 'HIT');
+    ctx.body = cached;
+    return;
+  }
 
   try {
     const league = await League.findByPk(id, {
-      include: [
-        { model: User, as: 'members', attributes: ['id', 'firstName', 'lastName', 'profilePicture', 'position', 'positionType', 'xp', 'shirtNumber', 'style'] },
-        { model: User, as: 'administeredLeagues', attributes: ['id'] },
-        {
-          model: Season,
-          as: 'seasons',
-          attributes: ['id', 'seasonNumber', 'name', 'inviteCode', 'isActive', 'archived', 'startDate', 'endDate', 'maxGames', 'showPoints', 'createdAt', 'updatedAt'],
-          where: { deleted: false },
-          required: false,
-          include: [
-            {
-              model: User,
-              as: 'players',
-              attributes: ['id', 'firstName', 'lastName', 'profilePicture', 'position', 'positionType', 'xp', 'shirtNumber', 'style'],
-              through: { attributes: [] } // Don't include join table data
-            }
-          ]
-        }
-      ]
+      attributes: ['id', 'name', 'inviteCode', 'active', 'archived', 'image', 'maxGames']
     });
 
     if (!league) {
@@ -1561,8 +1726,50 @@ export const getLeagueById = async (ctx: Context) => {
       return;
     }
 
-    const isMember = (league as any).members?.some((m: any) => String(m.id) === String(userId));
-    const isAdmin = (league as any).administeredLeagues?.some((a: any) => String(a.id) === String(userId));
+    const [members, administeredLeagues, seasons] = await Promise.all([
+      User.findAll({
+        attributes: ['id', 'firstName', 'lastName', 'profilePicture', 'position', 'positionType', 'xp', 'shirtNumber', 'style'],
+        include: [
+          {
+            model: League,
+            as: 'leagues',
+            attributes: [],
+            through: { attributes: [] },
+            where: { id },
+            required: true,
+          }
+        ]
+      }),
+      User.findAll({
+        attributes: ['id'],
+        include: [
+          {
+            model: League,
+            as: 'administeredLeagues',
+            attributes: [],
+            through: { attributes: [] },
+            where: { id },
+            required: true,
+          }
+        ]
+      }),
+      Season.findAll({
+        where: { leagueId: id, deleted: false },
+        attributes: ['id', 'seasonNumber', 'name', 'inviteCode', 'isActive', 'archived', 'startDate', 'endDate', 'maxGames', 'showPoints', 'createdAt', 'updatedAt'],
+        include: [
+          {
+            model: User,
+            as: 'players',
+            attributes: ['id', 'firstName', 'lastName', 'profilePicture', 'position', 'positionType', 'xp', 'shirtNumber', 'style'],
+            through: { attributes: [] }
+          }
+        ],
+        order: [['seasonNumber', 'DESC'], ['createdAt', 'DESC']]
+      })
+    ]);
+
+    const isMember = members.some((m: any) => String(m.id) === String(userId));
+    const isAdmin = administeredLeagues.some((a: any) => String(a.id) === String(userId));
 
     if (!isMember && !isAdmin) {
       ctx.status = 403;
@@ -1570,8 +1777,8 @@ export const getLeagueById = async (ctx: Context) => {
       return;
     }
 
-    // Find user's season (the season they are part of or haven't declined)
-    const seasons = (league as any).seasons || [];
+    const membersJson = members.map((m: any) => m.toJSON());
+    const adminsJson = administeredLeagues.map((a: any) => a.toJSON());
     const validSeasonIds = new Set<string>(seasons.map((s: any) => String(s.id)));
     if (requestedSeasonId && !validSeasonIds.has(requestedSeasonId)) {
       ctx.status = 400;
@@ -1603,14 +1810,16 @@ export const getLeagueById = async (ctx: Context) => {
             archived: Boolean((league as any).archived),
             image: (league as any).image,
             maxGames: league.maxGames,
-            members: (league as any).members || [],
+            members: membersJson,
             matches: [],
             seasons: formattedSeasons,
             currentSeason,
-            administrators: (league as any).administeredLeagues || [],
+            administrators: adminsJson,
             isAdmin
           }
         };
+        cache.set(cacheKey, ctx.body, 12);
+        ctx.set('X-Cache', 'MISS');
         return;
       }
 
@@ -1648,14 +1857,16 @@ export const getLeagueById = async (ctx: Context) => {
           archived: Boolean((league as any).archived),
           image: (league as any).image,
           maxGames: league.maxGames,
-          members: (league as any).members || [],
+          members: membersJson,
           matches: [],
           seasons: formattedSeasons,
           currentSeason,
-          administrators: (league as any).administeredLeagues || [],
+          administrators: adminsJson,
           isAdmin
         }
       };
+      cache.set(cacheKey, ctx.body, 12);
+      ctx.set('X-Cache', 'MISS');
       return;
     }
 
@@ -1812,15 +2023,17 @@ export const getLeagueById = async (ctx: Context) => {
           archived: Boolean((league as any).archived),
           image: (league as any).image,
           maxGames: league.maxGames,
-          members: (league as any).members || [],
+          members: membersJson,
           matches: matchesWithNumbers,
           seasons: formattedSeasons, // Admin sees ALL seasons with members
           currentSeason: activeSeason || (seasons.length > 0 ? seasons[0] : null), // Admin's current = active season
-          administrators: (league as any).administeredLeagues || [],
+          administrators: adminsJson,
           isAdmin,
           computedStatus
         }
       };
+      cache.set(cacheKey, ctx.body, 8);
+      ctx.set('X-Cache', 'MISS');
       return;
     }
 
@@ -1894,15 +2107,20 @@ export const getLeagueById = async (ctx: Context) => {
     
     console.log(`📊 [MEMBER] User ${userId} is in seasons:`, userSeasonIds);
     
+    const matchWhere: any = {
+      leagueId: id,
+      deleted: false,
+    };
+    if (selectedMemberSeasonId) {
+      matchWhere.seasonId = selectedMemberSeasonId;
+    } else if (userSeasonIds.length > 0) {
+      matchWhere.seasonId = userSeasonIds; // Fetch matches for all user's seasons
+    } else {
+      matchWhere.id = { [Op.is]: null };
+    }
+
     const matches = await Match.findAll({
-      where: {
-        leagueId: id,
-        deleted: false,
-        seasonId:
-          selectedMemberSeasonId
-            ? selectedMemberSeasonId
-            : (userSeasonIds.length > 0 ? userSeasonIds : null) // Fetch matches for all user's seasons
-      },
+      where: matchWhere,
       attributes: { exclude: [] },
       include: [
         { model: User, as: 'homeTeamUsers', attributes: ['id', 'firstName', 'lastName', 'profilePicture', 'shirtNumber'] },
@@ -2051,15 +2269,17 @@ export const getLeagueById = async (ctx: Context) => {
         archived: Boolean((league as any).archived),
         image: (league as any).image,
         maxGames: league.maxGames,
-        members: (league as any).members || [],
+        members: membersJson,
         matches: matchesWithNumbers,
         seasons: filteredSeasons, // Only show seasons user is member of
         currentSeason: userCurrentSeason, // User's current season
-        administrators: (league as any).administeredLeagues || [],
+        administrators: adminsJson,
         isAdmin,
         computedStatus: computedStatusMember
       }
     };
+    cache.set(cacheKey, ctx.body, 8);
+    ctx.set('X-Cache', 'MISS');
   } catch (err) {
     console.error('Get league by ID error', err);
     ctx.status = 500;
@@ -2248,20 +2468,49 @@ export const getLeagueXP = async (ctx: Context) => {
   }
 
   const userId = ctx.state.user.userId;
+  const cacheKey = `league_xp_${id}_${querySeasonId || 'active'}_${userId}`;
+  const cached = cache.get(cacheKey);
+  if (cached) {
+    ctx.set('X-Cache', 'HIT');
+    ctx.body = cached;
+    return;
+  }
 
   try {
-    const league = await League.findByPk(id, {
-      include: [
-        { model: User, as: 'members', attributes: ['id'] },
-        { model: User, as: 'administeredLeagues', attributes: ['id'] },
-        {
-          model: Season,
-          as: 'seasons',
-          where: { isActive: true, archived: false, deleted: false },
-          required: false
-        }
-      ]
-    });
+    const [league, members, administeredLeagues, activeSeason] = await Promise.all([
+      League.findByPk(id, { attributes: ['id'] }),
+      User.findAll({
+        attributes: ['id'],
+        include: [
+          {
+            model: League,
+            as: 'leagues',
+            attributes: [],
+            through: { attributes: [] },
+            where: { id },
+            required: true,
+          }
+        ]
+      }),
+      User.findAll({
+        attributes: ['id'],
+        include: [
+          {
+            model: League,
+            as: 'administeredLeagues',
+            attributes: [],
+            through: { attributes: [] },
+            where: { id },
+            required: true,
+          }
+        ]
+      }),
+      Season.findOne({
+        where: { leagueId: id, isActive: true, archived: false, deleted: false },
+        attributes: ['id'],
+        order: [['seasonNumber', 'DESC'], ['createdAt', 'DESC']]
+      })
+    ]);
 
     if (!league) {
       ctx.status = 404;
@@ -2269,8 +2518,8 @@ export const getLeagueXP = async (ctx: Context) => {
       return;
     }
 
-    const isMember = (league as any).members?.some((m: any) => String(m.id) === String(userId));
-    const isAdmin = (league as any).administeredLeagues?.some((a: any) => String(a.id) === String(userId));
+    const isMember = members.some((m: any) => String(m.id) === String(userId));
+    const isAdmin = administeredLeagues.some((a: any) => String(a.id) === String(userId));
 
     if (!isMember && !isAdmin) {
       ctx.status = 403;
@@ -2278,8 +2527,7 @@ export const getLeagueXP = async (ctx: Context) => {
       return;
     }
 
-    const activeSeason = (league as any).seasons?.[0];
-    const seasonId = querySeasonId || activeSeason?.id;
+    const seasonId = querySeasonId || (activeSeason ? String((activeSeason as any).id) : undefined);
 
     // Canonical source of truth: match_statistics.xp_awarded
     // (already computed at stats submission time).
@@ -2288,7 +2536,7 @@ export const getLeagueXP = async (ctx: Context) => {
     const matchCountMap: Record<string, number> = {};
     const sequelize = League.sequelize!;
 
-    const memberIds = ((league as any).members || []).map((m: any) => String(m.id));
+    const memberIds = members.map((m: any) => String(m.id));
     memberIds.forEach((uid: string) => {
       xpMap[uid] = 0;
       avgMap[uid] = 0;
@@ -2296,69 +2544,38 @@ export const getLeagueXP = async (ctx: Context) => {
     });
 
     try {
-      // 1) Completed matches for this league (+ optional season filter)
-      let matchQuery = `SELECT id FROM "Matches" WHERE "leagueId" = $1 AND status IN ('RESULT_PUBLISHED', 'RESULT_UPLOADED')`;
-      const matchBinds: any[] = [id];
-      if (seasonId) {
-        matchQuery += ` AND "seasonId" = $2`;
-        matchBinds.push(seasonId);
-      }
-
-      const matches = await sequelize.query<{ id: string }>(matchQuery, {
-        bind: matchBinds,
-        type: QueryTypes.SELECT
-      });
-
-      if (matches.length === 0) {
-        ctx.body = { success: true, xp: xpMap, avg: avgMap };
-        return;
-      }
-
-      const matchIds = matches.map((m) => m.id);
-      const matchIdPlaceholders = matchIds.map((_, i) => `$${i + 1}`).join(',');
-
-      // 2) Real participants (exclude guests)
-      const [homePlayers, awayPlayers] = await Promise.all([
-        sequelize.query<{ userId: string }>(
-          `SELECT "userId" FROM "UserHomeMatches" WHERE "matchId" IN (${matchIdPlaceholders})`,
-          { bind: matchIds, type: QueryTypes.SELECT }
-        ),
-        sequelize.query<{ userId: string }>(
-          `SELECT "userId" FROM "UserAwayMatches" WHERE "matchId" IN (${matchIdPlaceholders})`,
-          { bind: matchIds, type: QueryTypes.SELECT }
-        )
-      ]);
-
-      const participantIds = Array.from(new Set<string>([
-        ...homePlayers.map((r) => String(r.userId)),
-        ...awayPlayers.map((r) => String(r.userId))
-      ]));
-
-      if (participantIds.length === 0) {
-        ctx.body = { success: true, xp: xpMap, avg: avgMap };
-        return;
-      }
-
-      const participantPlaceholders = participantIds
-        .map((_, i) => `$${matchIds.length + i + 1}`)
-        .join(',');
-
-      // 3) Aggregate canonical XP from match_statistics.xp_awarded
-      const xpRows = await sequelize.query<{
-        user_id: string;
-        total_xp: number | string;
-        match_count: number | string;
-      }>(
-        `SELECT
+      // Aggregate canonical XP from match_statistics.xp_awarded for real participants only.
+      let xpQuery = `SELECT
            ms.user_id,
            COALESCE(SUM(ms.xp_awarded), 0) AS total_xp,
            COUNT(DISTINCT ms.match_id) AS match_count
          FROM match_statistics ms
-         WHERE ms.match_id IN (${matchIdPlaceholders})
-           AND ms.user_id IN (${participantPlaceholders})
-         GROUP BY ms.user_id`,
-        { bind: [...matchIds, ...participantIds], type: QueryTypes.SELECT }
-      );
+         INNER JOIN "Matches" m ON m.id = ms.match_id
+         WHERE m."leagueId" = $1
+           AND m.status IN ('RESULT_PUBLISHED', 'RESULT_UPLOADED')`;
+      const binds: any[] = [id];
+      if (seasonId) {
+        xpQuery += ` AND m."seasonId" = $2`;
+        binds.push(seasonId);
+      }
+      xpQuery += `
+           AND (
+             EXISTS (
+               SELECT 1 FROM "UserHomeMatches" uh
+               WHERE uh."matchId" = ms.match_id AND uh."userId" = ms.user_id
+             )
+             OR EXISTS (
+               SELECT 1 FROM "UserAwayMatches" ua
+               WHERE ua."matchId" = ms.match_id AND ua."userId" = ms.user_id
+             )
+           )
+         GROUP BY ms.user_id`;
+
+      const xpRows = await sequelize.query<{
+        user_id: string;
+        total_xp: number | string;
+        match_count: number | string;
+      }>(xpQuery, { bind: binds, type: QueryTypes.SELECT });
 
       xpRows.forEach((row) => {
         const uid = String(row.user_id);
@@ -2369,7 +2586,7 @@ export const getLeagueXP = async (ctx: Context) => {
         avgMap[uid] = matchCount > 0 ? Math.round(totalXP / matchCount) : 0;
       });
 
-      participantIds.forEach((uid) => {
+      memberIds.forEach((uid) => {
         if (xpMap[uid] == null) xpMap[uid] = 0;
         if (avgMap[uid] == null) avgMap[uid] = 0;
         if (matchCountMap[uid] == null) matchCountMap[uid] = 0;
@@ -2378,11 +2595,14 @@ export const getLeagueXP = async (ctx: Context) => {
       console.error('Could not compute league XP:', statsErr);
     }
 
-    ctx.body = {
+    const payload = {
       success: true,
       xp: xpMap,
       avg: avgMap
     };
+    cache.set(cacheKey, payload, 6);
+    ctx.set('X-Cache', 'MISS');
+    ctx.body = payload;
   } catch (err) {
     console.error('Get league XP error:', err);
     ctx.status = 500;
@@ -3728,6 +3948,23 @@ export const createMatchInLeague = async (ctx: Context) => {
       await (match as any).setAwayTeamUsers(parsedAwayIds);
     }
 
+    if (parsedHomeIds.length > 0 || parsedAwayIds.length > 0) {
+      try {
+        const prediction = await computeTeamWinPercentages({
+          homeIds: parsedHomeIds,
+          awayIds: parsedAwayIds,
+          homeTotal: parsedHomeIds.length,
+          awayTotal: parsedAwayIds.length,
+        });
+        await (match as any).update({
+          homeWinPct: prediction.homeWinPct,
+          awayWinPct: prediction.awayWinPct,
+        });
+      } catch (predictionErr) {
+        console.warn('Could not snapshot match team-balance on create:', predictionErr);
+      }
+    }
+
     // Clear league cache
     try {
       cache.clearPattern(`league_${leagueId}`);
@@ -3975,6 +4212,23 @@ export const updateMatchInLeague = async (ctx: Context) => {
 
     if (allGuests.length > 0) {
       await MatchGuest.bulkCreate(allGuests);
+    }
+
+    if (teamUploadRequested && !isFinalizedMatchStatus((match as any).status)) {
+      try {
+        const prediction = await computeTeamWinPercentages({
+          homeIds,
+          awayIds,
+          homeTotal: homeIds.length + homeGuestsData.length,
+          awayTotal: awayIds.length + awayGuestsData.length,
+        });
+        await match.update({
+          homeWinPct: prediction.homeWinPct,
+          awayWinPct: prediction.awayWinPct,
+        } as any);
+      } catch (predictionErr) {
+        console.warn('Could not snapshot match team-balance on update:', predictionErr);
+      }
     }
 
     // Send notification message to all match players if provided

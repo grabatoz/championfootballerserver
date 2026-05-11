@@ -80,7 +80,7 @@ export const updateProfile = async (ctx: Context) => {
       return;
     }
     if (!/[A-Z]/.test(pw)) {
-      ctx.throw(400, "Password must include at least one uppercase letter");
+      ctx.throw(400, "Please ensure the password includes at least one uppercase letter.");
       return;
     }
     if (!/[0-9]/.test(pw)) {

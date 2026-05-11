@@ -189,12 +189,18 @@ router.post("/auth/register", none, async (ctx: Context) => {
       ctx.throw(400, "Invalid email format");
     }
 
-    // Validate password strength - min 7 chars, must contain letters and digits
-    if (password.length < 7) {
-      ctx.throw(400, "Password must be at least 7 characters long");
+    // Validate password strength (aligned with profile settings)
+    if (password.length < 6 || password.length > 16) {
+      ctx.throw(400, "Password must be 6-16 characters long");
     }
-    if (!/[a-zA-Z]/.test(password) || !/[0-9]/.test(password)) {
-      ctx.throw(400, "Password must contain letters and numbers. Consider also using upper and lower case and other characters (-, _, @, ?, etc)");
+    if (!/[A-Z]/.test(password)) {
+      ctx.throw(400, "Please ensure the password includes at least one uppercase letter.");
+    }
+    if (!/[0-9]/.test(password)) {
+      ctx.throw(400, "Password must include at least one number.");
+    }
+    if (!/[^A-Za-z0-9]/.test(password)) {
+      ctx.throw(400, "Password must include at least one special character.");
     }
 
     // Validate name length
@@ -598,11 +604,17 @@ router.post("/auth/verify-reset-code", none, async (ctx: CustomContext) => {
     ctx.throw(400, "Email, verification code, and new password are required.");
   }
 
-  if (newPassword.length < 7) {
-    ctx.throw(400, "Password must be at least 7 characters long.");
+  if (newPassword.length < 6 || newPassword.length > 16) {
+    ctx.throw(400, "Password must be 6-16 characters long.");
   }
-  if (!/[a-zA-Z]/.test(newPassword) || !/[0-9]/.test(newPassword)) {
-    ctx.throw(400, "Password must contain letters and numbers.");
+  if (!/[A-Z]/.test(newPassword)) {
+    ctx.throw(400, "Please ensure the password includes at least one uppercase letter.");
+  }
+  if (!/[0-9]/.test(newPassword)) {
+    ctx.throw(400, "Password must include at least one number.");
+  }
+  if (!/[^A-Za-z0-9]/.test(newPassword)) {
+    ctx.throw(400, "Password must include at least one special character.");
   }
 
   const userEmail = email.toLowerCase();

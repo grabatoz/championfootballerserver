@@ -465,12 +465,12 @@ router.get('/:id/trophies', required, async (ctx) => {
     const { id: playerId } = ctx.params as { id: string };
     const { leagueId, year, seasonId } = ctx.query as { leagueId?: string; year?: string; seasonId?: string };
 
-    console.log('🏆 [Trophies] Request:', { playerId, leagueId: leagueId || 'all', year: year || 'all', seasonId: seasonId || 'all' });
+    console.log('ًںڈ† [Trophies] Request:', { playerId, leagueId: leagueId || 'all', year: year || 'all', seasonId: seasonId || 'all' });
 
     const cacheKey = `player_trophies_${playerId}_${leagueId || 'all'}_${year || 'all'}_${seasonId || 'all'}`;
     const cached = cache.get(cacheKey);
     if (cached) {
-      console.log('✅ [Trophies] Returning cached data');
+      console.log('âœ… [Trophies] Returning cached data');
       ctx.body = cached;
       return;
     }
@@ -543,8 +543,8 @@ router.get('/:id/trophies', required, async (ctx) => {
     // Fetch seasons separately (lightweight query, avoids timeout)
     const leagueIds = allLeagues.map((l: any) => String(l.id));
     const allSeasons = await models.Season.findAll({
-      where: { leagueId: { [Op.in]: leagueIds } },
-      attributes: ['id', 'leagueId', 'seasonNumber', 'name', 'isActive'],
+      where: { leagueId: { [Op.in]: leagueIds }, deleted: false },
+      attributes: ['id', 'leagueId', 'seasonNumber', 'name', 'isActive', 'archived', 'maxGames'],
       raw: true,
     });
     // Group seasons by leagueId
@@ -610,6 +610,18 @@ router.get('/:id/trophies', required, async (ctx) => {
       if (['result_published', 'result_uploaded', 'uploaded', 'complete', 'finished', 'ended', 'done'].includes(v)) return 'RESULT_PUBLISHED';
       if (['ongoing', 'inprogress', 'in_progress', 'live', 'playing'].includes(v)) return 'ONGOING';
       return 'SCHEDULED';
+    };
+
+    const countCompletedMatches = (matches: any[]): number =>
+      (matches || []).filter((m: any) => normalizeStatus(m?.status) === 'RESULT_PUBLISHED').length;
+
+    const isSeasonCompletedForTrophies = (seasonRow: any, matches: any[]): boolean => {
+      const completedCount = countCompletedMatches(matches);
+      const maxGames = Number(seasonRow?.maxGames ?? 0);
+      if (maxGames > 0) return completedCount >= maxGames;
+      if (seasonRow && seasonRow.isActive === false) return completedCount > 0;
+      if (seasonRow && seasonRow.archived === true) return completedCount > 0;
+      return false;
     };
 
     type PlayerStats = {
@@ -717,7 +729,7 @@ router.get('/:id/trophies', required, async (ctx) => {
       const table: string[] = [...eligible].sort(byStandings);
       const isGoalkeeperRole = (rawRole: unknown) => {
         const role = String(rawRole || '').trim().toLowerCase();
-        return role === 'gk' || role.includes('goalkeeper');
+        return role === 'gk' || role.includes('goalkeeper') || role.includes('keeper');
       };
       const gkIds: string[] = (league.members || [])
         .filter((p: any) => isGoalkeeperRole(p.positionType || p.position))
@@ -846,12 +858,12 @@ router.get('/:id/trophies', required, async (ctx) => {
     const selectedYear = year && year !== 'all' ? Number(year) : null;
     const selectedSeasonId = seasonId && seasonId !== 'all' ? String(seasonId) : null;
     
-    console.log('🔍 [Trophies] Applying filters:', { selectedYear, selectedSeasonId, leagueId: leagueId || 'all' });
+    console.log('ًں”چ [Trophies] Applying filters:', { selectedYear, selectedSeasonId, leagueId: leagueId || 'all' });
     
     const filteredLeagues = allLeagues
       .filter((l: any) => !leagueId || leagueId === 'all' || String(l.id) === String(leagueId));
 
-    // Aggregate trophies for this player — iterate per season within each league
+    // Aggregate trophies for this player â€” iterate per season within each league
     const trophyMap: Record<string, { leagueId: string; leagueName: string; seasonId?: string; seasonName?: string }[]> = {};
 
     filteredLeagues.forEach((l: any) => {
@@ -879,7 +891,7 @@ router.get('/:id/trophies', required, async (ctx) => {
             trophyMap[w.title].push({ leagueId: w.leagueId, leagueName: w.leagueName, seasonId, seasonName });
           }
         });
-        console.log(`📊 [Trophies] League ${l.name}${seasonName ? ` / ${seasonName}` : ''}: ${matches.length} matches, player wins: ${winners.filter((w) => w.winnerId && String(w.winnerId) === String(playerId)).length}`);
+        console.log(`ًں“ٹ [Trophies] League ${l.name}${seasonName ? ` / ${seasonName}` : ''}: ${matches.length} matches, player wins: ${winners.filter((w) => w.winnerId && String(w.winnerId) === String(playerId)).length}`);
       };
 
       if (selectedSeasonId) {
@@ -887,26 +899,28 @@ router.get('/:id/trophies', required, async (ctx) => {
         const seasonMatches = allMatches.filter((m: any) => String(m.seasonId) === selectedSeasonId);
         const season = seasons.find((s: any) => String(s.id) === selectedSeasonId);
         const seasonName = season?.name || `Season ${season?.seasonNumber || '?'}`;
-        processMatches(seasonMatches, selectedSeasonId, seasonName);
+        if (season && isSeasonCompletedForTrophies(season, seasonMatches)) {
+          processMatches(seasonMatches, selectedSeasonId, seasonName);
+        }
       } else if (seasons.length > 0) {
         // No specific season requested — iterate ALL seasons individually
         seasons.forEach((season: any) => {
           const sid = String(season.id);
           const sName = season.name || `Season ${season.seasonNumber || '?'}`;
           const seasonMatches = allMatches.filter((m: any) => String(m.seasonId) === sid);
-          if (seasonMatches.length > 0) {
+          if (seasonMatches.length > 0 && isSeasonCompletedForTrophies(season, seasonMatches)) {
             processMatches(seasonMatches, sid, sName);
           }
         });
-        // Also process any matches NOT assigned to a season (orphaned matches)
-        const seasonIds = new Set(seasons.map((s: any) => String(s.id)));
-        const orphanMatches = allMatches.filter((m: any) => !m.seasonId || !seasonIds.has(String(m.seasonId)));
-        if (orphanMatches.length > 0) {
-          processMatches(orphanMatches, undefined, undefined);
-        }
       } else {
         // No seasons exist — use all matches as one block (legacy)
-        processMatches(allMatches, undefined, undefined);
+        const leagueMaxGames = Number((l as any)?.maxGames ?? 0);
+        const completedCount = countCompletedMatches(allMatches);
+        const isLegacyLeagueCompleted =
+          leagueMaxGames > 0 ? completedCount >= leagueMaxGames : completedCount > 0;
+        if (isLegacyLeagueCompleted) {
+          processMatches(allMatches, undefined, undefined);
+        }
       }
     });
 
@@ -925,7 +939,7 @@ router.get('/:id/achievements', required, async (ctx) => {
   const { id: playerId } = ctx.params as { id: string };
   const { leagueId, year, seasonId } = ctx.query as { leagueId?: string; year?: string; seasonId?: string };
   
-  console.log('🎖️ [Achievements] Request:', { playerId, leagueId: leagueId || 'all', year: year || 'all', seasonId: seasonId || 'all' });
+  console.log('ًںژ–ï¸ڈ [Achievements] Request:', { playerId, leagueId: leagueId || 'all', year: year || 'all', seasonId: seasonId || 'all' });
   
   if (!playerId) {
     ctx.status = 400;
@@ -938,7 +952,7 @@ router.get('/:id/achievements', required, async (ctx) => {
     const cacheKey = `achievements:${playerId}:${leagueId || 'all'}:${year || 'all'}:${seasonId || 'all'}`;
     const cached = cache.get(cacheKey);
     if (cached) {
-      console.log('✅ [Achievements] Returning cached data');
+      console.log('âœ… [Achievements] Returning cached data');
       ctx.body = cached;
       return;
     }
@@ -984,19 +998,19 @@ router.get('/:id/achievements', required, async (ctx) => {
     
     // Apply league filter
     if (leagueId && leagueId !== 'all') {
-      console.log('[Achievements] 🏆 Applying league filter:', leagueId);
+      console.log('[Achievements] ًںڈ† Applying league filter:', leagueId);
       matchWhere.leagueId = leagueId;
     }
     
     // Apply season filter (only if league is also specified)
     if (seasonId && seasonId !== 'all' && leagueId && leagueId !== 'all') {
-      console.log('[Achievements] 📅 Applying season filter:', seasonId);
+      console.log('[Achievements] ًں“… Applying season filter:', seasonId);
       matchWhere.seasonId = seasonId;
     } else if (seasonId && seasonId !== 'all') {
-      console.log('[Achievements] ⚠️ Season filter ignored (league not specified):', seasonId);
+      console.log('[Achievements] âڑ ï¸ڈ Season filter ignored (league not specified):', seasonId);
     }
     
-    console.log('[Achievements] 🔎 Match where clause:', JSON.stringify(matchWhere));
+    console.log('[Achievements] ًں”ژ Match where clause:', JSON.stringify(matchWhere));
     
     const matches = await Match.findAll({
       where: matchWhere,
@@ -1018,7 +1032,7 @@ router.get('/:id/achievements', required, async (ctx) => {
           const matchYear = new Date(m.date || m.start || m.createdAt).getFullYear();
           return matchYear === yearNum;
         });
-        console.log('[Achievements] 📊 Year filter applied:', yearNum, '| Matches:', filteredMatches.length, '/', matches.length);
+        console.log('[Achievements] ًں“ٹ Year filter applied:', yearNum, '| Matches:', filteredMatches.length, '/', matches.length);
       }
     }
     
@@ -1031,7 +1045,7 @@ router.get('/:id/achievements', required, async (ctx) => {
       raw: true,
     });
     
-    console.log('[Achievements] 📈 Stats rows found:', statsRows.length, '| Filtered matches:', matchesToProcess.length);
+    console.log('[Achievements] ًں“ˆ Stats rows found:', statsRows.length, '| Filtered matches:', matchesToProcess.length);
     const statsByMatch = new Map<string, { goals: number; assists: number; cleanSheets: number }>();
     for (const r of statsRows as any[]) {
       statsByMatch.set(String(r.match_id), {
@@ -1051,7 +1065,7 @@ router.get('/:id/achievements', required, async (ctx) => {
     };
     const sortedMatches = [...matchesToProcess].sort((a: any, b: any) => timeOf(a) - timeOf(b));
 
-    console.log('[Achievements] 🎯 Processing', sortedMatches.length, 'filtered matches for badge calculations');
+    console.log('[Achievements] ًںژ¯ Processing', sortedMatches.length, 'filtered matches for badge calculations');
 
     for (const m of sortedMatches as any[]) {
       const isHome = ((m.homeTeamUsers || []).some((u: any) => String(u.id) === playerId));
@@ -1139,7 +1153,7 @@ router.get('/:id/achievements', required, async (ctx) => {
     // Keep this cache short so reward XP updates reflect quickly after match edits.
     cache.set(cacheKey, response, 20);
     
-    console.log('[Achievements] ✅ Computed badges:', badges.filter(b => b.unlocked).length, 'unlocked');
+    console.log('[Achievements] âœ… Computed badges:', badges.filter(b => b.unlocked).length, 'unlocked');
     
     ctx.body = response;
   } catch (e) {
@@ -1423,7 +1437,7 @@ router.get('/:playerId/history-records', async (ctx) => {
   const year = typeof ctx.request.query?.year === 'string' ? ctx.request.query.year.trim() : '';
   const seasonId = typeof ctx.request.query?.seasonId === 'string' ? ctx.request.query.seasonId.trim() : '';
 
-  console.log('[history-records] 🔍 Request received:', { playerId, leagueId: leagueId || 'all', year: year || 'all', seasonId: seasonId || 'all' });
+  console.log('[history-records] ًں”چ Request received:', { playerId, leagueId: leagueId || 'all', year: year || 'all', seasonId: seasonId || 'all' });
 
   if (!playerId) {
     ctx.status = 400;
@@ -1470,19 +1484,19 @@ router.get('/:playerId/history-records', async (ctx) => {
     
     // Apply league filter
     if (leagueId && leagueId !== 'all') {
-      console.log('[history-records] 🏆 Applying league filter:', leagueId);
+      console.log('[history-records] ًںڈ† Applying league filter:', leagueId);
       matchWhere.leagueId = leagueId;
     }
     
     // Apply season filter (only if league is also specified)
     if (seasonId && seasonId !== 'all' && leagueId && leagueId !== 'all') {
-      console.log('[history-records] 📅 Applying season filter:', seasonId);
+      console.log('[history-records] ًں“… Applying season filter:', seasonId);
       matchWhere.seasonId = seasonId;
     } else if (seasonId && seasonId !== 'all') {
-      console.log('[history-records] ⚠️ Season filter ignored (league not specified):', seasonId);
+      console.log('[history-records] âڑ ï¸ڈ Season filter ignored (league not specified):', seasonId);
     }
     
-    console.log('[history-records] 🔎 Final match where clause:', JSON.stringify(matchWhere, null, 2));
+    console.log('[history-records] ًں”ژ Final match where clause:', JSON.stringify(matchWhere, null, 2));
     
     const matches = await Match.findAll({
       where: matchWhere,
@@ -1507,9 +1521,9 @@ router.get('/:playerId/history-records', async (ctx) => {
       }
     }
 
-    console.log('[history-records] 📊 Match counts - Total:', matches.length, '| After year filter:', filteredMatches.length);
+    console.log('[history-records] ًں“ٹ Match counts - Total:', matches.length, '| After year filter:', filteredMatches.length);
     if (filteredMatches.length > 0) {
-      console.log('[history-records] 📋 Sample filtered match:', {
+      console.log('[history-records] ًں“‹ Sample filtered match:', {
         id: (filteredMatches[0] as any).id,
         leagueId: (filteredMatches[0] as any).leagueId,
         seasonId: (filteredMatches[0] as any).seasonId,
