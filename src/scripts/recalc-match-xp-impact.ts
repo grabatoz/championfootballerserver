@@ -65,11 +65,11 @@ function computeContributionImpactPercent(params: {
   cleanSheets: number;
   defence: number;
   isMentalityPick: boolean;
-  teamGoals: number;
+  totalGoals: number;
 }): number {
-  const { goals, assists, cleanSheets, defence, isMentalityPick, teamGoals } = params;
-  const goalContribution = teamGoals > 0 ? (goals / teamGoals) * 100 : 0;
-  const assistContribution = teamGoals > 0 ? (assists / teamGoals) * 50 : 0;
+  const { goals, assists, cleanSheets, defence, isMentalityPick, totalGoals } = params;
+  const goalContribution = totalGoals > 0 ? (goals / totalGoals) * 100 : 0;
+  const assistContribution = totalGoals > 0 ? (assists / totalGoals) * 50 : 0;
   const cleanSheetContribution = cleanSheets > 0 ? 15 * cleanSheets : 0;
   const defensiveContribution = defence * 10;
   const mentalityContribution = isMentalityPick ? 5 : 0;
@@ -166,6 +166,7 @@ async function run() {
     const matchId = String(match.id);
     const homeGoals = Number(match.homeTeamGoals || 0);
     const awayGoals = Number(match.awayTeamGoals || 0);
+    const totalGoalsForContribution = Math.max(0, homeGoals + awayGoals);
     const defensiveIds = new Set(
       [match.homeDefensiveImpactId, match.awayDefensiveImpactId].filter(Boolean).map(String)
     );
@@ -225,14 +226,6 @@ async function run() {
       const assists = Math.max(0, Number(stat.assists || 0));
       const cleanSheets = Math.max(0, Number(stat.cleanSheets || 0));
       const defence = Math.max(0, Number(stat.defence || 0));
-      const isHome = teamSets.home.has(userId);
-      const isAway = teamSets.away.has(userId);
-      const teamGoalsForContribution = isHome
-        ? homeGoals
-        : isAway
-          ? awayGoals
-          : Math.max(homeGoals, awayGoals, 0);
-
       const isMentalityPick = mentalityIds.has(userId);
       const isDefensivePick = defensiveIds.has(userId);
       const voteCount = voteMap.get(userId) || 0;
@@ -243,7 +236,7 @@ async function run() {
         cleanSheets,
         defence,
         isMentalityPick,
-        teamGoals: teamGoalsForContribution,
+        totalGoals: totalGoalsForContribution,
       });
       const newXpAwarded = computeMatchXp({
         teamResult,

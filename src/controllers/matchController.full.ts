@@ -1231,23 +1231,9 @@ export const submitMatchStats = async (ctx: Context) => {
         return;
       }
 
-      const homeGoalsForImpact = match.homeTeamGoals ?? 0;
-      const awayGoalsForImpact = match.awayTeamGoals ?? 0;
-      const homeTeamUserIdsForImpact = await sequelize.query<{ userId: string }>(
-        `SELECT DISTINCT "userId" FROM "UserHomeMatches" WHERE "matchId" = :matchId`,
-        { replacements: { matchId }, type: QueryTypes.SELECT }
-      );
-      const awayTeamUserIdsForImpact = await sequelize.query<{ userId: string }>(
-        `SELECT DISTINCT "userId" FROM "UserAwayMatches" WHERE "matchId" = :matchId`,
-        { replacements: { matchId }, type: QueryTypes.SELECT }
-      );
-      const isHomeForImpact = homeTeamUserIdsForImpact.some(u => String(u.userId) === String(userId));
-      const isAwayForImpact = awayTeamUserIdsForImpact.some(u => String(u.userId) === String(userId));
-      const teamGoalsForImpact = isHomeForImpact
-        ? homeGoalsForImpact
-        : isAwayForImpact
-          ? awayGoalsForImpact
-          : Math.max(homeGoalsForImpact, awayGoalsForImpact, 0);
+      const homeGoalsForImpact = Math.max(0, Number(match.homeTeamGoals || 0));
+      const awayGoalsForImpact = Math.max(0, Number(match.awayTeamGoals || 0));
+      const totalGoalsForImpact = homeGoalsForImpact + awayGoalsForImpact;
       const captainPicksForImpact = await sequelize.query(
         `SELECT "homeMentalityId", "awayMentalityId" FROM "Matches" WHERE id = $1`,
         { bind: [matchId], type: QueryTypes.SELECT }
@@ -1258,9 +1244,10 @@ export const submitMatchStats = async (ctx: Context) => {
         (picksForImpact.awayMentalityId && String(picksForImpact.awayMentalityId) === String(userId));
 
       // Client-shared Match Contribution Index formula
-      // Goal baseline = 100%, Assist = 50%, CleanSheet = 15%, DefensiveImpact = 10%, Mentality = 5%
-      const goalContribution = teamGoalsForImpact > 0 ? (safeGoals / teamGoalsForImpact) * 100 : 0;
-      const assistContribution = teamGoalsForImpact > 0 ? (safeAssists / teamGoalsForImpact) * 50 : 0;
+      // Baseline is total goals in the match:
+      // Goal = 100% baseline, Assist = 50% of baseline, CleanSheet = 15%, DefensiveImpact = 10%, Mentality = 5%
+      const goalContribution = totalGoalsForImpact > 0 ? (safeGoals / totalGoalsForImpact) * 100 : 0;
+      const assistContribution = totalGoalsForImpact > 0 ? (safeAssists / totalGoalsForImpact) * 50 : 0;
       const cleanSheetContribution = safeCleanSheets > 0 ? 15 * safeCleanSheets : 0;
       const defensiveContribution = safeDefence * 10;
       const mentalityContribution = isMentalityPickForImpact ? 5 : 0;
@@ -2746,7 +2733,7 @@ export const getMatchXPBreakdown = async (ctx: Context) => {
           },
           motmWinner: {
             selected: motmWinnerId === userId,
-            xp: motmWinnerId === userId ? xpTable.motm : 0
+            xp: motmWinnerId === userId ? (isWinningTeam ? xpTable.motm.win : xpTable.motm.lose) : 0
           },
           captainPicks: {
             defensiveImpact: String(matchData.homeDefensiveImpactId) === userId ? {
@@ -2822,7 +2809,7 @@ export const getMatchXPBreakdown = async (ctx: Context) => {
           },
           motmWinner: {
             selected: motmWinnerId === userId,
-            xp: motmWinnerId === userId ? xpTable.motm : 0
+            xp: motmWinnerId === userId ? (isWinningTeam ? xpTable.motm.win : xpTable.motm.lose) : 0
           },
           captainPicks: {
             defensiveImpact: String(matchData.awayDefensiveImpactId) === userId ? {

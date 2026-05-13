@@ -204,6 +204,7 @@ export const getAllSeasons = async (ctx: Context) => {
 
     ctx.body = {
       success: true,
+      viewerIsAdmin: true,
       seasons: allSeasons
     };
     return;
@@ -315,6 +316,7 @@ export const getAllSeasons = async (ctx: Context) => {
 
   ctx.body = {
     success: true,
+    viewerIsAdmin: false,
     seasons: filteredSeasons.filter(s => s !== null)
   };
 };

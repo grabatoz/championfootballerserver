@@ -1384,7 +1384,7 @@ router.get('/:playerId/simple-synergy', async (ctx) => {
       });
 
       const teammateArr = [...teammateMap.values()].filter(t => t.matchesTogether > 0);
-      const rivalArr = [...rivalMap.values()].filter(r => r.matchesAgainst > 0);
+      const rivalArr = [...rivalMap.values()].filter(r => r.matchesAgainst > 0 && r.lossesAgainst > 0);
 
       const bestPairing = teammateArr
         .sort((a, b) => {

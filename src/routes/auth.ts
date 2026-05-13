@@ -188,6 +188,9 @@ router.post("/auth/register", none, async (ctx: Context) => {
     if (!emailRegex.test(email)) {
       ctx.throw(400, "Invalid email format");
     }
+    if (email.length > 100) {
+      ctx.throw(400, "Email must be 100 characters or less");
+    }
 
     // Validate password strength (aligned with profile settings)
     if (password.length < 6 || password.length > 16) {
@@ -1226,7 +1229,7 @@ router.get("/auth/status", required, async (ctx: CustomContext) => {
   let statusWork = inFlight.get(cacheKey) as Promise<any> | undefined;
   if (!statusWork) {
     statusWork = (async () => {
-      // Load only the base user and league memberships (skip heavy match associations)
+      // Step 1: load base user only (avoid large multi-join query on hot endpoint)
       const user = await User.findByPk(userId, {
         attributes: [
           'id', 'firstName', 'lastName', 'email', 'age', 'gender',
@@ -1234,42 +1237,66 @@ router.get("/auth/status", required, async (ctx: CustomContext) => {
           'style', 'preferredFoot', 'shirtNumber', 'profilePicture',
           'skills', 'xp', 'updatedAt'
         ],
-        include: [
-          {
-            model: League,
-            as: 'leagues',
-            attributes: ['id', 'name', 'inviteCode', 'active', 'archived', 'maxGames', 'createdAt', 'updatedAt'],
-            through: { attributes: [] },
-            include: [
-              {
-                model: Season,
-                as: 'seasons',
-                attributes: ['id', 'name', 'seasonNumber', 'isActive', 'archived', 'startDate', 'endDate', 'createdAt', 'updatedAt'],
-                where: { deleted: false },
-                required: false
-              }
-            ]
-          },
-          {
-            model: League,
-            as: 'administeredLeagues',
-            attributes: ['id', 'name', 'inviteCode', 'active', 'archived', 'maxGames', 'createdAt', 'updatedAt'],
-            through: { attributes: [] },
-            include: [
-              {
-                model: Season,
-                as: 'seasons',
-                attributes: ['id', 'name', 'seasonNumber', 'isActive', 'archived', 'startDate', 'endDate', 'createdAt', 'updatedAt'],
-                where: { deleted: false },
-                required: false
-              }
-            ]
-          }
-        ]
       }) as any;
 
       if (!user) {
         return { unauthorized: true };
+      }
+
+      // Step 2: load joined/admin leagues in separate queries to avoid cartesian explosion.
+      const leagueAttributes = ['id', 'name', 'inviteCode', 'active', 'archived', 'maxGames', 'createdAt', 'updatedAt'] as const;
+      const seasonInclude = {
+        model: Season,
+        as: 'seasons',
+        attributes: ['id', 'name', 'seasonNumber', 'isActive', 'archived', 'startDate', 'endDate', 'createdAt', 'updatedAt'],
+        where: { deleted: false },
+        required: false,
+      } as const;
+
+      let joinedLeagues: any[] = [];
+      try {
+        if (typeof (user as any).getLeagues === 'function') {
+          joinedLeagues = await (user as any).getLeagues({
+            attributes: leagueAttributes as unknown as string[],
+            joinTableAttributes: [],
+            include: [seasonInclude],
+          });
+        }
+      } catch (leagueError) {
+        console.error('[auth/status] Failed to load joined leagues:', leagueError);
+        try {
+          if (typeof (user as any).getLeagues === 'function') {
+            joinedLeagues = await (user as any).getLeagues({
+              attributes: leagueAttributes as unknown as string[],
+              joinTableAttributes: [],
+            });
+          }
+        } catch (leagueFallbackError) {
+          console.error('[auth/status] Joined leagues fallback also failed:', leagueFallbackError);
+        }
+      }
+
+      let administeredLeagues: any[] = [];
+      try {
+        if (typeof (user as any).getAdministeredLeagues === 'function') {
+          administeredLeagues = await (user as any).getAdministeredLeagues({
+            attributes: leagueAttributes as unknown as string[],
+            joinTableAttributes: [],
+            include: [seasonInclude],
+          });
+        }
+      } catch (adminLeagueError) {
+        console.error('[auth/status] Failed to load administered leagues:', adminLeagueError);
+        try {
+          if (typeof (user as any).getAdministeredLeagues === 'function') {
+            administeredLeagues = await (user as any).getAdministeredLeagues({
+              attributes: leagueAttributes as unknown as string[],
+              joinTableAttributes: [],
+            });
+          }
+        } catch (adminFallbackError) {
+          console.error('[auth/status] Admin leagues fallback also failed:', adminFallbackError);
+        }
       }
 
       // Load match associations via optimized join-table lookups
@@ -1281,26 +1308,42 @@ router.get("/auth/status", required, async (ctx: CustomContext) => {
       let availableMatchIds: (string | undefined)[] = [];
 
       if (UserHomeMatches) {
-        const rows = await UserHomeMatches.findAll({ where: { userId: userId }, attributes: ['matchId'] });
-        homeTeamMatchIds = rows.map((r: any) => String(r.matchId));
+        try {
+          const rows = await UserHomeMatches.findAll({ where: { userId: userId }, attributes: ['matchId'] });
+          homeTeamMatchIds = rows.map((r: any) => String(r.matchId));
+        } catch (homeErr) {
+          console.error('[auth/status] Failed to load home match links:', homeErr);
+        }
       }
       if (UserAwayMatches) {
-        const rows = await UserAwayMatches.findAll({ where: { userId: userId }, attributes: ['matchId'] });
-        awayTeamMatchIds = rows.map((r: any) => String(r.matchId));
+        try {
+          const rows = await UserAwayMatches.findAll({ where: { userId: userId }, attributes: ['matchId'] });
+          awayTeamMatchIds = rows.map((r: any) => String(r.matchId));
+        } catch (awayErr) {
+          console.error('[auth/status] Failed to load away match links:', awayErr);
+        }
       }
       {
-        const rows = await MatchAvailability.findAll({ where: { user_id: userId }, attributes: ['match_id'] });
-        availableMatchIds = rows.map((r: any) => String((r as any).match_id));
+        try {
+          const rows = await MatchAvailability.findAll({ where: { user_id: userId }, attributes: ['match_id'] });
+          availableMatchIds = rows.map((r: any) => String((r as any).match_id));
+        } catch (availabilityErr) {
+          console.error('[auth/status] Failed to load availability links:', availabilityErr);
+        }
       }
 
       const uniqueIds = Array.from(new Set([...homeTeamMatchIds, ...awayTeamMatchIds, ...availableMatchIds].filter(Boolean))) as string[];
       const matchesById: Record<string, any> = {};
       if (uniqueIds.length) {
-        const ms = await Match.findAll({
-          where: { id: uniqueIds },
-          attributes: ['id', 'date', 'status', 'updatedAt']
-        });
-        for (const m of ms as any[]) matchesById[String(m.id)] = m;
+        try {
+          const ms = await Match.findAll({
+            where: { id: uniqueIds },
+            attributes: ['id', 'date', 'status', 'updatedAt']
+          });
+          for (const m of ms as any[]) matchesById[String(m.id)] = m;
+        } catch (matchErr) {
+          console.error('[auth/status] Failed to load match metadata:', matchErr);
+        }
       }
 
       const homeTeamMatches = homeTeamMatchIds.map(id => matchesById[id]).filter(Boolean);
@@ -1308,8 +1351,8 @@ router.get("/auth/status", required, async (ctx: CustomContext) => {
       const availableMatches = availableMatchIds.map(id => (id ? matchesById[id] : undefined)).filter(Boolean);
 
       // Filter administeredLeagues to those where the user is still a member
-      const memberLeagueIds = new Set<string>((user.leagues || []).map((l: any) => String(l.id)));
-      const filteredAdminLeagues = (user.administeredLeagues || []).filter((l: any) => memberLeagueIds.has(String(l.id)));
+      const memberLeagueIds = new Set<string>((joinedLeagues || []).map((l: any) => String(l.id)));
+      const filteredAdminLeagues = (administeredLeagues || []).filter((l: any) => memberLeagueIds.has(String(l.id)));
 
       const payload = {
         success: true,
@@ -1333,7 +1376,7 @@ router.get("/auth/status", required, async (ctx: CustomContext) => {
           profilePicture: user.profilePicture,
           skills: user.skills,
           xp: user.xp || 0,
-          leagues: user.leagues || [],
+          leagues: joinedLeagues || [],
           adminLeagues: filteredAdminLeagues || [],
           homeTeamMatches,
           awayTeamMatches,
@@ -1344,7 +1387,21 @@ router.get("/auth/status", required, async (ctx: CustomContext) => {
     })();
     inFlight.set(cacheKey, statusWork);
   }
-  const statusPayload = await statusWork.finally(() => inFlight.delete(cacheKey));
+  let statusPayload: any;
+  try {
+    statusPayload = await statusWork.finally(() => inFlight.delete(cacheKey));
+  } catch (statusErr) {
+    console.error('[auth/status] Failed to generate fresh payload:', statusErr);
+    const stale = getCachedWithEtag(cacheKey);
+    if (stale) {
+      ctx.set('ETag', stale.etag);
+      ctx.set('Cache-Control', 'no-store, no-cache, must-revalidate');
+      ctx.set('X-Cache', 'STALE');
+      ctx.body = stale.payload;
+      return;
+    }
+    throw statusErr;
+  }
   if (statusPayload?.unauthorized) {
     ctx.throw(401, "Unauthorized");
     return;

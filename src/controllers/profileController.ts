@@ -187,8 +187,26 @@ export const changePassword = async (ctx: Context) => {
     return;
   }
 
+  const nextPassword = String(newPassword || '').trim();
+  if (nextPassword.length < 6 || nextPassword.length > 16) {
+    ctx.throw(400, "Password must be 6-16 characters");
+    return;
+  }
+  if (!/[A-Z]/.test(nextPassword)) {
+    ctx.throw(400, "Please ensure the password includes at least one uppercase letter.");
+    return;
+  }
+  if (!/[0-9]/.test(nextPassword)) {
+    ctx.throw(400, "Password must include at least one number");
+    return;
+  }
+  if (!/[^A-Za-z0-9]/.test(nextPassword)) {
+    ctx.throw(400, "Password must include at least one special character");
+    return;
+  }
+
   // Hash new password
-  const hashedPassword = await hash(newPassword, 10);
+  const hashedPassword = await hash(nextPassword, 10);
   await user.update({ password: hashedPassword });
 
   ctx.body = {

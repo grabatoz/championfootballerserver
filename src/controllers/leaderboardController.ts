@@ -1,8 +1,7 @@
 import { Context } from 'koa';
 import models from '../models';
-import { Op, fn, col, literal, QueryTypes } from 'sequelize';
+import { Op, fn, col, literal } from 'sequelize';
 import cache from '../utils/cache';
-import sequelize from '../config/database';
 
 const METRIC_MAP: Record<string, string> = {
   goals: 'goals',
@@ -22,20 +21,9 @@ const NON_GUEST_PROVIDER_WHERE = {
   ]
 };
 
-const clampPercentage = (value: number): number => Math.max(0, Math.min(100, Math.round(value)));
+const FINALIZED_MATCH_STATUSES = ['RESULT_PUBLISHED', 'RESULT_UPLOADED'];
 
-const resolveTeamResult = (params: {
-  isHome: boolean;
-  isAway: boolean;
-  homeGoals: number;
-  awayGoals: number;
-}): 'win' | 'draw' | 'lose' => {
-  const { isHome, isAway, homeGoals, awayGoals } = params;
-  if (homeGoals === awayGoals) return 'draw';
-  if (isHome) return homeGoals > awayGoals ? 'win' : 'lose';
-  if (isAway) return awayGoals > homeGoals ? 'win' : 'lose';
-  return 'lose';
-};
+const clampPercentage = (value: number): number => Math.max(0, Math.min(100, Math.round(value)));
 
 export const getLeaderboard = async (ctx: Context) => {
   const metric = (ctx.query.metric as string) || 'goals';
@@ -141,176 +129,36 @@ export const getLeaderboard = async (ctx: Context) => {
     }
 
     // CONTRIBUTION INDEX %:
-    // Dev notes formula per match:
-    // - Goals share baseline = 100%
-    // - Assists share = 50%
-    // - Clean sheet = 15%
-    // - Defensive impact count = 10% each
-    // - +Mentality captain pick = 5%
-    // - No action participation fallback (15% winner/draw, 10% loser)
-    // - Cap each match at 100%
+    // Must match Career page logic:
+    // average of MatchStatistics.impact across finalized matches,
+    // then clamp to 0-100 and round to integer for leaderboard display.
     if (metric === 'contribution' && leagueId) {
       const matchWhere: any = {
         leagueId,
-        status: 'RESULT_PUBLISHED'
+        status: { [Op.in]: FINALIZED_MATCH_STATUSES }
       };
       if (seasonId) matchWhere.seasonId = seasonId;
 
-      const matches = await models.Match.findAll({
-        where: matchWhere,
+      const statsGrouped = await models.MatchStatistics.findAll({
         attributes: [
-          'id',
-          'homeTeamGoals',
-          'awayTeamGoals',
-          'homeMentalityId',
-          'awayMentalityId'
+          ['user_id', 'userId'],
+          [fn('AVG', col('MatchStatistics.impact')), 'avgImpact']
         ],
+        include: [
+          {
+            model: models.Match,
+            as: 'match',
+            where: matchWhere,
+            attributes: []
+          }
+        ],
+        group: ['MatchStatistics.user_id'],
+        order: [[literal('"avgImpact"'), 'DESC']],
+        limit: fetchLimit,
         raw: true
-      }) as Array<{
-        id: string;
-        homeTeamGoals: number | null;
-        awayTeamGoals: number | null;
-        homeMentalityId: string | null;
-        awayMentalityId: string | null;
-      }>;
-
-      if (!matches.length) {
-        const result = { players: [] as any[] };
-        cache.set(cacheKey, result, 1800);
-        ctx.body = result;
-        return;
-      }
-
-      const matchIds = matches
-        .map((m) => String(m.id || '').trim())
-        .filter((id) => id.length > 0);
-
-      if (!matchIds.length) {
-        const result = { players: [] as any[] };
-        cache.set(cacheKey, result, 1800);
-        ctx.body = result;
-        return;
-      }
-
-      const statsRows = await models.MatchStatistics.findAll({
-        where: {
-          match_id: { [Op.in]: matchIds }
-        },
-        attributes: ['match_id', 'user_id', 'goals', 'assists', 'cleanSheets', 'defence'],
-        raw: true
-      }) as Array<{
-        match_id: string;
-        user_id: string;
-        goals: number | null;
-        assists: number | null;
-        cleanSheets: number | null;
-        defence: number | null;
-      }>;
-
-      if (!statsRows.length) {
-        const result = { players: [] as any[] };
-        cache.set(cacheKey, result, 1800);
-        ctx.body = result;
-        return;
-      }
-
-      const homeTeamRows = await sequelize.query<{ matchId: string; userId: string }>(
-        `SELECT "matchId" as "matchId", "userId" as "userId" FROM "UserHomeMatches" WHERE "matchId" = ANY($1::uuid[])`,
-        { bind: [matchIds], type: QueryTypes.SELECT }
-      );
-      const awayTeamRows = await sequelize.query<{ matchId: string; userId: string }>(
-        `SELECT "matchId" as "matchId", "userId" as "userId" FROM "UserAwayMatches" WHERE "matchId" = ANY($1::uuid[])`,
-        { bind: [matchIds], type: QueryTypes.SELECT }
-      );
-
-      const matchMeta = new Map<string, {
-        homeGoals: number;
-        awayGoals: number;
-        homeMentalityId: string;
-        awayMentalityId: string;
-      }>();
-      matches.forEach((match) => {
-        const id = String(match.id || '').trim();
-        if (!id) return;
-        matchMeta.set(id, {
-          homeGoals: Math.max(0, Number(match.homeTeamGoals) || 0),
-          awayGoals: Math.max(0, Number(match.awayTeamGoals) || 0),
-          homeMentalityId: String(match.homeMentalityId || '').trim(),
-          awayMentalityId: String(match.awayMentalityId || '').trim()
-        });
       });
 
-      const homeTeamMap = new Map<string, Set<string>>();
-      const awayTeamMap = new Map<string, Set<string>>();
-      homeTeamRows.forEach((row) => {
-        const mId = String(row.matchId || '').trim();
-        const uId = String(row.userId || '').trim();
-        if (!mId || !uId) return;
-        if (!homeTeamMap.has(mId)) homeTeamMap.set(mId, new Set<string>());
-        homeTeamMap.get(mId)?.add(uId);
-      });
-      awayTeamRows.forEach((row) => {
-        const mId = String(row.matchId || '').trim();
-        const uId = String(row.userId || '').trim();
-        if (!mId || !uId) return;
-        if (!awayTeamMap.has(mId)) awayTeamMap.set(mId, new Set<string>());
-        awayTeamMap.get(mId)?.add(uId);
-      });
-
-      const contributionByPlayer = new Map<string, { total: number; matches: number }>();
-
-      statsRows.forEach((row) => {
-        const matchId = String(row.match_id || '').trim();
-        const playerId = String(row.user_id || '').trim();
-        if (!matchId || !playerId) return;
-
-        const meta = matchMeta.get(matchId);
-        if (!meta) return;
-
-        const homeSet = homeTeamMap.get(matchId) || new Set<string>();
-        const awaySet = awayTeamMap.get(matchId) || new Set<string>();
-        const isHome = homeSet.has(playerId);
-        const isAway = awaySet.has(playerId);
-
-        const safeGoals = Math.max(0, Number(row.goals) || 0);
-        const safeAssists = Math.max(0, Number(row.assists) || 0);
-        const safeCleanSheets = Math.max(0, Number(row.cleanSheets) || 0);
-        const safeDefence = Math.max(0, Number(row.defence) || 0);
-        const totalGoalsInMatch = Math.max(0, meta.homeGoals + meta.awayGoals);
-
-        const goalContribution = totalGoalsInMatch > 0 ? (safeGoals / totalGoalsInMatch) * 100 : 0;
-        const assistContribution = totalGoalsInMatch > 0 ? (safeAssists / totalGoalsInMatch) * 50 : 0;
-        const cleanSheetContribution = safeCleanSheets > 0 ? 15 * safeCleanSheets : 0;
-        const defensiveContribution = safeDefence * 10;
-        const isMentalityPick = playerId === meta.homeMentalityId || playerId === meta.awayMentalityId;
-        const mentalityContribution = isMentalityPick ? 5 : 0;
-
-        const rawContribution =
-          goalContribution +
-          assistContribution +
-          cleanSheetContribution +
-          defensiveContribution +
-          mentalityContribution;
-
-        const teamResult = resolveTeamResult({
-          isHome,
-          isAway,
-          homeGoals: meta.homeGoals,
-          awayGoals: meta.awayGoals
-        });
-        const defaultParticipation = teamResult === 'lose' ? 10 : 15;
-        const matchContribution = clampPercentage(
-          rawContribution > 0 ? rawContribution : defaultParticipation
-        );
-
-        const previous = contributionByPlayer.get(playerId) || { total: 0, matches: 0 };
-        contributionByPlayer.set(playerId, {
-          total: previous.total + matchContribution,
-          matches: previous.matches + 1
-        });
-      });
-
-      const playerIds = [...contributionByPlayer.keys()];
+      const playerIds = [...new Set(statsGrouped.map((row: any) => String(row.userId || row.user_id || '').trim()).filter(Boolean))];
       const users = await models.User.findAll({
         where: {
           id: playerIds,
@@ -321,16 +169,15 @@ export const getLeaderboard = async (ctx: Context) => {
       });
 
       const userMap = new Map(users.map((u) => [u.id, u]));
-      const players = playerIds
-        .map((playerId) => {
-          const aggregate = contributionByPlayer.get(playerId);
+      const players = statsGrouped
+        .map((row: any) => {
+          const playerId = String(row.userId || row.user_id || '').trim();
           const user = userMap.get(playerId);
-          if (!aggregate || !user) return null;
+          if (!playerId || !user) return null;
           if (positionType && user.positionType !== positionType) return null;
 
-          const avgContribution = aggregate.matches > 0
-            ? aggregate.total / aggregate.matches
-            : 0;
+          const avgContributionRaw = Number(row.avgImpact);
+          const avgContribution = Number.isFinite(avgContributionRaw) ? avgContributionRaw : 0;
 
           return {
             id: playerId,
@@ -365,7 +212,7 @@ export const getLeaderboard = async (ctx: Context) => {
     if (metric === 'impact' && leagueId) {
       const matchWhere: any = { 
         leagueId, 
-        status: 'RESULT_PUBLISHED',
+        status: { [Op.in]: FINALIZED_MATCH_STATUSES },
         [Op.or]: [
           { homeDefensiveImpactId: { [Op.ne]: null } },
           { awayDefensiveImpactId: { [Op.ne]: null } }
@@ -430,7 +277,7 @@ export const getLeaderboard = async (ctx: Context) => {
 
     // Standard metrics from MatchStatistics
     const dbColumn = METRIC_MAP[metric] || 'goals';
-    const matchWhere: any = { status: 'RESULT_PUBLISHED' };
+    const matchWhere: any = { status: { [Op.in]: FINALIZED_MATCH_STATUSES } };
     if (leagueId) matchWhere.leagueId = leagueId;
     if (seasonId) matchWhere.seasonId = seasonId;
 

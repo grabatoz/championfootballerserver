@@ -3,6 +3,7 @@ import models from '../models';
 import { Op, QueryTypes } from 'sequelize';
 import sequelize from '../config/database';
 import cache from '../utils/cache';
+import { xpAchievements } from '../utils/xpAchievements';
 
 const getTableName = (model: any): string => {
   const tn = model.getTableName?.() ?? model.tableName;
@@ -51,12 +52,16 @@ export const getWorldRanking = async (ctx: Context) => {
     const usersTable = getTableName(models.User);
     const matchStatsTable = getTableName(models.MatchStatistics);
     const matchesTable = getTableName(models.Match);
+    const achievementXpValuesSql = xpAchievements
+      .map((achievement) => `('${String(achievement.id).replace(/'/g, "''")}', ${Number(achievement.xp) || 0})`)
+      .join(', ');
 
     const whereConditions: string[] = ['1=1'];
     const replacements: Record<string, any> = {};
     const rankingMetric = mode === 'avg' ? '"avgXP"' : '"totalXP"';
 
     whereConditions.push(`u."lastName" != 'Guest'`);
+    whereConditions.push(`COALESCE(u."provider", '') <> 'guest'`);
 
     if (positionType) {
       whereConditions.push(`u."positionType" = :positionType`);
@@ -92,7 +97,7 @@ export const getWorldRanking = async (ctx: Context) => {
           LEFT JOIN (
             SELECT
               ms2."user_id",
-              SUM(ms2."xpAwarded") AS "totalXP",
+              SUM(ms2.xp_awarded) AS "totalXP",
               COUNT(DISTINCT ms2."match_id") AS "matchCount"
             FROM ${matchStatsTable} ms2
             INNER JOIN ${matchesTable} m2 ON m2."id" = ms2."match_id"
@@ -122,23 +127,31 @@ export const getWorldRanking = async (ctx: Context) => {
             u."position",
             u."positionType",
             u."country",
-            COALESCE(u."xp", 0)::int AS "totalXP",
+            (COALESCE(stats."matchXP", 0) + COALESCE(ach."achievementXP", 0))::int AS "totalXP",
             COALESCE(stats."matchCount", 0)::int AS "matches",
             CASE
               WHEN COALESCE(stats."matchCount", 0) > 0
-              THEN ROUND(COALESCE(u."xp", 0)::numeric / stats."matchCount", 2)
+              THEN ROUND((COALESCE(stats."matchXP", 0) + COALESCE(ach."achievementXP", 0))::numeric / stats."matchCount", 2)
               ELSE 0
             END AS "avgXP"
           FROM ${usersTable} u
           LEFT JOIN (
             SELECT
               ms2."user_id",
+              SUM(ms2.xp_awarded) AS "matchXP",
               COUNT(DISTINCT ms2."match_id") AS "matchCount"
             FROM ${matchStatsTable} ms2
             INNER JOIN ${matchesTable} m2 ON m2."id" = ms2."match_id"
               AND m2."status" = 'RESULT_PUBLISHED'
             GROUP BY ms2."user_id"
           ) stats ON stats."user_id" = u."id"
+          LEFT JOIN LATERAL (
+            SELECT COALESCE(SUM(ax.xp), 0)::int AS "achievementXP"
+            FROM unnest(COALESCE(u."achievements", ARRAY[]::text[])) AS achv(id)
+            LEFT JOIN (
+              VALUES ${achievementXpValuesSql}
+            ) AS ax(id, xp) ON ax.id = achv.id
+          ) ach ON TRUE
           WHERE ${whereConditions.join(' AND ')}
         )
         SELECT
@@ -222,6 +235,15 @@ export const getCountryRanking = async (ctx: Context) => {
     const players = await models.User.findAll({
       where: {
         country,
+        [Op.and]: [
+          {
+            [Op.or]: [
+              { provider: { [Op.ne]: 'guest' } },
+              { provider: { [Op.is]: null } },
+              { provider: '' }
+            ]
+          }
+        ],
         xp: { [Op.gt]: 0 }
       },
       attributes: [
@@ -284,6 +306,15 @@ export const getPositionRanking = async (ctx: Context) => {
     const players = await models.User.findAll({
       where: {
         positionType,
+        [Op.and]: [
+          {
+            [Op.or]: [
+              { provider: { [Op.ne]: 'guest' } },
+              { provider: { [Op.is]: null } },
+              { provider: '' }
+            ]
+          }
+        ],
         xp: { [Op.gt]: 0 }
       },
       attributes: [
