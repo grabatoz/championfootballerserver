@@ -2843,7 +2843,7 @@ export const createLeague = async (ctx: Context) => {
 // Update league status
 export const updateLeagueStatus = async (ctx: Context) => {
   const { id } = ctx.params;
-  const { active } = ctx.request.body as any;
+  const { active, status, archived } = ctx.request.body as any;
 
   if (!ctx.state.user) {
     ctx.throw(401, 'Unauthorized');
@@ -2877,16 +2877,71 @@ export const updateLeagueStatus = async (ctx: Context) => {
       return;
     }
 
-    // Important: Boolean('false') === true, so parse explicitly.
-    const isActive = active === true || active === 'true';
-    // When admin marks league as inactive, also archive it
-    const updateData: any = { active: isActive };
-    if (!isActive) {
-      updateData.archived = true;
-      console.log(`📦 League "${league.name}" archived by admin (marked inactive)`);
-    } else {
-      // If reactivating, un-archive it
+    const normalizeBoolean = (value: unknown): boolean | undefined => {
+      if (value === true || value === false) return value;
+      if (typeof value === 'string') {
+        const s = value.trim().toLowerCase();
+        if (s === 'true' || s === '1') return true;
+        if (s === 'false' || s === '0') return false;
+      }
+      return undefined;
+    };
+
+    const normalizedStatus = typeof status === 'string' ? status.trim().toLowerCase() : '';
+    const completedStatusTokens = new Set([
+      'completed',
+      'complete',
+      'finished',
+      'ended',
+      'result_published',
+      'result_uploaded',
+      'result_complete',
+      'result_finished',
+      'result_ended',
+      'result_done',
+    ]);
+
+    const requestedActive = normalizeBoolean(active);
+    const requestedArchived = normalizeBoolean(archived);
+
+    const updateData: any = {};
+
+    if (completedStatusTokens.has(normalizedStatus)) {
+      // Completed league must NOT be archived.
+      // Persist as inactive+non-archived so frontend can keep it in "Completed", not "Archived".
+      updateData.active = false;
       updateData.archived = false;
+      if ('isLocked' in (league as any)) updateData.isLocked = true;
+      if ('completedAt' in (league as any)) updateData.completedAt = new Date();
+      if ('completedById' in (league as any)) updateData.completedById = String(userId);
+      console.log(`🏁 League "${league.name}" marked completed by admin`);
+    } else if (normalizedStatus === 'active' || normalizedStatus === 'live') {
+      updateData.active = true;
+      updateData.archived = false;
+      if ('isLocked' in (league as any)) updateData.isLocked = false;
+      if ('completedAt' in (league as any)) updateData.completedAt = null;
+      if ('completedById' in (league as any)) updateData.completedById = null;
+      console.log(`🟢 League "${league.name}" marked live by admin`);
+    } else if (requestedActive !== undefined) {
+      // Legacy behavior for settings/admin archive switches
+      updateData.active = requestedActive;
+      if (requestedActive) {
+        updateData.archived = requestedArchived ?? false;
+      } else {
+        updateData.archived = requestedArchived ?? true;
+      }
+      if (updateData.archived === true) {
+        console.log(`📦 League "${league.name}" archived by admin (marked inactive)`);
+      }
+    } else if (requestedArchived !== undefined) {
+      updateData.archived = requestedArchived;
+      if (requestedArchived) updateData.active = false;
+    }
+
+    if (Object.keys(updateData).length === 0) {
+      ctx.status = 400;
+      ctx.body = { success: false, message: 'No valid status fields supplied' };
+      return;
     }
 
     await league.update(updateData);
@@ -2905,7 +2960,11 @@ export const updateLeagueStatus = async (ctx: Context) => {
       league: {
         id: league.id,
         active: league.active,
-        archived: (league as any).archived
+        archived: (league as any).archived,
+        status: (league as any).archived ? 'inactive' : (league.active ? 'active' : 'completed'),
+        isComplete: !(league as any).archived && league.active === false,
+        isCompleted: !(league as any).archived && league.active === false,
+        locked: Boolean((league as any).isLocked) || (!(league as any).archived && league.active === false),
       }
     };
   } catch (err) {
@@ -2922,6 +2981,8 @@ export const updateLeague = async (ctx: Context) => {
     name,
     maxGames,
     active,
+    status,
+    archived,
     showPoints,
     removeImage,
     seasonId,
@@ -2981,11 +3042,55 @@ export const updateLeague = async (ctx: Context) => {
       return;
     }
 
+    const normalizeBoolean = (value: unknown): boolean | undefined => {
+      if (value === true || value === false) return value;
+      if (typeof value === 'string') {
+        const s = value.trim().toLowerCase();
+        if (s === 'true' || s === '1') return true;
+        if (s === 'false' || s === '0') return false;
+      }
+      return undefined;
+    };
+
+    const normalizedStatus = typeof status === 'string' ? status.trim().toLowerCase() : '';
+    const completedStatusTokens = new Set([
+      'completed',
+      'complete',
+      'finished',
+      'ended',
+      'result_published',
+      'result_uploaded',
+      'result_complete',
+      'result_finished',
+      'result_ended',
+      'result_done',
+    ]);
+
+    const requestedActive = normalizeBoolean(active);
+    const requestedArchived = normalizeBoolean(archived);
+
     const updateData: any = {};
     if (name) updateData.name = name;
     if (maxGames !== undefined) updateData.maxGames = Number(maxGames);
-    // Handle boolean fields that may arrive as strings from FormData
-    if (active !== undefined) updateData.active = active === true || active === 'true';
+    // Manual completed/live status support:
+    // completed => inactive but NOT archived
+    if (completedStatusTokens.has(normalizedStatus)) {
+      updateData.active = false;
+      updateData.archived = false;
+      if ('isLocked' in (league as any)) updateData.isLocked = true;
+      if ('completedAt' in (league as any)) updateData.completedAt = new Date();
+      if ('completedById' in (league as any)) updateData.completedById = String(userId);
+    } else if (normalizedStatus === 'active' || normalizedStatus === 'live') {
+      updateData.active = true;
+      updateData.archived = false;
+      if ('isLocked' in (league as any)) updateData.isLocked = false;
+      if ('completedAt' in (league as any)) updateData.completedAt = null;
+      if ('completedById' in (league as any)) updateData.completedById = null;
+    } else {
+      // Handle boolean fields that may arrive as strings from FormData
+      if (requestedActive !== undefined) updateData.active = requestedActive;
+      if (requestedArchived !== undefined) updateData.archived = requestedArchived;
+    }
     if (showPoints !== undefined) updateData.showPoints = showPoints === true || showPoints === 'true';
 
     // Handle league image upload or removal
@@ -3123,6 +3228,14 @@ export const updateLeague = async (ctx: Context) => {
         name: (updatedLeague as any)?.name || league.name,
         maxGames: (updatedLeague as any)?.maxGames || league.maxGames,
         active: (updatedLeague as any)?.active ?? league.active,
+        archived: Boolean((updatedLeague as any)?.archived ?? (league as any).archived),
+        status: Boolean((updatedLeague as any)?.archived ?? (league as any).archived)
+          ? 'inactive'
+          : (((updatedLeague as any)?.active ?? league.active) ? 'active' : 'completed'),
+        isComplete: !Boolean((updatedLeague as any)?.archived ?? (league as any).archived)
+          && ((updatedLeague as any)?.active ?? league.active) === false,
+        isCompleted: !Boolean((updatedLeague as any)?.archived ?? (league as any).archived)
+          && ((updatedLeague as any)?.active ?? league.active) === false,
         showPoints: (updatedLeague as any)?.showPoints ?? league.showPoints,
         image: (updatedLeague as any)?.image ?? (league as any).image ?? null,
         administrators: (updatedLeague as any)?.administeredLeagues || []
