@@ -79,6 +79,11 @@ router.patch('/:id', required, upload.single('image'), leagueController.updateLe
 
 // Update league status
 router.patch('/:id/status', required, leagueController.updateLeagueStatus);
+router.patch('/:id/complete', required, leagueController.markLeagueCompleted);
+router.patch('/:id/live', required, leagueController.markLeagueLive);
+// Backward-compatible aliases used by older clients
+router.post('/:id/lock', required, leagueController.markLeagueCompleted);
+router.post('/:id/unlock', required, leagueController.markLeagueLive);
 
 // Delete league
 router.delete('/:id', required, leagueController.deleteLeague);

@@ -262,6 +262,28 @@ const fetchUserLeaguesBasic = async (userId: string): Promise<LeagueListRow[]> =
   }));
 };
 
+const deriveLeagueLifecycle = (
+  active: boolean,
+  archived: boolean,
+  computedCompleted?: boolean,
+  computedLocked?: boolean
+) => {
+  const manualCompleted = !archived && active === false;
+  const isCompleted = Boolean(computedCompleted) || manualCompleted;
+  const isLocked = Boolean(computedLocked) || manualCompleted;
+  const status: 'active' | 'inactive' | 'completed' = archived
+    ? 'inactive'
+    : (active ? 'active' : 'completed');
+
+  return {
+    status,
+    isComplete: isCompleted,
+    isCompleted,
+    isLocked,
+    locked: isLocked,
+  };
+};
+
 // Get all leagues for current user
 export const getAllLeagues = async (ctx: Context) => {
   if (!ctx.state.user || !ctx.state.user.userId) {
@@ -276,6 +298,12 @@ export const getAllLeagues = async (ctx: Context) => {
 
     const leagues = leaguesBasic.map((league) => {
       const completionInfo = completionByLeague[league.id];
+      const lifecycle = deriveLeagueLifecycle(
+        league.active,
+        league.archived,
+        completionInfo?.isCompleted,
+        false
+      );
       return {
         id: league.id,
         name: league.name,
@@ -283,8 +311,14 @@ export const getAllLeagues = async (ctx: Context) => {
         archived: league.archived,
         image: league.image,
         maxGames: league.maxGames,
+        status: lifecycle.status,
+        isComplete: lifecycle.isComplete,
+        isCompleted: lifecycle.isCompleted,
+        isLocked: lifecycle.isLocked,
         computedStatus: {
-          isCompleted: Boolean(completionInfo?.isCompleted),
+          isCompleted: lifecycle.isCompleted,
+          isComplete: lifecycle.isComplete,
+          locked: lifecycle.locked,
           activeSeasonCompleted: Boolean(completionInfo?.activeSeasonCompleted),
           allStatsSubmitted: Boolean(completionInfo?.allStatsSubmitted),
           matchesPlayed: completionInfo?.totalCompletedMatches ?? 0,
@@ -1654,6 +1688,12 @@ export const getUserLeagues = async (ctx: Context) => {
       success: true,
       leagues: leaguesBasic.map((league) => {
         const completionInfo = completionByLeague[league.id];
+        const lifecycle = deriveLeagueLifecycle(
+          league.active,
+          league.archived,
+          completionInfo?.isCompleted,
+          false
+        );
         return {
           id: league.id,
           name: league.name,
@@ -1661,8 +1701,14 @@ export const getUserLeagues = async (ctx: Context) => {
           archived: league.archived,
           image: league.image,
           maxGames: league.maxGames,
+          status: lifecycle.status,
+          isComplete: lifecycle.isComplete,
+          isCompleted: lifecycle.isCompleted,
+          isLocked: lifecycle.isLocked,
           computedStatus: {
-            isCompleted: Boolean(completionInfo?.isCompleted),
+            isCompleted: lifecycle.isCompleted,
+            isComplete: lifecycle.isComplete,
+            locked: lifecycle.locked,
             activeSeasonCompleted: Boolean(completionInfo?.activeSeasonCompleted),
             allStatsSubmitted: Boolean(completionInfo?.allStatsSubmitted),
             matchesPlayed: completionInfo?.totalCompletedMatches ?? 0,
@@ -1992,6 +2038,8 @@ export const getLeagueById = async (ctx: Context) => {
       const completionInfo = await checkLeagueCompletion(String(league.id));
       const computedStatus = {
         isCompleted: completionInfo.isCompleted,
+        isComplete: completionInfo.isCompleted,
+        locked: completionInfo.isCompleted,
         activeSeasonCompleted: completionInfo.activeSeasonCompleted,
         allStatsSubmitted: completionInfo.allStatsSubmitted,
         totalCompletedMatches: completionInfo.totalCompletedMatches,
@@ -2012,6 +2060,12 @@ export const getLeagueById = async (ctx: Context) => {
         })),
         missing: completionInfo.missing,
       };
+      const lifecycle = deriveLeagueLifecycle(
+        Boolean(league.active),
+        Boolean((league as any).archived),
+        completionInfo.isCompleted,
+        completionInfo.isCompleted
+      );
 
       ctx.body = {
         success: true,
@@ -2023,6 +2077,10 @@ export const getLeagueById = async (ctx: Context) => {
           archived: Boolean((league as any).archived),
           image: (league as any).image,
           maxGames: league.maxGames,
+          status: lifecycle.status,
+          isComplete: lifecycle.isComplete,
+          isCompleted: lifecycle.isCompleted,
+          isLocked: lifecycle.isLocked,
           members: membersJson,
           matches: matchesWithNumbers,
           seasons: formattedSeasons, // Admin sees ALL seasons with members
@@ -2238,6 +2296,8 @@ export const getLeagueById = async (ctx: Context) => {
     const completionInfoMember = await checkLeagueCompletion(String(league.id));
     const computedStatusMember = {
       isCompleted: completionInfoMember.isCompleted,
+      isComplete: completionInfoMember.isCompleted,
+      locked: completionInfoMember.isCompleted,
       activeSeasonCompleted: completionInfoMember.activeSeasonCompleted,
       allStatsSubmitted: completionInfoMember.allStatsSubmitted,
       totalCompletedMatches: completionInfoMember.totalCompletedMatches,
@@ -2258,6 +2318,12 @@ export const getLeagueById = async (ctx: Context) => {
       })),
       missing: completionInfoMember.missing,
     };
+    const lifecycle = deriveLeagueLifecycle(
+      Boolean(league.active),
+      Boolean((league as any).archived),
+      completionInfoMember.isCompleted,
+      completionInfoMember.isCompleted
+    );
 
     ctx.body = {
       success: true,
@@ -2269,6 +2335,10 @@ export const getLeagueById = async (ctx: Context) => {
         archived: Boolean((league as any).archived),
         image: (league as any).image,
         maxGames: league.maxGames,
+        status: lifecycle.status,
+        isComplete: lifecycle.isComplete,
+        isCompleted: lifecycle.isCompleted,
+        isLocked: lifecycle.isLocked,
         members: membersJson,
         matches: matchesWithNumbers,
         seasons: filteredSeasons, // Only show seasons user is member of
@@ -2972,6 +3042,30 @@ export const updateLeagueStatus = async (ctx: Context) => {
     ctx.status = 500;
     ctx.body = { success: false, message: 'Failed to update league' };
   }
+};
+
+// Explicit API for switch button: mark a league completed
+export const markLeagueCompleted = async (ctx: Context) => {
+  const body = (ctx.request.body || {}) as Record<string, unknown>;
+  ctx.request.body = {
+    ...body,
+    status: 'completed',
+    active: false,
+    archived: false,
+  };
+  await updateLeagueStatus(ctx);
+};
+
+// Explicit API for switch button: mark a league live again
+export const markLeagueLive = async (ctx: Context) => {
+  const body = (ctx.request.body || {}) as Record<string, unknown>;
+  ctx.request.body = {
+    ...body,
+    status: 'active',
+    active: true,
+    archived: false,
+  };
+  await updateLeagueStatus(ctx);
 };
 
 // Update league
