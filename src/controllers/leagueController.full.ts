@@ -259,6 +259,7 @@ const fetchUserLeaguesBasic = async (userId: string): Promise<LeagueListRow[]> =
     archived: Boolean(row.archived),
     image: row.image || null,
     maxGames: row.maxGames == null ? null : Number(row.maxGames),
+    createdAt: row.createdAt ? ((row.createdAt as any) instanceof Date ? (row.createdAt as any).toISOString() : String(row.createdAt)) : undefined
   }));
 };
 
@@ -312,6 +313,7 @@ export const getAllLeagues = async (ctx: Context) => {
         image: league.image,
         maxGames: league.maxGames,
         status: lifecycle.status,
+        createdAt: league.createdAt,
         isComplete: lifecycle.isComplete,
         isCompleted: lifecycle.isCompleted,
         isLocked: lifecycle.isLocked,
@@ -1702,6 +1704,7 @@ export const getUserLeagues = async (ctx: Context) => {
           image: league.image,
           maxGames: league.maxGames,
           status: lifecycle.status,
+          createdAt: league.createdAt,
           isComplete: lifecycle.isComplete,
           isCompleted: lifecycle.isCompleted,
           isLocked: lifecycle.isLocked,
@@ -1763,7 +1766,7 @@ export const getLeagueById = async (ctx: Context) => {
 
   try {
     const league = await League.findByPk(id, {
-      attributes: ['id', 'name', 'inviteCode', 'active', 'archived', 'image', 'maxGames']
+      attributes: ['id', 'name', 'inviteCode', 'active', 'archived', 'image', 'maxGames', 'createdAt', 'updatedAt']
     });
 
     if (!league) {
@@ -1856,6 +1859,8 @@ export const getLeagueById = async (ctx: Context) => {
             archived: Boolean((league as any).archived),
             image: (league as any).image,
             maxGames: league.maxGames,
+            createdAt: league.createdAt,
+            updatedAt: league.updatedAt,
             members: membersJson,
             matches: [],
             seasons: formattedSeasons,
@@ -1903,6 +1908,8 @@ export const getLeagueById = async (ctx: Context) => {
           archived: Boolean((league as any).archived),
           image: (league as any).image,
           maxGames: league.maxGames,
+          createdAt: league.createdAt,
+          updatedAt: league.updatedAt,
           members: membersJson,
           matches: [],
           seasons: formattedSeasons,
@@ -2077,6 +2084,8 @@ export const getLeagueById = async (ctx: Context) => {
           archived: Boolean((league as any).archived),
           image: (league as any).image,
           maxGames: league.maxGames,
+          createdAt: league.createdAt,
+          updatedAt: league.updatedAt,
           status: lifecycle.status,
           isComplete: lifecycle.isComplete,
           isCompleted: lifecycle.isCompleted,
@@ -2335,6 +2344,8 @@ export const getLeagueById = async (ctx: Context) => {
         archived: Boolean((league as any).archived),
         image: (league as any).image,
         maxGames: league.maxGames,
+        createdAt: league.createdAt,
+        updatedAt: league.updatedAt,
         status: lifecycle.status,
         isComplete: lifecycle.isComplete,
         isCompleted: lifecycle.isCompleted,
