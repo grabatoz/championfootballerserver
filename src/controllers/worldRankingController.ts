@@ -86,18 +86,18 @@ export const getWorldRanking = async (ctx: Context) => {
             u."position",
             u."positionType",
             u."country",
-            COALESCE(stats."totalXP", 0)::int AS "totalXP",
+            (COALESCE(stats."matchXP", 0) + CASE WHEN EXTRACT(YEAR FROM u."createdAt") = :year THEN COALESCE(ach."achievementXP", 0) ELSE 0 END)::int AS "totalXP",
             COALESCE(stats."matchCount", 0)::int AS "matches",
             CASE
               WHEN COALESCE(stats."matchCount", 0) > 0
-              THEN ROUND(COALESCE(stats."totalXP", 0)::numeric / stats."matchCount", 2)
+              THEN ROUND((COALESCE(stats."matchXP", 0) + CASE WHEN EXTRACT(YEAR FROM u."createdAt") = :year THEN COALESCE(ach."achievementXP", 0) ELSE 0 END)::numeric / stats."matchCount", 2)
               ELSE 0
             END AS "avgXP"
           FROM ${usersTable} u
           LEFT JOIN (
             SELECT
               ms2."user_id",
-              SUM(ms2.xp_awarded) AS "totalXP",
+              SUM(ms2.xp_awarded) AS "matchXP",
               COUNT(DISTINCT ms2."match_id") AS "matchCount"
             FROM ${matchStatsTable} ms2
             INNER JOIN ${matchesTable} m2 ON m2."id" = ms2."match_id"
@@ -105,8 +105,15 @@ export const getWorldRanking = async (ctx: Context) => {
               AND EXTRACT(YEAR FROM m2."date") = :year
             GROUP BY ms2."user_id"
           ) stats ON stats."user_id" = u."id"
+          LEFT JOIN LATERAL (
+            SELECT COALESCE(SUM(ax.xp), 0)::int AS "achievementXP"
+            FROM unnest(COALESCE(u."achievements", ARRAY[]::text[])) AS achv(id)
+            LEFT JOIN (
+              VALUES ${achievementXpValuesSql}
+            ) AS ax(id, xp) ON ax.id = achv.id
+          ) ach ON TRUE
           WHERE ${whereConditions.join(' AND ')}
-            AND COALESCE(stats."totalXP", 0) > 0
+            AND (COALESCE(stats."matchXP", 0) + CASE WHEN EXTRACT(YEAR FROM u."createdAt") = :year THEN COALESCE(ach."achievementXP", 0) ELSE 0 END) > 0
         )
         SELECT
           b.*,
@@ -153,6 +160,7 @@ export const getWorldRanking = async (ctx: Context) => {
             ) AS ax(id, xp) ON ax.id = achv.id
           ) ach ON TRUE
           WHERE ${whereConditions.join(' AND ')}
+            AND (COALESCE(stats."matchXP", 0) + COALESCE(ach."achievementXP", 0)) > 0
         )
         SELECT
           b.*,
@@ -193,6 +201,16 @@ export const getWorldRanking = async (ctx: Context) => {
     const playerEntry = playerId ? rankings.find((entry: any) => entry.id === playerId) : undefined;
     const playerRank = playerEntry?.rank;
 
+    const yearsRows: any[] = await sequelize.query(`
+      SELECT DISTINCT EXTRACT(YEAR FROM "date")::int AS "year"
+      FROM ${matchesTable}
+      WHERE "status" = 'RESULT_PUBLISHED'
+      ORDER BY "year" DESC
+    `, {
+      type: QueryTypes.SELECT
+    });
+    const years = yearsRows.map(r => r.year).filter((y): y is number => Number.isFinite(y));
+
     const result: any = {
       success: true,
       mode,
@@ -202,6 +220,7 @@ export const getWorldRanking = async (ctx: Context) => {
       totalPages,
       rankings,
       playerRank,
+      years,
     };
 
     cache.set(cacheKey, result, 600);
