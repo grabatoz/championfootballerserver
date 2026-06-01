@@ -21,6 +21,26 @@ const hasForceRefreshFlag = (query: Record<string, unknown> | undefined): boolea
   });
 };
 
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const isUuid = (value: string): boolean => UUID_REGEX.test(String(value || '').trim());
+
+const parseYearValue = (value?: string | null): number | null => {
+  const trimmed = String(value || '').trim();
+  if (!trimmed) return null;
+  const parsed = Number.parseInt(trimmed, 10);
+  if (!Number.isFinite(parsed) || Number.isNaN(parsed)) return null;
+  if (parsed < 1900 || parsed > 3000) return null;
+  return parsed;
+};
+
+const parseYearFromSeasonToken = (seasonValue?: string | null): number | null => {
+  const trimmed = String(seasonValue || '').trim();
+  if (!trimmed) return null;
+  const match = trimmed.match(/^year-(\d{4})$/i);
+  if (!match) return null;
+  return parseYearValue(match[1]);
+};
+
 // Get all players with caching
 router.get('/', getAllPlayers);
 
@@ -65,9 +85,10 @@ router.get('/by-league', required, async (ctx) => {
 
     let members = ((league as any).members || []) as Array<any>;
     
-    // If seasonId is provided, filter members by season
-    if (seasonId && seasonId !== 'all') {
-      const season = await models.Season.findByPk(seasonId, {
+    // If seasonId is UUID, filter members by season.
+    const seasonIdForFilter = seasonId && seasonId !== 'all' && isUuid(seasonId) ? seasonId : '';
+    if (seasonIdForFilter) {
+      const season = await models.Season.findByPk(seasonIdForFilter, {
         include: [
           { model: models.User, as: 'players', attributes: ['id'] }
         ]
@@ -958,6 +979,11 @@ router.get('/:id/trophies', required, async (ctx) => {
 router.get('/:id/achievements', required, async (ctx) => {
   const { id: playerId } = ctx.params as { id: string };
   const { leagueId, year, seasonId } = ctx.query as { leagueId?: string; year?: string; seasonId?: string };
+  const seasonIdRaw = typeof seasonId === 'string' ? seasonId.trim() : '';
+  const yearRaw = typeof year === 'string' ? year.trim() : '';
+  const selectedSeasonId = seasonIdRaw && seasonIdRaw !== 'all' && isUuid(seasonIdRaw) ? seasonIdRaw : null;
+  const selectedYear = parseYearValue(yearRaw && yearRaw !== 'all' ? yearRaw : null)
+    ?? (seasonIdRaw && seasonIdRaw !== 'all' && !selectedSeasonId ? parseYearFromSeasonToken(seasonIdRaw) : null);
   
   console.log('ًںژ–ï¸ڈ [Achievements] Request:', { playerId, leagueId: leagueId || 'all', year: year || 'all', seasonId: seasonId || 'all' });
   
@@ -1023,9 +1049,9 @@ router.get('/:id/achievements', required, async (ctx) => {
     }
     
     // Apply season filter
-    if (seasonId && seasonId !== 'all') {
+    if (selectedSeasonId) {
       console.log('[Achievements] ًں“… Applying season filter:', seasonId);
-      matchWhere.seasonId = seasonId;
+      matchWhere.seasonId = selectedSeasonId;
     }
     
     console.log('[Achievements] ًں”ژ Match where clause:', JSON.stringify(matchWhere));
@@ -1058,8 +1084,8 @@ router.get('/:id/achievements', required, async (ctx) => {
     
     // Apply year filter (post-fetch)
     let filteredMatches = matches;
-    if (year && year !== 'all') {
-      const yearNum = parseInt(year);
+    if (selectedYear) {
+      const yearNum = selectedYear;
       if (!isNaN(yearNum)) {
         filteredMatches = matches.filter((m: any) => {
           const matchYear = new Date(m.date || m.start || m.createdAt).getFullYear();
@@ -1078,8 +1104,8 @@ router.get('/:id/achievements', required, async (ctx) => {
       status: 'RESULT_PUBLISHED',
       leagueId: { [Op.in]: leagueIds as any },
     };
-    if (seasonId && seasonId !== 'all') {
-      allLeagueMatchWhere.seasonId = seasonId;
+    if (selectedSeasonId) {
+      allLeagueMatchWhere.seasonId = selectedSeasonId;
     }
 
     let allLeagueMatches = leagueIds.length > 0
@@ -1110,8 +1136,8 @@ router.get('/:id/achievements', required, async (ctx) => {
         })
       : [];
 
-    if (year && year !== 'all') {
-      const yearNum = parseInt(year);
+    if (selectedYear) {
+      const yearNum = selectedYear;
       if (!isNaN(yearNum)) {
         allLeagueMatches = allLeagueMatches.filter((m: any) => {
           const matchYear = new Date(m.date || m.start || m.createdAt).getFullYear();
@@ -1192,8 +1218,11 @@ const SYNERGY_TTL_MS = 60_000; // 1 min cache
 router.get('/:playerId/simple-synergy', async (ctx) => {
   const { playerId } = ctx.params;
   const { leagueId, year, seasonId } = ctx.query as { leagueId?: string; year?: string; seasonId?: string };
-  const selectedYear = year && year !== 'all' ? Number(year) : null;
-  const selectedSeasonId = seasonId && seasonId !== 'all' ? String(seasonId) : null;
+  const seasonIdRaw = typeof seasonId === 'string' ? seasonId.trim() : '';
+  const yearRaw = typeof year === 'string' ? year.trim() : '';
+  const selectedSeasonId = seasonIdRaw && seasonIdRaw !== 'all' && isUuid(seasonIdRaw) ? seasonIdRaw : null;
+  const selectedYear = parseYearValue(yearRaw && yearRaw !== 'all' ? yearRaw : null)
+    ?? (seasonIdRaw && seasonIdRaw !== 'all' && !selectedSeasonId ? parseYearFromSeasonToken(seasonIdRaw) : null);
   const forceRefresh = hasForceRefreshFlag(ctx.query as Record<string, unknown> | undefined);
 
   if (!playerId) {
@@ -1448,6 +1477,9 @@ router.get('/:playerId/history-records', async (ctx) => {
   const leagueId = typeof ctx.request.query?.leagueId === 'string' ? ctx.request.query.leagueId.trim() : '';
   const year = typeof ctx.request.query?.year === 'string' ? ctx.request.query.year.trim() : '';
   const seasonId = typeof ctx.request.query?.seasonId === 'string' ? ctx.request.query.seasonId.trim() : '';
+  const selectedSeasonId = seasonId && seasonId !== 'all' && isUuid(seasonId) ? seasonId : '';
+  const selectedYear = parseYearValue(year && year !== 'all' ? year : null)
+    ?? ((!selectedSeasonId && seasonId && seasonId !== 'all') ? (parseYearFromSeasonToken(seasonId) ?? null) : null);
   const forceRefresh = hasForceRefreshFlag(ctx.request.query as Record<string, unknown> | undefined);
 
   console.log('[history-records] ًں”چ Request received:', { playerId, leagueId: leagueId || 'all', year: year || 'all', seasonId: seasonId || 'all' });
@@ -1502,9 +1534,9 @@ router.get('/:playerId/history-records', async (ctx) => {
     }
     
     // Apply season filter
-    if (seasonId && seasonId !== 'all') {
+    if (selectedSeasonId) {
       console.log('[history-records] ًں“… Applying season filter:', seasonId);
-      matchWhere.seasonId = seasonId;
+      matchWhere.seasonId = selectedSeasonId;
     }
     
     console.log('[history-records] ًں”ژ Final match where clause:', JSON.stringify(matchWhere, null, 2));
@@ -1522,8 +1554,8 @@ router.get('/:playerId/history-records', async (ctx) => {
 
     // Apply year filter if needed (after fetching since year is not a column)
     let filteredMatches = matches;
-    if (year && year !== 'all') {
-      const yearNum = parseInt(year);
+    if (selectedYear) {
+      const yearNum = selectedYear;
       if (!isNaN(yearNum)) {
         filteredMatches = matches.filter((m: any) => {
           const matchYear = new Date(m.date || m.start || m.createdAt).getFullYear();
