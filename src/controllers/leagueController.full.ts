@@ -2716,21 +2716,49 @@ export const getPlayerQuickView = async (ctx: Context) => {
     const matchWhere: any = { leagueId };
     if (seasonId) matchWhere.seasonId = seasonId;
 
-    // Count MOTM votes for this player in this league (filtered by season)
-    const motmCount = await (Vote as any).count({
+    // Count MOTM wins (number of matches where the player won MOTM) for this player in this league (filtered by season)
+    const matches = await Match.findAll({
+      where: {
+        ...matchWhere,
+        deleted: false
+      },
+      attributes: ['id'],
       include: [
         {
-          model: Match,
-          as: 'votedMatch',
-          where: matchWhere,
-          attributes: [],
-          required: true
+          model: Vote,
+          as: 'votes',
+          attributes: ['votedForId']
         }
-      ],
-      where: {
-        votedForId: playerId
-      }
+      ]
     });
+
+    let motmCount = 0;
+    for (const match of matches) {
+      const votes = (match as any).votes || [];
+      if (votes.length === 0) continue;
+
+      const voteCounts: Record<string, number> = {};
+      for (const vote of votes) {
+        const vId = String(vote.votedForId);
+        voteCounts[vId] = (voteCounts[vId] || 0) + 1;
+      }
+
+      let maxVotes = 0;
+      let winners = new Set<string>();
+      for (const [vId, count] of Object.entries(voteCounts)) {
+        if (count > maxVotes) {
+          maxVotes = count;
+          winners.clear();
+          winners.add(vId);
+        } else if (count === maxVotes) {
+          winners.add(vId);
+        }
+      }
+
+      if (winners.has(String(playerId))) {
+        motmCount++;
+      }
+    }
 
     // Fetch last 10 completed matches where this player participated (home or away)
     const completedStatuses = ['RESULT_PUBLISHED', 'RESULT_UPLOADED'];
