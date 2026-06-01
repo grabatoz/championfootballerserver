@@ -5,6 +5,20 @@ import cache from '../utils/cache';
 
 const { User, Session, League, Match } = models;
 
+const SKILL_KEYS = ['dribbling', 'shooting', 'passing', 'pace', 'defending', 'physical'] as const;
+type SkillKey = typeof SKILL_KEYS[number];
+const DEFAULT_SKILLS: Record<SkillKey, number> = {
+  dribbling: 50,
+  shooting: 50,
+  passing: 50,
+  pace: 50,
+  defending: 50,
+  physical: 50,
+};
+
+const isPlainObject = (value: unknown): value is Record<string, unknown> =>
+  value !== null && typeof value === 'object' && !Array.isArray(value);
+
 export const getProfile = async (ctx: Context) => {
   if (!ctx.state.user?.userId) {
     ctx.throw(401, "User not authenticated");
@@ -105,6 +119,50 @@ export const updateProfile = async (ctx: Context) => {
       return;
     } else {
       updateData.phoneCountryCode = normalizedCode;
+    }
+  }
+
+  // Merge partial skills payload with existing skills so unchanged values are preserved.
+  if (Object.prototype.hasOwnProperty.call(updateData, 'skills')) {
+    const incomingSkills = updateData.skills;
+
+    if (incomingSkills == null) {
+      delete updateData.skills;
+    } else if (!isPlainObject(incomingSkills)) {
+      ctx.throw(400, 'Invalid skills payload');
+      return;
+    } else {
+      const currentSkillsRaw = isPlainObject((user as any).skills) ? ((user as any).skills as Record<string, unknown>) : {};
+      const mergedSkills: Record<SkillKey, number> = { ...DEFAULT_SKILLS };
+
+      for (const key of SKILL_KEYS) {
+        const currentValue = Number(currentSkillsRaw[key]);
+        if (Number.isFinite(currentValue)) {
+          mergedSkills[key] = currentValue;
+        }
+      }
+
+      let hasAtLeastOneSkill = false;
+      for (const key of SKILL_KEYS) {
+        if (!Object.prototype.hasOwnProperty.call(incomingSkills, key)) continue;
+        const nextRaw = incomingSkills[key];
+        if (nextRaw == null || nextRaw === '') continue;
+
+        const nextValue = Number(nextRaw);
+        if (!Number.isFinite(nextValue)) {
+          ctx.throw(400, `Invalid skill value for ${key}`);
+          return;
+        }
+
+        mergedSkills[key] = nextValue;
+        hasAtLeastOneSkill = true;
+      }
+
+      if (hasAtLeastOneSkill) {
+        updateData.skills = mergedSkills;
+      } else {
+        delete updateData.skills;
+      }
     }
   }
 
