@@ -156,22 +156,27 @@ router.get('/me/global-stats', required, async (ctx) => {
 
   const userId = String(ctx.state.user.userId);
   try {
-    // Fetch match IDs where user participated via join tables
-    const Home = (sequelize.models as any)?.UserHomeMatches;
-    const Away = (sequelize.models as any)?.UserAwayMatches;
-    let matchIds: string[] = [];
-    if (Home) {
-      const rows = await Home.findAll({ where: { userId }, attributes: ['matchId'], raw: true });
-      matchIds.push(...(rows as any[]).map(r => String(r.matchId)));
+    const cacheKey = `user_global_stats_${userId}`;
+    const cached = cache.get<any>(cacheKey);
+    if (cached) {
+      ctx.body = cached;
+      return;
     }
-    if (Away) {
-      const rows = await Away.findAll({ where: { userId }, attributes: ['matchId'], raw: true });
-      matchIds.push(...(rows as any[]).map(r => String(r.matchId)));
-    }
-    matchIds = Array.from(new Set(matchIds));
 
-    if (matchIds.length === 0) {
-      ctx.body = {
+    const startedAt = Date.now();
+    const MatchStatisticsModel = (models as any).MatchStatistics;
+    const statsRows = await MatchStatisticsModel.findAll({
+      where: { user_id: userId },
+      attributes: ['match_id', 'goals', 'assists', 'cleanSheets', 'defence'],
+      raw: true,
+    });
+
+    const statMatchIds = Array.from(
+      new Set((statsRows as any[]).map((r: any) => String(r.match_id || '')).filter((id: string) => id !== ''))
+    );
+
+    if (statMatchIds.length === 0) {
+      const response = {
         success: true,
         stats: {
           matchesPlayed: 0,
@@ -182,77 +187,54 @@ router.get('/me/global-stats', required, async (ctx) => {
           defensiveImpact: 0
         }
       };
+      cache.set(cacheKey, response, 20);
+      ctx.body = response;
       return;
     }
 
-    // Load RESULT_PUBLISHED matches the user played in
-    const matches = await Match.findAll({
-      where: { id: { [Op.in]: matchIds as any }, status: 'RESULT_PUBLISHED' },
-      attributes: ['id', 'homeTeamGoals', 'awayTeamGoals', 'homeDefensiveImpactId', 'awayDefensiveImpactId'],
-      include: [
-        { model: (models as any).User, as: 'homeTeamUsers', attributes: ['id'] },
-        { model: (models as any).User, as: 'awayTeamUsers', attributes: ['id'] },
-        { model: Vote, as: 'votes', attributes: ['votedForId'] },
-      ],
-    });
+    const [matches, totalMotmVotes] = await Promise.all([
+      Match.findAll({
+        where: { id: { [Op.in]: statMatchIds as any }, status: 'RESULT_PUBLISHED' },
+        attributes: ['id', 'homeDefensiveImpactId', 'awayDefensiveImpactId'],
+        raw: true,
+      }) as any,
+      Vote.count({
+        where: { matchId: { [Op.in]: statMatchIds as any }, votedForId: userId },
+      }),
+    ]);
 
-    // Load user stats for those matches
-    const statsRows = await (models as any).MatchStatistics.findAll({
-      where: { user_id: userId, match_id: { [Op.in]: matches.map((m: any) => m.id) as any } },
-      attributes: ['match_id', 'goals', 'assists', 'cleanSheets', 'defence'],
-      raw: true,
-    });
+    const publishedMatchIdSet = new Set((matches as any[]).map((m: any) => String(m.id || '')));
+    const defensivePickCount = (matches as any[]).reduce((sum: number, m: any) => {
+      const isPick = String(m.homeDefensiveImpactId || '') === userId || String(m.awayDefensiveImpactId || '') === userId;
+      return sum + (isPick ? 1 : 0);
+    }, 0);
 
-    const statsByMatch = new Map<string, { goals: number; assists: number; cleanSheets: number; defence: number }>();
-    for (const r of statsRows as any[]) {
-      statsByMatch.set(String(r.match_id), {
-        goals: Number(r.goals || 0),
-        assists: Number(r.assists || 0),
-        cleanSheets: Number(r.cleanSheets || 0),
-        defence: Number(r.defence || 0),
-      });
-    }
-
-    // Aggregate stats
     let totalGoals = 0;
     let totalAssists = 0;
     let totalCleanSheets = 0;
-    let totalMotmVotes = 0;
-    let totalDefensiveImpact = 0;
-
-    for (const m of matches as any[]) {
-      const isHome = ((m.homeTeamUsers || []).some((u: any) => String(u.id) === userId));
-      const isAway = ((m.awayTeamUsers || []).some((u: any) => String(u.id) === userId));
-      if (!isHome && !isAway) continue;
-
-      const s = statsByMatch.get(String(m.id)) || { goals: 0, assists: 0, cleanSheets: 0, defence: 0 };
-      totalGoals += s.goals;
-      totalAssists += s.assists;
-      totalCleanSheets += s.cleanSheets;
-      totalDefensiveImpact += s.defence;
-
-      // Also count captain picks for Defensive Impact
-      if (String(m.homeDefensiveImpactId) === userId || String(m.awayDefensiveImpactId) === userId) {
-        totalDefensiveImpact += 1;
-      }
-
-      // Count MOTM votes (all votes are MOTM votes in this system)
-      const votes = (m.votes || []) as any[];
-      const motmVotes = votes.filter((v: any) => String(v.votedForId) === userId).length;
-      totalMotmVotes += motmVotes;
+    let totalDefensiveImpact = defensivePickCount;
+    for (const row of statsRows as any[]) {
+      if (!publishedMatchIdSet.has(String(row.match_id || ''))) continue;
+      totalGoals += Number(row.goals || 0);
+      totalAssists += Number(row.assists || 0);
+      totalCleanSheets += Number(row.cleanSheets || 0);
+      totalDefensiveImpact += Number(row.defence || 0);
     }
 
-    ctx.body = {
+    const response = {
       success: true,
       stats: {
-        matchesPlayed: matches.length,
-        motmVotes: totalMotmVotes,
+        matchesPlayed: publishedMatchIdSet.size,
+        motmVotes: Number(totalMotmVotes || 0),
         goals: totalGoals,
         assists: totalAssists,
         cleanSheets: totalCleanSheets,
         defensiveImpact: totalDefensiveImpact
       }
     };
+    cache.set(cacheKey, response, 20);
+    console.log(`[Global Stats API] user=${userId} matches=${publishedMatchIdSet.size} durationMs=${Date.now() - startedAt}`);
+    ctx.body = response;
   } catch (e) {
     console.error('GET /users/me/global-stats failed', e);
     ctx.status = 500;
@@ -274,6 +256,12 @@ router.get('/me/achievements', required, async (ctx) => {
     const startedAt = Date.now();
     const UserModel = (models as any).User;
     const MatchStatisticsModel = (models as any).MatchStatistics;
+    const cacheKey = `user_achievements_${userId}`;
+    const cached = cache.get<any>(cacheKey);
+    if (cached) {
+      ctx.body = cached;
+      return;
+    }
     const user = await UserModel.findByPk(userId, { attributes: ['id', 'xp'] });
     if (!user) {
       ctx.status = 404;
@@ -281,19 +269,43 @@ router.get('/me/achievements', required, async (ctx) => {
       return;
     }
 
-    // Fetch match IDs where user participated via join tables
+    // Primary scope: user's match statistics rows (indexed by user_id in DB)
+    const userStatsRows = await MatchStatisticsModel.findAll({
+      where: { user_id: userId },
+      attributes: ['match_id', 'goals', 'assists'],
+      raw: true,
+    });
+    const statsByMatch = new Map<string, { goals: number; assists: number }>();
+    for (const r of userStatsRows as any[]) {
+      statsByMatch.set(String(r.match_id), {
+        goals: Number(r.goals || 0),
+        assists: Number(r.assists || 0),
+      });
+    }
+    const matchIdsFromStats = Array.from(
+      new Set((userStatsRows as any[]).map((r: any) => String(r.match_id || '')).filter((id: string) => id !== ''))
+    );
+
+    // Fallback scope: join tables (for legacy rows if stats are missing)
     const Home = (sequelize.models as any)?.UserHomeMatches;
     const Away = (sequelize.models as any)?.UserAwayMatches;
-    const [homeRows, awayRows] = await Promise.all([
-      Home ? Home.findAll({ where: { userId }, attributes: ['matchId'], raw: true }) : Promise.resolve([]),
-      Away ? Away.findAll({ where: { userId }, attributes: ['matchId'], raw: true }) : Promise.resolve([]),
-    ]);
-    const homeMatchIdSet = new Set((homeRows as any[]).map((r: any) => String(r.matchId || '')).filter((id: string) => id !== ''));
-    const awayMatchIdSet = new Set((awayRows as any[]).map((r: any) => String(r.matchId || '')).filter((id: string) => id !== ''));
-    const matchIds = Array.from(new Set([...homeMatchIdSet, ...awayMatchIdSet]));
+    let matchIds: string[] = matchIdsFromStats;
+    if (matchIds.length === 0) {
+      const [homeRowsFallback, awayRowsFallback] = await Promise.all([
+        Home ? Home.findAll({ where: { userId }, attributes: ['matchId'], raw: true }) : Promise.resolve([]),
+        Away ? Away.findAll({ where: { userId }, attributes: ['matchId'], raw: true }) : Promise.resolve([]),
+      ]);
+      matchIds = Array.from(
+        new Set(
+          [...(homeRowsFallback as any[]), ...(awayRowsFallback as any[])]
+            .map((r: any) => String(r.matchId || ''))
+            .filter((id: string) => id !== '')
+        )
+      );
+    }
 
     if (matchIds.length === 0) {
-      ctx.body = {
+      const response = {
         success: true,
         userId,
         totalXP: Number(user.xp || 0),
@@ -301,6 +313,8 @@ router.get('/me/achievements', required, async (ctx) => {
           { id: 'rising_xp', title: 'Rising Star', count: 0, xp: Number(user.xp || 0), unlocked: true },
         ],
       };
+      cache.set(cacheKey, response, 20);
+      ctx.body = response;
       return;
     }
 
@@ -342,7 +356,7 @@ router.get('/me/achievements', required, async (ctx) => {
     );
     const playedMatchIds = playedMatches.map((m: any) => String(m.id || '')).filter((id: string) => id !== '');
 
-    const [leagueTotalRows, voteRows, statsRows] = await Promise.all([
+    const [leagueTotalRows, voteRows, homeRows, awayRows] = await Promise.all([
       leagueIds.length > 0
         ? Match.findAll({
             where: { leagueId: { [Op.in]: leagueIds as any }, status: 'RESULT_PUBLISHED' },
@@ -358,10 +372,17 @@ router.get('/me/achievements', required, async (ctx) => {
             raw: true,
           })
         : Promise.resolve([]),
-      playedMatchIds.length > 0
-        ? MatchStatisticsModel.findAll({
-            where: { user_id: userId, match_id: { [Op.in]: playedMatchIds as any } },
-            attributes: ['match_id', 'goals', 'assists'],
+      Home && playedMatchIds.length > 0
+        ? Home.findAll({
+            where: { userId, matchId: { [Op.in]: playedMatchIds as any } },
+            attributes: ['matchId'],
+            raw: true,
+          })
+        : Promise.resolve([]),
+      Away && playedMatchIds.length > 0
+        ? Away.findAll({
+            where: { userId, matchId: { [Op.in]: playedMatchIds as any } },
+            attributes: ['matchId'],
             raw: true,
           })
         : Promise.resolve([]),
@@ -383,13 +404,8 @@ router.get('/me/achievements', required, async (ctx) => {
       votesByMatch.get(matchId)!.push(votedForId);
     }
 
-    const statsByMatch = new Map<string, { goals: number; assists: number }>();
-    for (const r of statsRows as any[]) {
-      statsByMatch.set(String(r.match_id), {
-        goals: Number(r.goals || 0),
-        assists: Number(r.assists || 0),
-      });
-    }
+    const homeMatchIdSet = new Set((homeRows as any[]).map((r: any) => String(r.matchId || '')).filter((id: string) => id !== ''));
+    const awayMatchIdSet = new Set((awayRows as any[]).map((r: any) => String(r.matchId || '')).filter((id: string) => id !== ''));
 
     const achievementMatches = playedMatches.map((m: any) => {
       const matchId = String(m.id || '');
@@ -416,10 +432,12 @@ router.get('/me/achievements', required, async (ctx) => {
       ...computed.badges,
     ];
 
+    const response = { success: true, userId, totalXP: Number(user.xp || 0), badges };
+    cache.set(cacheKey, response, 20);
     console.log(
       `[Achievements API] /users/me user=${userId} playedMatches=${playedMatchIds.length} leagues=${leagueIds.length} durationMs=${Date.now() - startedAt}`
     );
-    ctx.body = { success: true, userId, totalXP: Number(user.xp || 0), badges };
+    ctx.body = response;
   } catch (e) {
     console.error('GET /users/me/achievements failed', e);
     ctx.status = 500;
@@ -455,7 +473,11 @@ router.post('/me/achievements/award', required, async (ctx) => {
     }
 
     // Optionally clear any cached profile data
-    try { cache.clearPattern(`user_leagues_${userId}`); } catch {}
+    try {
+      cache.clearPattern(`user_leagues_${userId}`);
+      cache.del(`user_achievements_${userId}`);
+      cache.del(`user_global_stats_${userId}`);
+    } catch {}
 
     ctx.body = {
       success: true,
