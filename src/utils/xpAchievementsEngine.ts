@@ -7,6 +7,7 @@ import League from '../models/League';
 import { xpAchievements } from './xpAchievements';
 import { xpPointsTable } from './xpPointsTable';
 import sequelize from '../config/database';
+import { computeAchievementState, toAchievementMatchInput } from './achievementChecker';
 
 // Helper: Get all stats for a user in a league
 async function getUserLeagueStats(userId: string, leagueId: string) {
@@ -168,124 +169,226 @@ async function getUserAllLeaguesStats(userId: string) {
 }
 
 export async function calculateAndAwardXPAchievements(userId: string, leagueId?: string) {
-  console.log(`🎯 Starting XP calculation for user ${userId}${leagueId ? ` in league ${leagueId}` : ' across all leagues'}`);
-  
-  let stats;
-  
-  if (leagueId) {
-    // Single league calculation
-    stats = await getUserLeagueStats(userId, leagueId);
-  } else {
-    // All leagues calculation
-    stats = await getUserAllLeaguesStats(userId);
-  }
-
-  if (!stats) {
-    console.log(`❌ No stats found for user ${userId}`);
-    return;
-  }
-
-  console.log(`📊 User ${userId} stats:`, {
-    hatTricks: stats.hatTrickMatches,
-    captainWins: stats.captainWins,
-    consecutiveAssists: stats.consecutiveAssists,
-    consecutiveGoals: stats.consecutiveGoals,
-    captainPerformancePicks: stats.captainPerformancePicks,
-    consecutiveMOTM: stats.consecutiveMOTM,
-    consecutiveCleanSheetWins: stats.consecutiveCleanSheetWins,
-    topSpotMatches: stats.topSpotMatches,
-    consecutiveWins: stats.consecutiveWins
-  });
+  console.log(`Starting XP achievement sync for user ${userId}${leagueId ? ` in league ${leagueId}` : ''}`);
 
   const user = await User.findByPk(userId);
   if (!user) {
-    console.log(`❌ User ${userId} not found for achievement sync`);
+    console.log(`User ${userId} not found for achievement sync`);
     return;
   }
+
+  const Home = (sequelize.models as any)?.UserHomeMatches;
+  const Away = (sequelize.models as any)?.UserAwayMatches;
+  const startedAt = Date.now();
+  const [homeMembershipRows, awayMembershipRows] = await Promise.all([
+    Home ? Home.findAll({ where: { userId }, attributes: ['matchId'], raw: true }) : Promise.resolve([]),
+    Away ? Away.findAll({ where: { userId }, attributes: ['matchId'], raw: true }) : Promise.resolve([]),
+  ]);
+  const matchIds = Array.from(
+    new Set(
+      [...(homeMembershipRows as any[]), ...(awayMembershipRows as any[])]
+        .map((r: any) => String(r.matchId || ''))
+        .filter((id: string) => id !== '')
+    )
+  );
 
   const previousAchievementIds: string[] = Array.isArray(user.achievements)
     ? user.achievements.map((id: unknown) => String(id))
     : [];
   const xpAchievementIdSet = new Set(xpAchievements.map((a) => a.id));
   const nonXpAchievementIds = previousAchievementIds.filter((id) => !xpAchievementIdSet.has(id));
+  const previousXpAchievementIds = previousAchievementIds.filter((id) => xpAchievementIdSet.has(id));
 
-  const activeAchievementIds: string[] = [];
-  const awarded: string[] = [];
-  const removed: string[] = [];
-
-  for (const ach of xpAchievements) {
-    let achieved = false;
-    let reason = '';
-
-    if (ach.id === "hat_trick_3_matches" && stats.hatTrickMatches >= 3) {
-      achieved = true;
-      reason = `Hat tricks: ${stats.hatTrickMatches}`;
+  if (matchIds.length === 0) {
+    const nextAchievementIds = nonXpAchievementIds;
+    const noChange =
+      nextAchievementIds.length === previousAchievementIds.length &&
+      nextAchievementIds.every((id, idx) => id === previousAchievementIds[idx]);
+    if (!noChange) {
+      user.achievements = nextAchievementIds;
+      await user.save();
     }
-    if (ach.id === "captain_5_wins" && stats.captainWins >= 5) {
-      achieved = true;
-      reason = `Captain wins: ${stats.captainWins}`;
-    }
-    if (ach.id === "assist_10_consecutive" && stats.consecutiveAssists >= 10) {
-      achieved = true;
-      reason = `Consecutive assists: ${stats.consecutiveAssists}`;
-    }
-    if (ach.id === "scoring_10_consecutive" && stats.consecutiveGoals >= 10) {
-      achieved = true;
-      reason = `Consecutive goals: ${stats.consecutiveGoals}`;
-    }
-    if (ach.id === "captain_performance_3" && stats.captainPerformancePicks >= 3) {
-      achieved = true;
-      reason = `Captain performance picks: ${stats.captainPerformancePicks}`;
-    }
-    if (ach.id === "motm_4_consecutive" && stats.consecutiveMOTM >= 4) {
-      achieved = true;
-      reason = `Consecutive MOTM: ${stats.consecutiveMOTM}`;
-    }
-    if (ach.id === "clean_sheet_5_wins" && stats.consecutiveCleanSheetWins >= 5) {
-      achieved = true;
-      reason = `Consecutive clean sheet wins: ${stats.consecutiveCleanSheetWins}`;
-    }
-    if (ach.id === "top_spot_10_matches" && stats.topSpotMatches >= 10) {
-      achieved = true;
-      reason = `Top spot matches: ${stats.topSpotMatches}`;
-    }
-    if (ach.id === "consecutive_10_victories" && stats.consecutiveWins >= 10) {
-      achieved = true;
-      reason = `Consecutive wins: ${stats.consecutiveWins}`;
-    }
-
-    if (achieved) {
-      activeAchievementIds.push(ach.id);
-      if (!previousAchievementIds.includes(ach.id)) {
-        awarded.push(ach.id);
-      }
-      console.log(`✅ Achievement '${ach.id}' active for user ${userId}: ${reason}`);
-    } else {
-      if (previousAchievementIds.includes(ach.id)) {
-        removed.push(ach.id);
-      }
-      console.log(`⏳ Achievement '${ach.id}' not currently active: ${reason || 'Requirements not met'}`);
-    }
+    console.log(`User ${userId} has no matches. XP achievements cleared.`);
+    return;
   }
 
-  const nextAchievementIds = Array.from(new Set([...nonXpAchievementIds, ...activeAchievementIds]));
-  const sameLength = nextAchievementIds.length === previousAchievementIds.length;
-  const sameValues = sameLength && nextAchievementIds.every((id) => previousAchievementIds.includes(id));
-  if (!sameValues) {
+  const playedMatchWhere: any = { id: { [Op.in]: matchIds as any }, status: 'RESULT_PUBLISHED' };
+  if (leagueId) playedMatchWhere.leagueId = leagueId;
+
+  const playedMatches = await Match.findAll({
+    where: playedMatchWhere,
+    attributes: [
+      'id',
+      'leagueId',
+      'homeTeamGoals',
+      'awayTeamGoals',
+      'date',
+      'start',
+      'createdAt',
+      'homeCaptainId',
+      'awayCaptainId',
+      'homeDefensiveImpactId',
+      'awayDefensiveImpactId',
+      'homeMentalityId',
+      'awayMentalityId',
+    ],
+    raw: true,
+  }) as any[];
+
+  if (playedMatches.length === 0) {
+    const nextAchievementIds = nonXpAchievementIds;
+    const noChange =
+      nextAchievementIds.length === previousAchievementIds.length &&
+      nextAchievementIds.every((id, idx) => id === previousAchievementIds[idx]);
+    if (!noChange) {
+      user.achievements = nextAchievementIds;
+      await user.save();
+    }
+    console.log(`User ${userId} has no RESULT_PUBLISHED matches for this scope. XP achievements cleared.`);
+    return;
+  }
+
+  const leagueIds = Array.from(
+    new Set(playedMatches.map((m: any) => String(m.leagueId || '')).filter((id: string) => id !== ''))
+  );
+  const playedMatchIds = playedMatches.map((m: any) => String(m.id)).filter((id: string) => id !== '');
+
+  const [leagueTotalRows, homeTeamRows, awayTeamRows, voteRows, statsRows] = await Promise.all([
+    leagueIds.length > 0
+      ? Match.findAll({
+          where: { leagueId: { [Op.in]: leagueIds as any }, status: 'RESULT_PUBLISHED' },
+          attributes: ['leagueId', [sequelize.fn('COUNT', sequelize.col('id')), 'totalMatches']],
+          group: ['leagueId'],
+          raw: true,
+        })
+      : Promise.resolve([]),
+    Home && playedMatchIds.length > 0
+      ? Home.findAll({
+          where: { matchId: { [Op.in]: playedMatchIds as any } },
+          attributes: ['matchId', 'userId'],
+          raw: true,
+        })
+      : Promise.resolve([]),
+    Away && playedMatchIds.length > 0
+      ? Away.findAll({
+          where: { matchId: { [Op.in]: playedMatchIds as any } },
+          attributes: ['matchId', 'userId'],
+          raw: true,
+        })
+      : Promise.resolve([]),
+    playedMatchIds.length > 0
+      ? Vote.findAll({
+          where: { matchId: { [Op.in]: playedMatchIds as any } },
+          attributes: ['matchId', 'votedForId'],
+          raw: true,
+        })
+      : Promise.resolve([]),
+    playedMatchIds.length > 0
+      ? MatchStatistics.findAll({
+          where: { user_id: userId, match_id: { [Op.in]: playedMatchIds as any } },
+          attributes: ['match_id', 'goals', 'assists'],
+          raw: true,
+        })
+      : Promise.resolve([]),
+  ]);
+
+  const totalMatchesByLeague: Record<string, number> = {};
+  for (const row of leagueTotalRows as any[]) {
+    const key = String(row.leagueId || '').trim();
+    if (!key) continue;
+    totalMatchesByLeague[key] = Number(row.totalMatches || 0);
+  }
+
+  const homeUsersByMatch = new Map<string, Set<string>>();
+  const awayUsersByMatch = new Map<string, Set<string>>();
+  const votesByMatch = new Map<string, string[]>();
+
+  for (const row of homeTeamRows as any[]) {
+    const matchId = String(row.matchId || '').trim();
+    const playerId = String(row.userId || '').trim();
+    if (!matchId || !playerId) continue;
+    if (!homeUsersByMatch.has(matchId)) homeUsersByMatch.set(matchId, new Set<string>());
+    homeUsersByMatch.get(matchId)!.add(playerId);
+  }
+  for (const row of awayTeamRows as any[]) {
+    const matchId = String(row.matchId || '').trim();
+    const playerId = String(row.userId || '').trim();
+    if (!matchId || !playerId) continue;
+    if (!awayUsersByMatch.has(matchId)) awayUsersByMatch.set(matchId, new Set<string>());
+    awayUsersByMatch.get(matchId)!.add(playerId);
+  }
+  for (const row of voteRows as any[]) {
+    const matchId = String(row.matchId || '').trim();
+    const votedForId = String(row.votedForId || '').trim();
+    if (!matchId || !votedForId) continue;
+    if (!votesByMatch.has(matchId)) votesByMatch.set(matchId, []);
+    votesByMatch.get(matchId)!.push(votedForId);
+  }
+
+  const statsByMatch = new Map<string, { goals: number; assists: number }>();
+  for (const row of statsRows as any[]) {
+    statsByMatch.set(String(row.match_id), {
+      goals: Number(row.goals || 0),
+      assists: Number(row.assists || 0),
+    });
+  }
+
+  const achievementMatches = playedMatches.map((m: any) => {
+    const matchId = String(m.id || '');
+    const homeIds = Array.from(homeUsersByMatch.get(matchId) || []);
+    const awayIds = Array.from(awayUsersByMatch.get(matchId) || []);
+    const votedForIds = votesByMatch.get(matchId) || [];
+    return toAchievementMatchInput({
+      ...m,
+      homeTeamUsers: homeIds.map((id) => ({ id })),
+      awayTeamUsers: awayIds.map((id) => ({ id })),
+      votes: votedForIds.map((votedForId) => ({ votedForId })),
+    });
+  });
+
+  const computed = computeAchievementState(userId, achievementMatches, statsByMatch, {
+    totalMatchesByLeague,
+  });
+  const nextXpAchievementIds = computed.xpAchievementInstances;
+  const nextAchievementIds = [...nonXpAchievementIds, ...nextXpAchievementIds];
+
+  const changed =
+    nextAchievementIds.length !== previousAchievementIds.length ||
+    nextAchievementIds.some((id, idx) => id !== previousAchievementIds[idx]);
+
+  if (changed) {
     user.achievements = nextAchievementIds;
     await user.save();
-    console.log(`🔄 Synced achievements for user ${userId}. Added: ${awarded.length}, Removed: ${removed.length}`);
   }
 
-  if (awarded.length > 0) {
-    console.log(`🎉 User ${userId} newly unlocked ${awarded.length} achievements:`, awarded);
+  const toCountMap = (ids: string[]): Record<string, number> => {
+    const map: Record<string, number> = {};
+    ids.forEach((id) => {
+      map[id] = (map[id] || 0) + 1;
+    });
+    return map;
+  };
+
+  const previousCount = toCountMap(previousXpAchievementIds);
+  const nextCount = toCountMap(nextXpAchievementIds);
+  const allRewardIds = Array.from(xpAchievementIdSet);
+  const deltas = allRewardIds
+    .map((id) => ({
+      id,
+      before: previousCount[id] || 0,
+      after: nextCount[id] || 0,
+      delta: (nextCount[id] || 0) - (previousCount[id] || 0),
+    }))
+    .filter((row) => row.delta !== 0);
+
+  if (deltas.length > 0) {
+    console.log(`Achievement sync changes for ${userId}:`, deltas);
+  } else {
+    console.log(`No XP achievement count changes for ${userId}`);
   }
-  if (removed.length > 0) {
-    console.log(`?? User ${userId} had ${removed.length} inactive achievements removed:`, removed);
-  }
-  if (awarded.length === 0 && removed.length === 0) {
-    console.log(`📝 User ${userId} - No achievement changes`);
-  }
+  console.log(
+    `[XP Sync] user=${userId} playedMatches=${playedMatchIds.length} leagues=${leagueIds.length} durationMs=${Date.now() - startedAt}`
+  );
 
   // --- XP Awarding Logic for Completed Match ---
   if (leagueId) {

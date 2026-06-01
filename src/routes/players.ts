@@ -5,6 +5,7 @@ import models from '../models';
 import { Op } from 'sequelize';
 import sequelize from '../config/database';
 import cache from '../utils/cache';
+import { computeAchievementState, toAchievementMatchInput } from '../utils/achievementChecker';
 
 const { User: UserModel, Match: MatchModel, MatchStatistics, League: LeagueModel, Vote } = models;
 
@@ -1031,7 +1032,22 @@ router.get('/:id/achievements', required, async (ctx) => {
     
     const matches = await Match.findAll({
       where: matchWhere,
-      attributes: ['id','leagueId','seasonId','homeTeamGoals','awayTeamGoals','date','start','createdAt'],
+      attributes: [
+        'id',
+        'leagueId',
+        'seasonId',
+        'homeTeamGoals',
+        'awayTeamGoals',
+        'date',
+        'start',
+        'createdAt',
+        'homeCaptainId',
+        'awayCaptainId',
+        'homeDefensiveImpactId',
+        'awayDefensiveImpactId',
+        'homeMentalityId',
+        'awayMentalityId',
+      ],
       include: [
         { model: UserModel, as: 'homeTeamUsers', attributes: ['id'] },
         { model: UserModel, as: 'awayTeamUsers', attributes: ['id'] },
@@ -1055,72 +1071,73 @@ router.get('/:id/achievements', required, async (ctx) => {
     
     const matchesToProcess = filteredMatches;
 
-    // Load user stats for filtered matches
+    const leagueIds = Array.from(
+      new Set(matchesToProcess.map((m: any) => String(m.leagueId)).filter((id: string) => id !== ''))
+    );
+    const allLeagueMatchWhere: any = {
+      status: 'RESULT_PUBLISHED',
+      leagueId: { [Op.in]: leagueIds as any },
+    };
+    if (seasonId && seasonId !== 'all') {
+      allLeagueMatchWhere.seasonId = seasonId;
+    }
+
+    let allLeagueMatches = leagueIds.length > 0
+      ? await Match.findAll({
+          where: allLeagueMatchWhere,
+          attributes: [
+            'id',
+            'leagueId',
+            'seasonId',
+            'homeTeamGoals',
+            'awayTeamGoals',
+            'date',
+            'start',
+            'createdAt',
+            'homeCaptainId',
+            'awayCaptainId',
+            'homeDefensiveImpactId',
+            'awayDefensiveImpactId',
+            'homeMentalityId',
+            'awayMentalityId',
+          ],
+          include: [
+            { model: UserModel, as: 'homeTeamUsers', attributes: ['id'] },
+            { model: UserModel, as: 'awayTeamUsers', attributes: ['id'] },
+            { model: Vote, as: 'votes', attributes: ['votedForId'] },
+          ],
+          order: [['date', 'ASC'], ['start', 'ASC'], ['createdAt', 'ASC']],
+        })
+      : [];
+
+    if (year && year !== 'all') {
+      const yearNum = parseInt(year);
+      if (!isNaN(yearNum)) {
+        allLeagueMatches = allLeagueMatches.filter((m: any) => {
+          const matchYear = new Date(m.date || m.start || m.createdAt).getFullYear();
+          return matchYear === yearNum;
+        });
+      }
+    }
+
     const statsRows = await MatchStatistics.findAll({
-      where: { user_id: playerId, match_id: { [Op.in]: matchesToProcess.map((m: any) => m.id) as any } },
-      attributes: ['match_id','goals','assists','cleanSheets'],
+      where: { user_id: playerId, match_id: { [Op.in]: allLeagueMatches.map((m: any) => m.id) as any } },
+      attributes: ['match_id','goals','assists'],
       raw: true,
     });
-    
-    console.log('[Achievements] ًں“ˆ Stats rows found:', statsRows.length, '| Filtered matches:', matchesToProcess.length);
-    const statsByMatch = new Map<string, { goals: number; assists: number; cleanSheets: number }>();
+
+    console.log('[Achievements] Stats rows found:', statsRows.length, '| League matches considered:', allLeagueMatches.length);
+    const statsByMatch = new Map<string, { goals: number; assists: number }>();
     for (const r of statsRows as any[]) {
       statsByMatch.set(String(r.match_id), {
         goals: Number(r.goals || 0),
         assists: Number(r.assists || 0),
-        cleanSheets: Number(r.cleanSheets || 0),
       });
     }
 
-    // Build per-league chronological summaries
-    type Summ = { goals: number; assists: number; conceded: number; result: 'W' | 'D' | 'L'; motmVotes: number };
-    const byLeague: Record<string, Summ[]> = {};
-    const timeOf = (m: any) => {
-      const d = m?.date ?? m?.start ?? m?.createdAt;
-      const t = new Date(d).getTime();
-      return Number.isFinite(t) ? t : 0;
-    };
-    const sortedMatches = [...matchesToProcess].sort((a: any, b: any) => timeOf(a) - timeOf(b));
+    const achievementMatches = allLeagueMatches.map((m: any) => toAchievementMatchInput(m));
+    const computed = computeAchievementState(playerId, achievementMatches, statsByMatch);
 
-    console.log('[Achievements] ًںژ¯ Processing', sortedMatches.length, 'filtered matches for badge calculations');
-
-    for (const m of sortedMatches as any[]) {
-      const isHome = ((m.homeTeamUsers || []).some((u: any) => String(u.id) === playerId));
-      const isAway = ((m.awayTeamUsers || []).some((u: any) => String(u.id) === playerId));
-      if (!isHome && !isAway) continue;
-      const s = statsByMatch.get(String(m.id)) || { goals: 0, assists: 0, cleanSheets: 0 };
-      const teamGoals = isHome ? Number(m.homeTeamGoals || 0) : Number(m.awayTeamGoals || 0);
-      const oppGoals = isHome ? Number(m.awayTeamGoals || 0) : Number(m.homeTeamGoals || 0);
-      const res: 'W' | 'D' | 'L' = teamGoals > oppGoals ? 'W' : teamGoals === oppGoals ? 'D' : 'L';
-      const votes = (m.votes || []) as any[];
-      const motmVotes = votes.filter(v => String(v.votedForId) === playerId).length;
-      const arr = byLeague[String(m.leagueId)] || [];
-      arr.push({ goals: s.goals, assists: s.assists, conceded: oppGoals, result: res, motmVotes });
-      byLeague[String(m.leagueId)] = arr;
-    }
-
-    // Streak helpers
-    const currentStreak = (arr: Summ[], pred: (x: Summ) => boolean) => {
-      let cur = 0;
-      for (let i = arr.length - 1; i >= 0; i--) {
-        if (pred(arr[i])) cur++;
-        else break;
-      }
-      return cur;
-    };
-
-    const leaguesArr = Object.values(byLeague);
-    const hatTricks = leaguesArr.reduce((acc, arr) => acc + arr.filter(x => x.goals >= 3).length, 0);
-    const currentAssistStreakSingle = Math.max(0, ...leaguesArr.map(arr => currentStreak(arr, x => x.assists > 0)));
-    const currentScoringStreakSingle = Math.max(0, ...leaguesArr.map(arr => currentStreak(arr, x => x.goals > 0)));
-    const currentMotmStreakSingle = Math.max(0, ...leaguesArr.map(arr => currentStreak(arr, x => x.motmVotes > 0)));
-    const currentCleanSheetWinStreakSingle = Math.max(0, ...leaguesArr.map(arr => currentStreak(arr, x => x.result === 'W' && x.conceded === 0)));
-    const currentWinStreakSingle = Math.max(0, ...leaguesArr.map(arr => currentStreak(arr, x => x.result === 'W')));
-    const maxCaptainPickCountSingle = Math.max(0, ...leaguesArr.map(arr => arr.filter(x => x.motmVotes > 0).length));
-
-    const toNext = (best: number, target: number) => (target - (best % target || target));
-
-    // Build badges (ids match client)
     const badges = [
       {
         id: 'rising_xp',
@@ -1129,40 +1146,7 @@ router.get('/:id/achievements', required, async (ctx) => {
         xp: Number(user.xp || 0),
         unlocked: true,
       },
-      {
-        id: 'hat_trick_3_matches', title: 'Hat-Trick x3', count: Math.floor(hatTricks / 3), xp: 100, unlocked: hatTricks >= 3,
-        progressText: hatTricks >= 3 ? `x${Math.floor(hatTricks / 3)}` : `${3 - Math.min(hatTricks, 3)} hat-trick(s) to go`,
-      },
-      {
-        id: 'captain_5_wins', title: "Captain's 5 Wins", count: Math.floor(0 / 5), xp: 150, unlocked: false, progressText: 'Captain tracking not available',
-      },
-      {
-        id: 'assist_10_consecutive', title: 'Assist Streak x10', count: Math.floor(currentAssistStreakSingle / 10), xp: 200, unlocked: currentAssistStreakSingle >= 10,
-        progressText: currentAssistStreakSingle >= 10 ? `Current streak: ${currentAssistStreakSingle}` : `${toNext(currentAssistStreakSingle, 10)} match(es) to go`,
-      },
-      {
-        id: 'scoring_10_consecutive', title: 'Scoring Streak x10', count: Math.floor(currentScoringStreakSingle / 10), xp: 250, unlocked: currentScoringStreakSingle >= 10,
-        progressText: currentScoringStreakSingle >= 10 ? `Current streak: ${currentScoringStreakSingle}` : `${toNext(currentScoringStreakSingle, 10)} match(es) to go`,
-      },
-      {
-        id: 'captain_performance_3', title: "Captain's Picks x3", count: Math.floor(maxCaptainPickCountSingle / 3), xp: 300, unlocked: maxCaptainPickCountSingle >= 3,
-        progressText: maxCaptainPickCountSingle >= 3 ? `Picks: ${maxCaptainPickCountSingle}` : `${3 - Math.min(maxCaptainPickCountSingle, 3)} pick(s) to go`,
-      },
-      {
-        id: 'motm_4_consecutive', title: 'MOTM Streak x4', count: Math.floor(currentMotmStreakSingle / 4), xp: 350, unlocked: currentMotmStreakSingle >= 4,
-        progressText: currentMotmStreakSingle >= 4 ? `Current streak: ${currentMotmStreakSingle}` : `${toNext(currentMotmStreakSingle, 4)} match(es) to go`,
-      },
-      {
-        id: 'clean_sheet_5_wins', title: 'Clean-Sheet Win Streak x5', count: Math.floor(currentCleanSheetWinStreakSingle / 5), xp: 400, unlocked: currentCleanSheetWinStreakSingle >= 5,
-        progressText: currentCleanSheetWinStreakSingle >= 5 ? `Current streak: ${currentCleanSheetWinStreakSingle}` : `${toNext(currentCleanSheetWinStreakSingle, 5)} match(es) to go`,
-      },
-      {
-        id: 'top_spot_10_matches', title: 'Top Spot x10 Matches', count: 0, xp: 450, unlocked: false, progressText: 'League top-spot tracking not available',
-      },
-      {
-        id: 'consecutive_10_victories', title: '10 In A Row', count: Math.floor(currentWinStreakSingle / 10), xp: 500, unlocked: currentWinStreakSingle >= 10,
-        progressText: currentWinStreakSingle >= 10 ? `Current streak: ${currentWinStreakSingle}` : `${toNext(currentWinStreakSingle, 10)} win(s) to go`,
-      },
+      ...computed.badges,
     ];
 
     const response = { success: true, userId: playerId, totalXP: Number(user.xp || 0), badges };
