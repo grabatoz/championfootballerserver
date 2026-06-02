@@ -827,6 +827,17 @@ export const setMatchAvailability = async (ctx: Context) => {
       await availability.update(updateData);
     }
 
+    // Invalidate match caches
+    try {
+      cache.del(`match_${matchId}`);
+      if (match.leagueId) {
+        cache.clearPattern(`league_${match.leagueId}`);
+        cache.clearPattern(`matches_league_${match.leagueId}`);
+      }
+    } catch (cacheErr) {
+      console.error('Failed to invalidate match cache after setting availability:', cacheErr);
+    }
+
     ctx.body = { success: true, message: 'Availability updated', available };
   } catch (err) {
     console.error('Set availability error', err);
@@ -916,6 +927,17 @@ export const updateMatchGoals = async (ctx: Context) => {
       console.error('Failed to check league completion:', completionErr);
     }
 
+    // Invalidate match caches
+    try {
+      cache.del(`match_${matchId}`);
+      if (match.leagueId) {
+        cache.clearPattern(`league_${match.leagueId}`);
+        cache.clearPattern(`matches_league_${match.leagueId}`);
+      }
+    } catch (cacheErr) {
+      console.error('Failed to invalidate match cache after goals update:', cacheErr);
+    }
+
     ctx.body = {
       success: true,
       match: {
@@ -950,6 +972,17 @@ export const updateMatchNote = async (ctx: Context) => {
     }
 
     await match.update({ note: note || null } as any);
+
+    // Invalidate match caches
+    try {
+      cache.del(`match_${matchId}`);
+      if (match.leagueId) {
+        cache.clearPattern(`league_${match.leagueId}`);
+        cache.clearPattern(`matches_league_${match.leagueId}`);
+      }
+    } catch (cacheErr) {
+      console.error('Failed to invalidate match cache after note update:', cacheErr);
+    }
 
     ctx.body = {
       success: true,
@@ -1097,6 +1130,17 @@ export const confirmMatchResult = async (ctx: Context) => {
       } catch (completionErr) {
         console.error('Failed to check league completion:', completionErr);
       }
+    }
+
+    // Invalidate match caches
+    try {
+      cache.del(`match_${matchId}`);
+      if (match.leagueId) {
+        cache.clearPattern(`league_${match.leagueId}`);
+        cache.clearPattern(`matches_league_${match.leagueId}`);
+      }
+    } catch (cacheErr) {
+      console.error('Failed to invalidate match cache after confirm result:', cacheErr);
     }
 
     ctx.body = {
@@ -1559,6 +1603,17 @@ export const submitMatchStats = async (ctx: Context) => {
       }
     } catch (completionErr) {
       console.error('Failed to check league completion after stats:', completionErr);
+    }
+
+    // Invalidate match caches
+    try {
+      cache.del(`match_${matchId}`);
+      if (match.leagueId) {
+        cache.clearPattern(`league_${match.leagueId}`);
+        cache.clearPattern(`matches_league_${match.leagueId}`);
+      }
+    } catch (cacheErr) {
+      console.error('Failed to invalidate match cache after stats submission:', cacheErr);
     }
 
     ctx.body = { success: true, message: 'Stats submitted successfully' };
@@ -2064,6 +2119,17 @@ export const updateMatch = async (ctx: Context) => {
       }
     }
 
+    // Invalidate match caches
+    try {
+      cache.del(`match_${id}`);
+      if (match.leagueId) {
+        cache.clearPattern(`league_${match.leagueId}`);
+        cache.clearPattern(`matches_league_${match.leagueId}`);
+      }
+    } catch (cacheErr) {
+      console.error('Failed to invalidate match cache after update:', cacheErr);
+    }
+
     ctx.body = {
       success: true,
       match: {
@@ -2111,6 +2177,17 @@ export const deleteMatch = async (ctx: Context) => {
       deleted: true as any,
       archived: true as any
     });
+
+    // Invalidate match caches
+    try {
+      cache.del(`match_${id}`);
+      if (match.leagueId) {
+        cache.clearPattern(`league_${match.leagueId}`);
+        cache.clearPattern(`matches_league_${match.leagueId}`);
+      }
+    } catch (cacheErr) {
+      console.error('Failed to invalidate match cache after delete:', cacheErr);
+    }
 
     ctx.body = {
       success: true,
@@ -2288,6 +2365,14 @@ export const submitCaptainPicks = async (ctx: Context) => {
     // Clear cache
     cache.del(`captain_picks_${matchId}`);
     cache.del(`match_${matchId}`);
+    if (match.leagueId) {
+      try {
+        cache.clearPattern(`league_${match.leagueId}`);
+        cache.clearPattern(`matches_league_${match.leagueId}`);
+      } catch (cacheErr) {
+        console.error('Failed to invalidate matches list cache after captain pick:', cacheErr);
+      }
+    }
 
     ctx.body = {
       success: true,
