@@ -2,6 +2,7 @@ import { Context } from 'koa';
 import models from '../models';
 import { Op } from 'sequelize';
 import cache from '../utils/cache';
+import sequelize from '../config/database';
 
 const { User: UserModel, Match: MatchModel, MatchStatistics, League: LeagueModel, Vote } = models;
 
@@ -291,47 +292,107 @@ export const getPlayerProfile = async (ctx: Context) => {
       return;
     }
 
-    // 2. Get all match stats for this player
-    const statsQuery: any = {
-      include: [{
-        model: MatchModel,
-        as: 'match',
-        where: { status: 'RESULT_PUBLISHED' },
-        attributes: [
-          'id', 
-          'date', 
-          'seasonId',
-          'homeTeamName', 
-          'awayTeamName', 
-          'location', 
-          'leagueId', 
-          'end',
-          'homeDefensiveImpactId',
-          'awayDefensiveImpactId',
-          'homeMentalityId',
-          'awayMentalityId',
-          'homeTeamGoals',
-          'awayTeamGoals'
-        ],
-        include: [{
-          model: Vote,
-          as: 'votes',
-          attributes: ['voterId', 'votedForId', 'matchId']
-        }, {
-          model: UserModel,
-          as: 'homeTeamUsers',
-          attributes: ['id']
-        }, {
-          model: UserModel,
-          as: 'awayTeamUsers',
-          attributes: ['id']
-        }]
-      }],
+    // 2. Get player stats and related match data in small queries.
+    // Avoid one large joined include (stats x votes x home players x away players),
+    // which can create a cartesian result and hit the DB statement timeout.
+    const statRows = await MatchStatistics.findAll({
       where: { user_id: id },
-      attributes: ['id', 'goals', 'assists', 'cleanSheets', 'penalties', 'freeKicks', 'defence', 'impact', 'rating', 'xpAwarded', 'match_id']
-    };
+      attributes: ['id', 'goals', 'assists', 'cleanSheets', 'penalties', 'freeKicks', 'defence', 'impact', 'rating', 'xpAwarded', 'match_id'],
+      raw: true,
+    });
 
-    const allStats = await MatchStatistics.findAll(statsQuery);
+    const uniqueMatchIds = Array.from(new Set((statRows as any[]).map((stat) => String(stat.match_id)).filter(Boolean)));
+    const selectedLeagueId = typeof leagueId === 'string' && leagueId.trim() && leagueId !== 'all' ? leagueId.trim() : '';
+    const selectedYear = typeof year === 'string' && year.trim() && year !== 'all' ? Number(year) : null;
+
+    const matchWhere: any = {
+      id: { [Op.in]: uniqueMatchIds },
+      status: 'RESULT_PUBLISHED',
+    };
+    if (selectedLeagueId) {
+      matchWhere.leagueId = selectedLeagueId;
+    }
+
+    let matchRows: any[] = uniqueMatchIds.length
+      ? await MatchModel.findAll({
+          where: matchWhere,
+          attributes: [
+            'id',
+            'date',
+            'seasonId',
+            'homeTeamName',
+            'awayTeamName',
+            'location',
+            'leagueId',
+            'end',
+            'homeDefensiveImpactId',
+            'awayDefensiveImpactId',
+            'homeMentalityId',
+            'awayMentalityId',
+            'homeTeamGoals',
+            'awayTeamGoals',
+          ],
+          raw: true,
+        })
+      : [];
+
+    if (selectedYear && Number.isFinite(selectedYear)) {
+      matchRows = matchRows.filter((match) => new Date(match.date).getFullYear() === selectedYear);
+    }
+
+    const visibleMatchIds = matchRows.map((match) => String(match.id));
+    const visibleMatchIdSet = new Set(visibleMatchIds);
+    const statsByMatchId = new Map<string, any>();
+    (statRows as any[]).forEach((stat) => {
+      const matchId = String(stat.match_id);
+      if (visibleMatchIdSet.has(matchId)) {
+        statsByMatchId.set(matchId, stat);
+      }
+    });
+
+    const [voteRows, homeRows, awayRows] = visibleMatchIds.length
+      ? await Promise.all([
+          Vote.findAll({
+            where: { matchId: { [Op.in]: visibleMatchIds } },
+            attributes: ['voterId', 'votedForId', 'matchId'],
+            raw: true,
+          }),
+          sequelize.query(
+            `SELECT "matchId" FROM "UserHomeMatches" WHERE "userId" = :playerId AND "matchId" IN (:matchIds)`,
+            { replacements: { playerId: id, matchIds: visibleMatchIds }, type: 'SELECT' as any }
+          ),
+          sequelize.query(
+            `SELECT "matchId" FROM "UserAwayMatches" WHERE "userId" = :playerId AND "matchId" IN (:matchIds)`,
+            { replacements: { playerId: id, matchIds: visibleMatchIds }, type: 'SELECT' as any }
+          ),
+        ])
+      : [[], [], []];
+
+    const votesByMatchId = new Map<string, any[]>();
+    (voteRows as any[]).forEach((vote) => {
+      const matchId = String(vote.matchId);
+      if (!votesByMatchId.has(matchId)) votesByMatchId.set(matchId, []);
+      votesByMatchId.get(matchId)!.push(vote);
+    });
+
+    const teamByMatchId = new Map<string, 'home' | 'away'>();
+    (homeRows as any[]).forEach((row) => teamByMatchId.set(String(row.matchId), 'home'));
+    (awayRows as any[]).forEach((row) => teamByMatchId.set(String(row.matchId), 'away'));
+
+    const allStats = matchRows
+      .map((match) => {
+        const stat = statsByMatchId.get(String(match.id));
+        if (!stat) return null;
+        return {
+          ...stat,
+          match: {
+            ...match,
+            votes: votesByMatchId.get(String(match.id)) || [],
+            playerTeam: teamByMatchId.get(String(match.id)) || null,
+          },
+        };
+      })
+      .filter(Boolean);
 
     // 3. Group matches by league
     const leaguesMap = new Map();
@@ -366,9 +427,7 @@ export const getPlayerProfile = async (ctx: Context) => {
         votes: match.votes
       });
 
-      const homeIds = (match.homeTeamUsers || []).map((u: any) => String(u.id));
-      const awayIds = (match.awayTeamUsers || []).map((u: any) => String(u.id));
-      const isHomePlayer = homeIds.includes(String(id));
+      const isHomePlayer = match.playerTeam === 'home';
       const homeGoals = Number(match.homeTeamGoals || 0);
       const awayGoals = Number(match.awayTeamGoals || 0);
       const teamGoals = isHomePlayer ? homeGoals : awayGoals;

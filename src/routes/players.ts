@@ -517,17 +517,6 @@ router.get('/:id/trophies', required, async (ctx) => {
         attributes: ['id', 'name', 'maxGames'],
         include: [
           { model: models.User, as: 'members', attributes: ['id', 'firstName', 'lastName', 'position', 'positionType', 'xp'] },
-          {
-            model: MatchModel,
-            as: 'matches',
-            where: { status: { [Op.in]: ['RESULT_PUBLISHED', 'RESULT_UPLOADED'] } },
-            required: false,
-            attributes: ['id', 'seasonId', 'status', 'date', 'homeTeamGoals', 'awayTeamGoals'],
-            include: [
-              { model: models.User, as: 'homeTeamUsers', attributes: ['id', 'firstName', 'lastName', 'position', 'positionType'] },
-              { model: models.User, as: 'awayTeamUsers', attributes: ['id', 'firstName', 'lastName', 'position', 'positionType'] },
-            ],
-          },
         ],
       });
       allLeagues = league ? [league] : [];
@@ -551,17 +540,6 @@ router.get('/:id/trophies', required, async (ctx) => {
         attributes: ['id', 'name', 'maxGames'],
         include: [
           { model: models.User, as: 'members', attributes: ['id', 'firstName', 'lastName', 'position', 'positionType', 'xp'] },
-          {
-            model: MatchModel,
-            as: 'matches',
-            where: { status: { [Op.in]: ['RESULT_PUBLISHED', 'RESULT_UPLOADED'] } },
-            required: false,
-            attributes: ['id', 'seasonId', 'status', 'date', 'homeTeamGoals', 'awayTeamGoals'],
-            include: [
-              { model: models.User, as: 'homeTeamUsers', attributes: ['id', 'firstName', 'lastName', 'position', 'positionType'] },
-              { model: models.User, as: 'awayTeamUsers', attributes: ['id', 'firstName', 'lastName', 'position', 'positionType'] },
-            ],
-          },
         ],
       });
       allLeagues = fetchedLeagues || [];
@@ -575,6 +553,57 @@ router.get('/:id/trophies', required, async (ctx) => {
 
     // Fetch seasons separately (lightweight query, avoids timeout)
     const leagueIds = allLeagues.map((l: any) => String(l.id));
+    const leagueMatches = await MatchModel.findAll({
+      where: {
+        leagueId: { [Op.in]: leagueIds },
+        status: { [Op.in]: ['RESULT_PUBLISHED', 'RESULT_UPLOADED'] },
+      },
+      attributes: ['id', 'leagueId', 'seasonId', 'status', 'date', 'homeTeamGoals', 'awayTeamGoals'],
+      raw: true,
+    });
+    const allMatchIds = (leagueMatches as any[]).map((m: any) => String(m.id));
+    const homeByMatch = new Map<string, Array<{ id: string }>>();
+    const awayByMatch = new Map<string, Array<{ id: string }>>();
+
+    if (allMatchIds.length > 0) {
+      const [homeRows, awayRows] = await Promise.all([
+        sequelize.query(
+          `SELECT "matchId", "userId" FROM "UserHomeMatches" WHERE "matchId" IN (:matchIds)`,
+          { replacements: { matchIds: allMatchIds }, type: 'SELECT' as any }
+        ),
+        sequelize.query(
+          `SELECT "matchId", "userId" FROM "UserAwayMatches" WHERE "matchId" IN (:matchIds)`,
+          { replacements: { matchIds: allMatchIds }, type: 'SELECT' as any }
+        ),
+      ]);
+
+      (homeRows as any[]).forEach((row) => {
+        const matchId = String(row.matchId);
+        if (!homeByMatch.has(matchId)) homeByMatch.set(matchId, []);
+        homeByMatch.get(matchId)!.push({ id: String(row.userId) });
+      });
+      (awayRows as any[]).forEach((row) => {
+        const matchId = String(row.matchId);
+        if (!awayByMatch.has(matchId)) awayByMatch.set(matchId, []);
+        awayByMatch.get(matchId)!.push({ id: String(row.userId) });
+      });
+    }
+
+    const matchesByLeague: Record<string, any[]> = {};
+    (leagueMatches as any[]).forEach((match) => {
+      const matchId = String(match.id);
+      const lid = String(match.leagueId);
+      if (!matchesByLeague[lid]) matchesByLeague[lid] = [];
+      matchesByLeague[lid].push({
+        ...match,
+        homeTeamUsers: homeByMatch.get(matchId) || [],
+        awayTeamUsers: awayByMatch.get(matchId) || [],
+      });
+    });
+    allLeagues.forEach((league: any) => {
+      (league as any).matches = matchesByLeague[String(league.id)] || [];
+    });
+
     const allSeasons = await models.Season.findAll({
       where: { leagueId: { [Op.in]: leagueIds }, deleted: false },
       attributes: ['id', 'leagueId', 'seasonNumber', 'name', 'isActive', 'archived', 'maxGames'],
@@ -589,10 +618,6 @@ router.get('/:id/trophies', required, async (ctx) => {
     });
 
     // Fetch goals/assists from MatchStatistics and MOTM votes from Vote table
-    const allMatchIds: string[] = [];
-    allLeagues.forEach((l: any) => {
-      (l.matches || []).forEach((m: any) => allMatchIds.push(String(m.id)));
-    });
     if (allMatchIds.length > 0) {
       const [matchStatRows, voteRows] = await Promise.all([
         MatchStatistics.findAll({
@@ -1074,12 +1099,8 @@ router.get('/:id/achievements', required, async (ctx) => {
         'homeMentalityId',
         'awayMentalityId',
       ],
-      include: [
-        { model: UserModel, as: 'homeTeamUsers', attributes: ['id'] },
-        { model: UserModel, as: 'awayTeamUsers', attributes: ['id'] },
-        { model: Vote, as: 'votes', attributes: ['votedForId'] },
-      ],
       order: [['date','ASC'], ['start','ASC'], ['createdAt','ASC']],
+      raw: true,
     });
     
     // Apply year filter (post-fetch)
@@ -1127,12 +1148,8 @@ router.get('/:id/achievements', required, async (ctx) => {
             'homeMentalityId',
             'awayMentalityId',
           ],
-          include: [
-            { model: UserModel, as: 'homeTeamUsers', attributes: ['id'] },
-            { model: UserModel, as: 'awayTeamUsers', attributes: ['id'] },
-            { model: Vote, as: 'votes', attributes: ['votedForId'] },
-          ],
           order: [['date', 'ASC'], ['start', 'ASC'], ['createdAt', 'ASC']],
+          raw: true,
         })
       : [];
 
@@ -1144,6 +1161,55 @@ router.get('/:id/achievements', required, async (ctx) => {
           return matchYear === yearNum;
         });
       }
+    }
+
+    const allLeagueMatchIds = allLeagueMatches.map((m: any) => String(m.id));
+    if (allLeagueMatchIds.length > 0) {
+      const [homeRows, awayRows, voteRows] = await Promise.all([
+        sequelize.query(
+          `SELECT "matchId", "userId" FROM "UserHomeMatches" WHERE "matchId" IN (:matchIds)`,
+          { replacements: { matchIds: allLeagueMatchIds }, type: 'SELECT' as any }
+        ),
+        sequelize.query(
+          `SELECT "matchId", "userId" FROM "UserAwayMatches" WHERE "matchId" IN (:matchIds)`,
+          { replacements: { matchIds: allLeagueMatchIds }, type: 'SELECT' as any }
+        ),
+        Vote.findAll({
+          where: { matchId: { [Op.in]: allLeagueMatchIds as any } },
+          attributes: ['matchId', 'votedForId'],
+          raw: true,
+        }),
+      ]);
+
+      const homeByMatch = new Map<string, Array<{ id: string }>>();
+      const awayByMatch = new Map<string, Array<{ id: string }>>();
+      const votesByMatch = new Map<string, Array<{ votedForId: string }>>();
+
+      (homeRows as any[]).forEach((row) => {
+        const matchId = String(row.matchId);
+        if (!homeByMatch.has(matchId)) homeByMatch.set(matchId, []);
+        homeByMatch.get(matchId)!.push({ id: String(row.userId) });
+      });
+      (awayRows as any[]).forEach((row) => {
+        const matchId = String(row.matchId);
+        if (!awayByMatch.has(matchId)) awayByMatch.set(matchId, []);
+        awayByMatch.get(matchId)!.push({ id: String(row.userId) });
+      });
+      (voteRows as any[]).forEach((row) => {
+        const matchId = String(row.matchId);
+        if (!votesByMatch.has(matchId)) votesByMatch.set(matchId, []);
+        votesByMatch.get(matchId)!.push({ votedForId: String(row.votedForId) });
+      });
+
+      allLeagueMatches = allLeagueMatches.map((match: any) => {
+        const matchId = String(match.id);
+        return {
+          ...match,
+          homeTeamUsers: homeByMatch.get(matchId) || [],
+          awayTeamUsers: awayByMatch.get(matchId) || [],
+          votes: votesByMatch.get(matchId) || [],
+        };
+      });
     }
 
     const statsRows = await MatchStatistics.findAll({
@@ -1544,12 +1610,8 @@ router.get('/:playerId/history-records', async (ctx) => {
     const matches = await Match.findAll({
       where: matchWhere,
       attributes: ['id', 'leagueId', 'seasonId', 'homeTeamGoals', 'awayTeamGoals', 'date', 'start', 'createdAt'],
-      include: [
-        { model: UserModel, as: 'homeTeamUsers', attributes: ['id'] },
-        { model: UserModel, as: 'awayTeamUsers', attributes: ['id'] },
-        { model: Vote, as: 'votes', attributes: ['votedForId'] },
-      ],
       order: [['date', 'ASC'], ['start', 'ASC'], ['createdAt', 'ASC']],
+      raw: true,
     });
 
     // Apply year filter if needed (after fetching since year is not a column)
@@ -1611,6 +1673,20 @@ router.get('/:playerId/history-records', async (ctx) => {
       return Number.isFinite(t) ? t : 0;
     };
     const sortedMatches = [...filteredMatches].sort((a: any, b: any) => timeOf(a) - timeOf(b));
+    const sortedMatchIds = sortedMatches.map((m: any) => String(m.id));
+    const voteRows = sortedMatchIds.length
+      ? await Vote.findAll({
+          where: { matchId: { [Op.in]: sortedMatchIds as any } },
+          attributes: ['matchId', 'votedForId'],
+          raw: true,
+        })
+      : [];
+    const votesByMatch = new Map<string, Array<{ votedForId: string }>>();
+    (voteRows as any[]).forEach((row) => {
+      const matchId = String(row.matchId);
+      if (!votesByMatch.has(matchId)) votesByMatch.set(matchId, []);
+      votesByMatch.get(matchId)!.push({ votedForId: String(row.votedForId) });
+    });
 
     let processedMatchCount = 0;
     let skippedNoTeam = 0;
@@ -1618,20 +1694,22 @@ router.get('/:playerId/history-records', async (ctx) => {
     // Build a map of which team the player was on for each match using raw SQL
     const teamMap = new Map<string, 'home' | 'away'>();
     try {
-      const homeRows = await sequelize.query(
-        `SELECT "matchId" FROM "UserHomeMatches" WHERE "userId" = :playerId`,
-        { replacements: { playerId }, type: 'SELECT' as any }
-      );
-      for (const r of (homeRows as any[]) || []) {
-        teamMap.set(String(r.matchId), 'home');
-      }
-      
-      const awayRows = await sequelize.query(
-        `SELECT "matchId" FROM "UserAwayMatches" WHERE "userId" = :playerId`,
-        { replacements: { playerId }, type: 'SELECT' as any }
-      );
-      for (const r of (awayRows as any[]) || []) {
-        teamMap.set(String(r.matchId), 'away');
+      if (sortedMatchIds.length > 0) {
+        const homeRows = await sequelize.query(
+          `SELECT "matchId" FROM "UserHomeMatches" WHERE "userId" = :playerId AND "matchId" IN (:matchIds)`,
+          { replacements: { playerId, matchIds: sortedMatchIds }, type: 'SELECT' as any }
+        );
+        for (const r of (homeRows as any[]) || []) {
+          teamMap.set(String(r.matchId), 'home');
+        }
+        
+        const awayRows = await sequelize.query(
+          `SELECT "matchId" FROM "UserAwayMatches" WHERE "userId" = :playerId AND "matchId" IN (:matchIds)`,
+          { replacements: { playerId, matchIds: sortedMatchIds }, type: 'SELECT' as any }
+        );
+        for (const r of (awayRows as any[]) || []) {
+          teamMap.set(String(r.matchId), 'away');
+        }
       }
       console.log('[history-records] teamMap built:', teamMap.size, 'entries');
     } catch (e) {
@@ -1648,10 +1726,8 @@ router.get('/:playerId/history-records', async (ctx) => {
       
       if (!team) {
         // Try included associations as fallback
-        const homeUsers = m.homeTeamUsers || [];
-        const awayUsers = m.awayTeamUsers || [];
-        isHome = homeUsers.some((u: any) => String(u.id) === playerId);
-        isAway = awayUsers.some((u: any) => String(u.id) === playerId);
+        isHome = false;
+        isAway = false;
       }
       
       // Debug: Log first few matches
@@ -1669,7 +1745,7 @@ router.get('/:playerId/history-records', async (ctx) => {
       const teamGoals = isHome ? Number(m.homeTeamGoals || 0) : Number(m.awayTeamGoals || 0);
       const oppGoals = isHome ? Number(m.awayTeamGoals || 0) : Number(m.homeTeamGoals || 0);
       const res: 'W' | 'D' | 'L' = teamGoals > oppGoals ? 'W' : teamGoals === oppGoals ? 'D' : 'L';
-      const votes = (m.votes || []) as any[];
+      const votes = votesByMatch.get(matchId) || [];
       const motmVotes = votes.filter(v => String(v.votedForId) === playerId).length;
 
       const leagueKey = String(m.leagueId);
