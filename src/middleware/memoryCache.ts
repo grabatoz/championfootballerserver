@@ -192,6 +192,15 @@ export const cacheMiddleware = async (ctx: Context, next: Next) => {
     return await next();
   }
 
+  const query = ctx.query || {};
+  const forceRefresh =
+    query.refresh === '1' ||
+    query.nocache === '1' ||
+    typeof query._t !== 'undefined';
+  if (forceRefresh) {
+    return await next();
+  }
+
   // Don't cache these endpoints (require real-time data)
   const noCachePatterns = [
     '/auth',

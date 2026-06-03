@@ -35,6 +35,10 @@ export const getLeaderboard = async (ctx: Context) => {
     ? Math.min(Math.floor(requestedLimitRaw), 50)
     : 5;
   const fetchLimit = Math.max(topLimit * 20, 50);
+  const forceRefresh =
+    ctx.query.refresh === '1' ||
+    ctx.query.nocache === '1' ||
+    typeof ctx.query._t !== 'undefined';
 
   // Sanitize leagueId
   const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -60,7 +64,7 @@ export const getLeaderboard = async (ctx: Context) => {
   }
 
   const cacheKey = `leaderboard_${metric}_${leagueId || 'all'}_${seasonId || 'all'}_${positionType || 'all'}_${topLimit}`;
-  const cached = cache.get(cacheKey);
+  const cached = forceRefresh ? undefined : cache.get(cacheKey);
   if (cached) {
     ctx.set('X-Cache', 'HIT');
     ctx.body = cached;

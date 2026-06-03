@@ -5,6 +5,7 @@ import { QueryTypes, Op, fn, col } from 'sequelize';
 import { v4 as uuidv4 } from 'uuid';
 import { xpPointsTable } from '../utils/xpPointsTable';
 import cache from '../utils/cache';
+import { invalidateCache as invalidateMemoryCache } from '../middleware/memoryCache';
 import { sendCaptainConfirmations, notifyCaptainConfirmed, notifyCaptainRevision } from '../modules/notifications';
 import Season from '../models/Season';
 import { checkAndCompleteLeagueAfterMatch, isLeagueLocked } from '../utils/leagueCompletion';
@@ -1612,6 +1613,8 @@ export const submitMatchStats = async (ctx: Context) => {
         cache.clearPattern(`league_${match.leagueId}`);
         cache.clearPattern(`matches_league_${match.leagueId}`);
       }
+      cache.clearPattern('leaderboard_');
+      invalidateMemoryCache('/leaderboard');
     } catch (cacheErr) {
       console.error('Failed to invalidate match cache after stats submission:', cacheErr);
     }
