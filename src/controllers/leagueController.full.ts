@@ -634,11 +634,38 @@ export const getTrophyRoom = async (ctx: Context) => {
     const trophyWinners: any[] = [];
     const seasonSnapshotUpdates: Array<{ seasonId: string; snapshot: TrophySnapshot }> = [];
 
-    // Fetch goals/assists from MatchStatistics, MOTM votes from Vote table, and team users in batch
-    const allMatchIds: string[] = [];
-    leagues.forEach((l: any) => {
-      (l.matches || []).forEach((m: any) => allMatchIds.push(String(m.id)));
+    const hasValidSnapshot = (seasonRow: any): boolean => {
+      if (!hasTrophySnapshotColumn || !seasonRow || !seasonRow.trophyAwardSnapshot) return false;
+      const parsed = parseSnapshot(seasonRow.trophyAwardSnapshot);
+      return Object.keys(parsed).length > 0;
+    };
+
+    // Determine which match details we actually need to fetch (excluding seasons that already have snapshots)
+    const neededMatchIds = new Set<string>();
+    leagues.forEach((league: any) => {
+      const allMatches = league.matches || [];
+      const seasons = seasonsByLeague[String(league.id)] || [];
+      
+      let matchesToUse = allMatches;
+      let currentSeasonRow: any | null = null;
+      
+      if (seasonIdQ && seasonIdQ !== 'all') {
+        matchesToUse = allMatches.filter((m: any) => String(m.seasonId) === seasonIdQ);
+        const season = seasons.find((s: any) => String(s.id) === seasonIdQ) || null;
+        currentSeasonRow = season;
+      } else if (seasons.length > 0) {
+        const activeSeason = seasons.find((s: any) => s.isActive) || seasons[0];
+        currentSeasonRow = activeSeason;
+        const currentSeasonId = String(activeSeason.id);
+        matchesToUse = allMatches.filter((m: any) => String(m.seasonId) === currentSeasonId);
+      }
+      
+      if (!hasValidSnapshot(currentSeasonRow)) {
+        matchesToUse.forEach((m: any) => neededMatchIds.add(String(m.id)));
+      }
     });
+
+    const allMatchIds = Array.from(neededMatchIds);
     if (allMatchIds.length > 0) {
       const [matchStatRows, voteRows, matchesWithTeams] = await Promise.all([
         MatchStatistics.findAll({
@@ -724,6 +751,25 @@ export const getTrophyRoom = async (ctx: Context) => {
         currentSeasonName = activeSeason.name || `Season ${activeSeason.seasonNumber}`;
         matchesToUse = allMatches.filter((m: any) => String(m.seasonId) === currentSeasonId);
         console.log(`🔍 [Trophy Room] Using active season ${currentSeasonName} with ${matchesToUse.length} matches`);
+      }
+
+      if (hasValidSnapshot(currentSeasonRow)) {
+        console.log(`🏆 [Trophy Room] Using cached snapshot for season: ${currentSeasonName}`);
+        const snapshot = parseSnapshot(currentSeasonRow.trophyAwardSnapshot);
+        Object.entries(snapshot).forEach(([title, entry]) => {
+          trophyWinners.push({
+            title,
+            winnerId: entry.winnerId,
+            winner: entry.winner,
+            leagueId: String(league.id),
+            leagueName: league.name,
+            seasonId: currentSeasonId || undefined,
+            seasonName: currentSeasonName || undefined,
+            awardedAt: entry.awardedAt,
+            updatedAt: entry.updatedAt,
+          });
+        });
+        return;
       }
 
       // Awards should only be calculated for completed season/league scopes.

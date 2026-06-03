@@ -299,7 +299,14 @@ app.use(async (ctx, next) => {
       console.log(`${ctx.request.method} ${ctx.response.status} in ${ms}ms: ${ctx.request.path}`)
     }
   } catch (error: unknown) {
-    console.error('Request error:', error);
+    const authErr = error as { status?: number; message?: string; name?: string; expose?: boolean };
+    const status = authErr.status || 500;
+    
+    if (status === 401) {
+      console.warn(`[Auth Warning] 401 Unauthorized: ${authErr.message || 'No message'} - ${ctx.method} ${ctx.path}`);
+    } else {
+      console.error('Request error:', error);
+    }
     
     // Set CORS headers even on error
     const origin = ctx.request.header.origin;
