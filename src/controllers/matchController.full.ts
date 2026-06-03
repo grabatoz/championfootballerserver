@@ -1584,6 +1584,9 @@ export const submitMatchStats = async (ctx: Context) => {
         if (safeCleanSheets > 0) {
           cache.updateLeaderboard(`leaderboard_cleanSheet_${match.leagueId}_all`, { playerId: userId, value: 1 });
         }
+        cache.del(`user_achievements_${userId}`);
+        cache.del(`user_global_stats_${userId}`);
+        cache.clearPattern(`player_trophies_${userId}`);
       } catch {}
     }
 
@@ -1614,7 +1617,11 @@ export const submitMatchStats = async (ctx: Context) => {
         cache.clearPattern(`matches_league_${match.leagueId}`);
       }
       cache.clearPattern('leaderboard_');
+      cache.clearPattern('trophy_room_');
       invalidateMemoryCache('/leaderboard');
+      invalidateMemoryCache('/users/me/achievements');
+      invalidateMemoryCache('/users/me/global-stats');
+      invalidateMemoryCache('/leagues/trophy-room');
     } catch (cacheErr) {
       console.error('Failed to invalidate match cache after stats submission:', cacheErr);
     }

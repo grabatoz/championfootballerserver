@@ -196,6 +196,7 @@ export const cacheMiddleware = async (ctx: Context, next: Next) => {
   const forceRefresh =
     query.refresh === '1' ||
     query.nocache === '1' ||
+    typeof query._ !== 'undefined' ||
     typeof query._t !== 'undefined';
   if (forceRefresh) {
     return await next();

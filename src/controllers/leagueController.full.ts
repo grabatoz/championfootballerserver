@@ -547,29 +547,26 @@ export const getTrophyRoom = async (ctx: Context) => {
     let leagues: any[];
 
     if (leagueIdQ && leagueIdQ !== 'all') {
-      // FAST PATH: fetch only the specific league directly (avoid loading ALL user leagues)
+      // FAST PATH: fetch only the specific league directly with members (avoid loading ALL user leagues)
       const league = await League.findByPk(leagueIdQ, {
         attributes: ['id', 'name', 'maxGames', 'active', 'archived'],
         include: [
-          { model: User, as: 'members', attributes: ['id', 'firstName', 'lastName', 'email', 'position', 'positionType', 'xp'] },
-          {
-            model: Match,
-            as: 'matches',
-            where: { status: { [Op.in]: ['RESULT_PUBLISHED', 'RESULT_UPLOADED'] }, deleted: false },
-            required: false,
-            attributes: ['id', 'seasonId', 'status', 'date', 'homeTeamGoals', 'awayTeamGoals'],
-            include: [
-              { model: User, as: 'homeTeamUsers', attributes: ['id', 'firstName', 'lastName', 'email', 'position', 'positionType'] },
-              { model: User, as: 'awayTeamUsers', attributes: ['id', 'firstName', 'lastName', 'email', 'position', 'positionType'] }
-            ]
-          }
+          { model: User, as: 'members', attributes: ['id', 'firstName', 'lastName', 'email', 'position', 'positionType', 'xp'] }
         ]
       });
       if (!league) {
         ctx.body = { success: true, trophyWinners: [], backendTotalXP: 0 };
         return;
       }
-      leagues = [league];
+      // Fetch league matches separately to avoid query cartesian-product timeout
+      const matches = await Match.findAll({
+        where: { leagueId: leagueIdQ, status: { [Op.in]: ['RESULT_PUBLISHED', 'RESULT_UPLOADED'] }, deleted: false },
+        attributes: ['id', 'seasonId', 'status', 'date', 'homeTeamGoals', 'awayTeamGoals']
+      });
+
+      const plainLeague = league.get({ plain: true }) as any;
+      plainLeague.matches = matches.map(m => m.get({ plain: true }));
+      leagues = [plainLeague];
     } else {
       // ALL leagues: split into lightweight queries to avoid cartesian-product timeout
       const sequelize = League.sequelize!;
@@ -586,21 +583,27 @@ export const getTrophyRoom = async (ctx: Context) => {
         where: { id: { [Op.in]: userLeagueIds } },
         attributes: ['id', 'name', 'maxGames', 'active', 'archived'],
         include: [
-          { model: User, as: 'members', attributes: ['id', 'firstName', 'lastName', 'email', 'position', 'positionType', 'xp'] },
-          {
-            model: Match,
-            as: 'matches',
-            where: { status: { [Op.in]: ['RESULT_PUBLISHED', 'RESULT_UPLOADED'] }, deleted: false },
-            required: false,
-            attributes: ['id', 'seasonId', 'status', 'date', 'homeTeamGoals', 'awayTeamGoals'],
-            include: [
-              { model: User, as: 'homeTeamUsers', attributes: ['id', 'firstName', 'lastName', 'email', 'position', 'positionType'] },
-              { model: User, as: 'awayTeamUsers', attributes: ['id', 'firstName', 'lastName', 'email', 'position', 'positionType'] }
-            ]
-          }
+          { model: User, as: 'members', attributes: ['id', 'firstName', 'lastName', 'email', 'position', 'positionType', 'xp'] }
         ]
       });
-      leagues = fetchedLeagues || [];
+
+      const matches = await Match.findAll({
+        where: { leagueId: { [Op.in]: userLeagueIds }, status: { [Op.in]: ['RESULT_PUBLISHED', 'RESULT_UPLOADED'] }, deleted: false },
+        attributes: ['id', 'leagueId', 'seasonId', 'status', 'date', 'homeTeamGoals', 'awayTeamGoals']
+      });
+
+      const matchesByLeague: Record<string, any[]> = {};
+      matches.forEach(m => {
+        const lid = String(m.leagueId);
+        if (!matchesByLeague[lid]) matchesByLeague[lid] = [];
+        matchesByLeague[lid].push(m.get({ plain: true }));
+      });
+
+      leagues = (fetchedLeagues || []).map(l => {
+        const plainL = l.get({ plain: true }) as any;
+        plainL.matches = matchesByLeague[String(l.id)] || [];
+        return plainL;
+      });
     }
 
     // Fetch seasons separately (lightweight query, avoids timeout)
@@ -631,13 +634,13 @@ export const getTrophyRoom = async (ctx: Context) => {
     const trophyWinners: any[] = [];
     const seasonSnapshotUpdates: Array<{ seasonId: string; snapshot: TrophySnapshot }> = [];
 
-    // Fetch goals/assists from MatchStatistics and MOTM votes from Vote table
+    // Fetch goals/assists from MatchStatistics, MOTM votes from Vote table, and team users in batch
     const allMatchIds: string[] = [];
     leagues.forEach((l: any) => {
       (l.matches || []).forEach((m: any) => allMatchIds.push(String(m.id)));
     });
     if (allMatchIds.length > 0) {
-      const [matchStatRows, voteRows] = await Promise.all([
+      const [matchStatRows, voteRows, matchesWithTeams] = await Promise.all([
         MatchStatistics.findAll({
           where: { match_id: { [Op.in]: allMatchIds } },
           attributes: ['match_id', 'user_id', 'goals', 'assists'],
@@ -648,7 +651,24 @@ export const getTrophyRoom = async (ctx: Context) => {
           attributes: ['matchId', 'voterId', 'votedForId'],
           raw: true,
         }),
+        Match.findAll({
+          where: { id: { [Op.in]: allMatchIds } },
+          attributes: ['id'],
+          include: [
+            { model: User, as: 'homeTeamUsers', attributes: ['id', 'firstName', 'lastName', 'email', 'position', 'positionType'] },
+            { model: User, as: 'awayTeamUsers', attributes: ['id', 'firstName', 'lastName', 'email', 'position', 'positionType'] }
+          ]
+        })
       ]);
+
+      const teamsMap = new Map<string, { homeTeamUsers: any[], awayTeamUsers: any[] }>();
+      (matchesWithTeams || []).forEach((m: any) => {
+        teamsMap.set(String(m.id), {
+          homeTeamUsers: (m.homeTeamUsers || []).map((u: any) => u.get({ plain: true })),
+          awayTeamUsers: (m.awayTeamUsers || []).map((u: any) => u.get({ plain: true }))
+        });
+      });
+
       const psMap: Record<string, Record<string, { goals: number; assists: number }>> = {};
       (matchStatRows || []).forEach((ms: any) => {
         const mid = String(ms.match_id);
@@ -671,6 +691,9 @@ export const getTrophyRoom = async (ctx: Context) => {
       leagues.forEach((l: any) => {
         (l.matches || []).forEach((m: any) => {
           const mid = String(m.id);
+          const teams = teamsMap.get(mid);
+          m.homeTeamUsers = teams?.homeTeamUsers || [];
+          m.awayTeamUsers = teams?.awayTeamUsers || [];
           (m as any).playerStats = psMap[mid] || {};
           (m as any).manOfTheMatchVotes = motmMap[mid] || {};
         });

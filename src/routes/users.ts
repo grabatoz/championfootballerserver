@@ -9,6 +9,7 @@ import Match from '../models/Match';
 import Vote from '../models/Vote';
 import { calculateAndAwardXPAchievements } from '../utils/xpAchievementsEngine';
 import { computeAchievementState, toAchievementMatchInput } from '../utils/achievementChecker';
+import { invalidateCache as invalidateMemoryCache } from '../middleware/memoryCache';
 const { User, League } = models
 
 const importWithFallback = async <T = any>(specifier: string): Promise<T> => {
@@ -157,7 +158,12 @@ router.get('/me/global-stats', required, async (ctx) => {
   const userId = String(ctx.state.user.userId);
   try {
     const cacheKey = `user_global_stats_${userId}`;
-    const cached = cache.get<any>(cacheKey);
+    const forceRefresh =
+      ctx.query?.refresh === '1' ||
+      ctx.query?.nocache === '1' ||
+      typeof ctx.query?._ !== 'undefined' ||
+      typeof ctx.query?._t !== 'undefined';
+    const cached = forceRefresh ? null : cache.get<any>(cacheKey);
     if (cached) {
       ctx.body = cached;
       return;
@@ -257,7 +263,12 @@ router.get('/me/achievements', required, async (ctx) => {
     const UserModel = (models as any).User;
     const MatchStatisticsModel = (models as any).MatchStatistics;
     const cacheKey = `user_achievements_${userId}`;
-    const cached = cache.get<any>(cacheKey);
+    const forceRefresh =
+      ctx.query?.refresh === '1' ||
+      ctx.query?.nocache === '1' ||
+      typeof ctx.query?._ !== 'undefined' ||
+      typeof ctx.query?._t !== 'undefined';
+    const cached = forceRefresh ? null : cache.get<any>(cacheKey);
     if (cached) {
       ctx.body = cached;
       return;
@@ -477,6 +488,9 @@ router.post('/me/achievements/award', required, async (ctx) => {
       cache.clearPattern(`user_leagues_${userId}`);
       cache.del(`user_achievements_${userId}`);
       cache.del(`user_global_stats_${userId}`);
+      invalidateMemoryCache('/users/me/achievements');
+      invalidateMemoryCache('/users/me/global-stats');
+      invalidateMemoryCache('/auth/status');
     } catch {}
 
     ctx.body = {
