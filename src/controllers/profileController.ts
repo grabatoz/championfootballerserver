@@ -26,27 +26,41 @@ export const getProfile = async (ctx: Context) => {
   }
 
   console.log('Profile GET: userId', ctx.state.user.userId);
+
+  const userAttributes = {
+    exclude: ['password', 'ipAddress', 'resetCode', 'resetCodeExpiry', 'providerId'],
+  };
+
+  const includeFullProfile = ctx.query.include === 'full' || ctx.query.full === '1';
   
-  const user = await User.findByPk(ctx.state.user.userId, {
-    include: [
-      {
-        model: League,
-        as: 'leagues',
-        include: [
-          { model: User, as: 'members', attributes: ['id', 'firstName', 'lastName', 'position', 'positionType'] },
-          { model: User, as: 'administeredLeagues', attributes: ['id'] },
-        ],
-      },
-      {
-        model: League,
-        as: 'administeredLeagues',
-        include: [{ model: User, as: 'members', attributes: ['id', 'firstName', 'lastName', 'position', 'positionType'] }],
-      },
-      { model: Match, as: 'homeTeamMatches' },
-      { model: Match, as: 'awayTeamMatches' },
-      { model: Match, as: 'availableMatches' },
-    ],
-  });
+  const user = await User.findByPk(
+    ctx.state.user.userId,
+    includeFullProfile
+      ? {
+          attributes: userAttributes,
+          include: [
+            {
+              model: League,
+              as: 'leagues',
+              include: [
+                { model: User, as: 'members', attributes: ['id', 'firstName', 'lastName', 'position', 'positionType'] },
+                { model: User, as: 'administeredLeagues', attributes: ['id'] },
+              ],
+            },
+            {
+              model: League,
+              as: 'administeredLeagues',
+              include: [{ model: User, as: 'members', attributes: ['id', 'firstName', 'lastName', 'position', 'positionType'] }],
+            },
+            { model: Match, as: 'homeTeamMatches' },
+            { model: Match, as: 'awayTeamMatches' },
+            { model: Match, as: 'availableMatches' },
+          ],
+        }
+      : {
+          attributes: userAttributes,
+        }
+  );
 
   console.log('Profile GET: found user', user ? user.id : null);
   
@@ -55,10 +69,7 @@ export const getProfile = async (ctx: Context) => {
     return;
   }
 
-  // Delete sensitive data
   const userObj = user.toJSON() as any;
-  delete userObj.password;
-  delete userObj.ipAddress;
 
   ctx.body = {
     success: true,
