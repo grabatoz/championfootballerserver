@@ -2772,9 +2772,21 @@ export const getPlayerQuickView = async (ctx: Context) => {
   }
 
   try {
-    // Resolve seasonId: use query param if provided, otherwise find active season
-    let seasonId = querySeasonId;
-    if (!seasonId) {
+    const requestedSeasonId = typeof querySeasonId === 'string' ? querySeasonId.trim() : '';
+    const legacyUnseasonedMatches = await Match.count({
+      where: {
+        leagueId,
+        seasonId: { [Op.is]: null },
+        status: { [Op.in]: ['RESULT_PUBLISHED', 'RESULT_UPLOADED'] },
+        deleted: false
+      } as any
+    });
+    const useWholeLeague = requestedSeasonId === 'all' || legacyUnseasonedMatches > 0;
+
+    // Resolve seasonId: use query param if provided, otherwise find active season.
+    // `seasonId=all` is used by legacy/migrated leagues whose matches are not season-linked.
+    let seasonId = useWholeLeague ? '' : requestedSeasonId;
+    if (!seasonId && !useWholeLeague) {
       const activeSeason = await Season.findOne({
         where: { leagueId, isActive: true, archived: false, deleted: false }
       });

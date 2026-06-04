@@ -81,7 +81,7 @@ export const getPlayerById = async (ctx: Context) => {
 
 export const getPlayerStats = async (ctx: Context) => {
   const { id } = ctx.params;
-  const { leagueId, year } = ctx.query as { leagueId?: string; year?: string };
+  const { leagueId, year, seasonId } = ctx.query as { leagueId?: string; year?: string; seasonId?: string };
 
   try {
     const player = await UserModel.findByPk(id, {
@@ -97,9 +97,26 @@ export const getPlayerStats = async (ctx: Context) => {
     const matchWhere: Record<string, unknown> = {
       status: { [Op.in]: ['RESULT_PUBLISHED', 'RESULT_UPLOADED'] }
     };
+    let shouldUseSeasonScope = Boolean(seasonId && seasonId !== 'all');
 
     if (leagueId && leagueId !== 'all') {
       matchWhere.leagueId = leagueId;
+
+      if (shouldUseSeasonScope) {
+        const legacyUnseasonedMatches = await MatchModel.count({
+          where: {
+            leagueId,
+            seasonId: { [Op.is]: null },
+            status: { [Op.in]: ['RESULT_PUBLISHED', 'RESULT_UPLOADED'] },
+            deleted: false
+          } as any
+        });
+        shouldUseSeasonScope = legacyUnseasonedMatches === 0;
+      }
+    }
+
+    if (shouldUseSeasonScope) {
+      matchWhere.seasonId = seasonId;
     }
 
     if (year && year !== 'all') {
@@ -118,7 +135,19 @@ export const getPlayerStats = async (ctx: Context) => {
         model: MatchModel,
         as: 'match',
         where: matchWhere,
-        attributes: ['id', 'date', 'leagueId', 'homeTeamGoals', 'awayTeamGoals', 'status'],
+        attributes: [
+          'id',
+          'date',
+          'leagueId',
+          'seasonId',
+          'homeTeamGoals',
+          'awayTeamGoals',
+          'status',
+          'homeDefensiveImpactId',
+          'awayDefensiveImpactId',
+          'homeMentalityId',
+          'awayMentalityId'
+        ],
         include: [
           { model: UserModel, as: 'homeTeamUsers', attributes: ['id'] },
           { model: UserModel, as: 'awayTeamUsers', attributes: ['id'] }
@@ -159,6 +188,8 @@ export const getPlayerStats = async (ctx: Context) => {
     let totalXP = 0;
     let teamGoalsConceded = 0;
     let motmVotes = 0;
+    let defensiveImpact = 0;
+    let mentality = 0;
 
     statsRows.forEach((stat: any) => {
       const match = stat.match;
@@ -185,6 +216,12 @@ export const getPlayerStats = async (ctx: Context) => {
       totalXP += Number(stat.xpAwarded || 0);
       motmVotes += Number(votesByMatch[matchId] || 0);
       teamGoalsConceded += oppGoals;
+      if (String(match.homeDefensiveImpactId || '') === String(id) || String(match.awayDefensiveImpactId || '') === String(id)) {
+        defensiveImpact += 1;
+      }
+      if (String(match.homeMentalityId || '') === String(id) || String(match.awayMentalityId || '') === String(id)) {
+        mentality += 1;
+      }
 
       if (teamGoals === oppGoals) draws += 1;
       else if (teamGoals > oppGoals) wins += 1;
@@ -211,6 +248,9 @@ export const getPlayerStats = async (ctx: Context) => {
       impact: avgImpact,
       contributionIndex: avgImpact,
       motmVotes,
+      defensiveImpact,
+      defensiveImpactVotes: defensiveImpact,
+      mentality,
       teamGoalsConceded,
       totalXP,
       xp: totalXP,
