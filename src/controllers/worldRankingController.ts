@@ -134,33 +134,25 @@ export const getWorldRanking = async (ctx: Context) => {
             u."position",
             u."positionType",
             u."country",
-            (COALESCE(stats."matchXP", 0) + COALESCE(ach."achievementXP", 0))::int AS "totalXP",
+            COALESCE(u."xp", 0)::int AS "totalXP",
             COALESCE(stats."matchCount", 0)::int AS "matches",
             CASE
               WHEN COALESCE(stats."matchCount", 0) > 0
-              THEN ROUND((COALESCE(stats."matchXP", 0) + COALESCE(ach."achievementXP", 0))::numeric / stats."matchCount", 2)
+              THEN ROUND(COALESCE(u."xp", 0)::numeric / stats."matchCount", 2)
               ELSE 0
             END AS "avgXP"
           FROM ${usersTable} u
           LEFT JOIN (
             SELECT
               ms2."user_id",
-              SUM(ms2.xp_awarded) AS "matchXP",
               COUNT(DISTINCT ms2."match_id") AS "matchCount"
             FROM ${matchStatsTable} ms2
             INNER JOIN ${matchesTable} m2 ON m2."id" = ms2."match_id"
               AND m2."status" = 'RESULT_PUBLISHED'
             GROUP BY ms2."user_id"
           ) stats ON stats."user_id" = u."id"
-          LEFT JOIN LATERAL (
-            SELECT COALESCE(SUM(ax.xp), 0)::int AS "achievementXP"
-            FROM unnest(COALESCE(u."achievements", ARRAY[]::text[])) AS achv(id)
-            LEFT JOIN (
-              VALUES ${achievementXpValuesSql}
-            ) AS ax(id, xp) ON ax.id = achv.id
-          ) ach ON TRUE
           WHERE ${whereConditions.join(' AND ')}
-            AND (COALESCE(stats."matchXP", 0) + COALESCE(ach."achievementXP", 0)) > 0
+            AND u."xp" > 0
         )
         SELECT
           b.*,

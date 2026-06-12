@@ -2920,10 +2920,27 @@ export const getPlayerQuickView = async (ctx: Context) => {
       return { result };
     });
 
+    const player = await User.findByPk(playerId, {
+      attributes: ['id', 'firstName', 'lastName', 'profilePicture', 'position', 'preferredFoot', 'shirtNumber', 'skills', 'xp']
+    });
+
     ctx.body = {
       success: true,
       motmCount: motmCount || 0,
       lastFive,
+      player: player ? {
+        id: player.id,
+        firstName: player.firstName,
+        lastName: player.lastName,
+        profilePicture: player.profilePicture,
+        position: player.position,
+        preferredFoot: player.preferredFoot,
+        shirtNumber: player.shirtNumber,
+        xp: player.xp || 0,
+      } : null,
+      skills: player?.skills || null,
+      xp: player?.xp || 0,
+      profileXP: player?.xp || 0,
     };
   } catch (err) {
     console.error('Get player quick view error:', err);
