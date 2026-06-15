@@ -4746,9 +4746,44 @@ export const getLeaguePlayerAverages = async (ctx: Context) => {
       }
     }
 
-    // Build per-player aggregations
+    // Collect all candidate user IDs to filter out guests
+    const candidateUserIds = [...new Set([
+      ...allStats.map((s: any) => String(s.user_id)),
+      ...motmVotes.map((v: any) => String(v.votedForId)),
+      ...Object.keys(defImpactVoteMap)
+    ].filter((id) => id && id.trim() !== ''))];
+
+    const nonGuests = await User.findAll({
+      where: {
+        id: { [Op.in]: candidateUserIds },
+        [Op.and]: [
+          {
+            [Op.or]: [
+              { provider: { [Op.ne]: 'guest' } },
+              { provider: { [Op.is]: null } },
+              { provider: '' }
+            ]
+          },
+          {
+            email: {
+              [Op.or]: [
+                { [Op.is]: null },
+                { [Op.eq]: '' },
+                { [Op.notLike]: '%guest%' }
+              ]
+            }
+          }
+        ]
+      } as any,
+      attributes: ['id'],
+      raw: true
+    });
+    const nonGuestUserIds = new Set(nonGuests.map((u: any) => String(u.id)));
+
+    // Build per-player aggregations (excluding guests)
     const playerMap: Record<string, { goals: number; assists: number; cleanSheets: number; defence: number; impact: number; motmVotes: number; defensiveImpactVotes: number; matches: number }> = {};
     const ensurePlayerStats = (uid: string) => {
+      if (!nonGuestUserIds.has(uid)) return null;
       if (!playerMap[uid]) {
         playerMap[uid] = { goals: 0, assists: 0, cleanSheets: 0, defence: 0, impact: 0, motmVotes: 0, defensiveImpactVotes: 0, matches: 0 };
       }
@@ -4758,6 +4793,7 @@ export const getLeaguePlayerAverages = async (ctx: Context) => {
     for (const stat of allStats) {
       const uid = String(stat.user_id);
       const playerStats = ensurePlayerStats(uid);
+      if (!playerStats) continue;
       playerStats.goals += Number(stat.goals) || 0;
       playerStats.assists += Number(stat.assists) || 0;
       playerStats.cleanSheets += Number(stat.cleanSheets) || 0;
@@ -4770,13 +4806,15 @@ export const getLeaguePlayerAverages = async (ctx: Context) => {
     for (const vote of motmVotes) {
       const uid = String(vote.votedForId);
       if (!uid) continue;
-      ensurePlayerStats(uid).motmVotes += 1;
+      const playerStats = ensurePlayerStats(uid);
+      if (playerStats) playerStats.motmVotes += 1;
     }
 
     // Add defensive impact votes
     for (const [uid, count] of Object.entries(defImpactVoteMap)) {
       if (!uid) continue;
-      ensurePlayerStats(uid).defensiveImpactVotes += count;
+      const playerStats = ensurePlayerStats(uid);
+      if (playerStats) playerStats.defensiveImpactVotes += count;
     }
 
     // Calculate league-wide averages (per match per player) and contribution shares.
