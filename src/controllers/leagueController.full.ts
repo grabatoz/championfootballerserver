@@ -376,6 +376,7 @@ export const getTrophyRoom = async (ctx: Context) => {
     motmVotes: number;
     teamGoalsFor: number;
     teamGoalsConceded: number;
+    defensiveImpactVotes: number;
   };
 
   type TrophySnapshotEntry = {
@@ -473,7 +474,8 @@ export const getTrophyRoom = async (ctx: Context) => {
           assists: 0,
           motmVotes: 0,
           teamGoalsFor: 0,
-          teamGoalsConceded: 0
+          teamGoalsConceded: 0,
+          defensiveImpactVotes: 0
         };
       }
     };
@@ -507,6 +509,18 @@ export const getTrophyRoom = async (ctx: Context) => {
             const id = String(votedForId);
             if (stats[id]) stats[id].motmVotes++;
           });
+        }
+
+        // Count Defensive Impact votes
+        if (m.homeDefensiveImpactId) {
+          const id = String(m.homeDefensiveImpactId);
+          ensure(id);
+          stats[id].defensiveImpactVotes++;
+        }
+        if (m.awayDefensiveImpactId) {
+          const id = String(m.awayDefensiveImpactId);
+          ensure(id);
+          stats[id].defensiveImpactVotes++;
         }
 
         const homeWon = (m.homeTeamGoals ?? 0) > (m.awayTeamGoals ?? 0);
@@ -561,7 +575,7 @@ export const getTrophyRoom = async (ctx: Context) => {
       // Fetch league matches separately to avoid query cartesian-product timeout
       const matches = await Match.findAll({
         where: { leagueId: leagueIdQ, status: { [Op.in]: ['RESULT_PUBLISHED', 'RESULT_UPLOADED'] }, deleted: false },
-        attributes: ['id', 'seasonId', 'status', 'date', 'homeTeamGoals', 'awayTeamGoals']
+        attributes: ['id', 'seasonId', 'status', 'date', 'homeTeamGoals', 'awayTeamGoals', 'homeDefensiveImpactId', 'awayDefensiveImpactId']
       });
 
       const plainLeague = league.get({ plain: true }) as any;
@@ -589,7 +603,7 @@ export const getTrophyRoom = async (ctx: Context) => {
 
       const matches = await Match.findAll({
         where: { leagueId: { [Op.in]: userLeagueIds }, status: { [Op.in]: ['RESULT_PUBLISHED', 'RESULT_UPLOADED'] }, deleted: false },
-        attributes: ['id', 'leagueId', 'seasonId', 'status', 'date', 'homeTeamGoals', 'awayTeamGoals']
+        attributes: ['id', 'leagueId', 'seasonId', 'status', 'date', 'homeTeamGoals', 'awayTeamGoals', 'homeDefensiveImpactId', 'awayDefensiveImpactId']
       });
 
       const matchesByLeague: Record<string, any[]> = {};
@@ -896,13 +910,7 @@ export const getTrophyRoom = async (ctx: Context) => {
         { title: 'King Playmaker', winnerId: pickTopBy(playerIds, (pid) => stats[pid].assists, 1) },
         {
           title: 'Legendary Shield',
-          winnerId: shieldCandidateIds.length > 0
-            ? shieldCandidateIds.sort((a, b) => {
-                const avgA = stats[a].teamGoalsConceded / stats[a].played;
-                const avgB = stats[b].teamGoalsConceded / stats[b].played;
-                return avgA - avgB;
-              })[0] || null
-            : null
+          winnerId: pickTopBy(playerIds, (pid) => stats[pid].defensiveImpactVotes, 1)
         },
         {
           title: 'Dark Horse',
@@ -946,7 +954,7 @@ export const getTrophyRoom = async (ctx: Context) => {
           case 'King Playmaker':
             return s.assists > 0;
           case 'Legendary Shield':
-            return Number.isFinite(s.teamGoalsConceded / s.played);
+            return s.defensiveImpactVotes > 0;
           case 'Dark Horse':
             return leagueTable.slice(3).includes(winnerId) && s.motmVotes > 0;
           case 'Star Keeper':

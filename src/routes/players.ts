@@ -558,7 +558,7 @@ router.get('/:id/trophies', required, async (ctx) => {
         leagueId: { [Op.in]: leagueIds },
         status: { [Op.in]: ['RESULT_PUBLISHED', 'RESULT_UPLOADED'] },
       },
-      attributes: ['id', 'leagueId', 'seasonId', 'status', 'date', 'homeTeamGoals', 'awayTeamGoals'],
+      attributes: ['id', 'leagueId', 'seasonId', 'status', 'date', 'homeTeamGoals', 'awayTeamGoals', 'homeDefensiveImpactId', 'awayDefensiveImpactId'],
       raw: true,
     });
     const allMatchIds = (leagueMatches as any[]).map((m: any) => String(m.id));
@@ -692,6 +692,7 @@ router.get('/:id/trophies', required, async (ctx) => {
       motmVotes: number;
       teamGoalsFor: number;
       teamGoalsConceded: number;
+      defensiveImpactVotes: number;
     };
 
     const calcStats = (league: any): Record<string, PlayerStats> => {
@@ -707,7 +708,8 @@ router.get('/:id/trophies', required, async (ctx) => {
             assists: 0,
             motmVotes: 0,
             teamGoalsFor: 0,
-            teamGoalsConceded: 0
+            teamGoalsConceded: 0,
+            defensiveImpactVotes: 0
           };
         }
       };
@@ -734,6 +736,19 @@ router.get('/:id/trophies', required, async (ctx) => {
           // MOTM votes if present (best-effort)
           const motmVals = Object.values((m as any).manOfTheMatchVotes || {}) as Array<string | number>;
           motmVals.forEach((pid) => { const id = String(pid); if (stats[id]) stats[id].motmVotes += 1; });
+          
+          // Count Defensive Impact votes
+          if (m.homeDefensiveImpactId) {
+            const id = String(m.homeDefensiveImpactId);
+            ensure(id);
+            stats[id].defensiveImpactVotes++;
+          }
+          if (m.awayDefensiveImpactId) {
+            const id = String(m.awayDefensiveImpactId);
+            ensure(id);
+            stats[id].defensiveImpactVotes++;
+          }
+
           const hg = Number(m.homeTeamGoals || 0), ag = Number(m.awayTeamGoals || 0);
           const homeWon = hg > ag; const draw = hg === ag;
           home.forEach((pid: string) => {
@@ -826,17 +841,7 @@ router.get('/:id/trophies', required, async (ctx) => {
         const ratio = statsMap[top].played ? statsMap[top].wins / statsMap[top].played : 0;
         return ratio > 0 ? top : null;
       })();
-      const shield = (() => {
-        if (!eligible.length) return null;
-        const sorted = [...eligible].sort((a: string, b: string) => {
-          const aa = statsMap[a].teamGoalsConceded / statsMap[a].played;
-          const bb = statsMap[b].teamGoalsConceded / statsMap[b].played;
-          return aa - bb;
-        });
-        const top = sorted[0];
-        const avg = statsMap[top].teamGoalsConceded / statsMap[top].played;
-        return Number.isFinite(avg) ? top : null;
-      })();
+      const shield = pickByMax(eligible, (id) => statsMap[id].defensiveImpactVotes, 0);
       const darkHorse = (() => {
         if (table.length <= 3) return null;
         const outsideTop3 = table.slice(3);
@@ -887,7 +892,7 @@ router.get('/:id/trophies', required, async (ctx) => {
           case 'King Playmaker':
             return s.assists > 0;
           case 'Legendary Shield':
-            return Number.isFinite(s.teamGoalsConceded / s.played);
+            return s.defensiveImpactVotes > 0;
           case 'The Dark Horse':
             return table.slice(3).includes(winnerId) && s.motmVotes > 0;
           case 'Star Keeper':
