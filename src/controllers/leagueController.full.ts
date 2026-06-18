@@ -12,6 +12,7 @@ import { MatchAvailability } from '../models/MatchAvailability';
 import { MatchPlayerLayout } from '../models/MatchPlayerLayout';
 import { checkLeagueCompletion, checkLeagueCompletionBulk } from '../utils/leagueCompletion';
 import { invalidateCache as invalidateServerCache } from '../middleware/memoryCache';
+import { registeredUserWhere } from '../utils/playerIdentity';
 
 const { League, Match, User, MatchGuest } = models;
 
@@ -4756,24 +4757,7 @@ export const getLeaguePlayerAverages = async (ctx: Context) => {
     const nonGuests = await User.findAll({
       where: {
         id: { [Op.in]: candidateUserIds },
-        [Op.and]: [
-          {
-            [Op.or]: [
-              { provider: { [Op.ne]: 'guest' } },
-              { provider: { [Op.is]: null } },
-              { provider: '' }
-            ]
-          },
-          {
-            email: {
-              [Op.or]: [
-                { [Op.is]: null },
-                { [Op.eq]: '' },
-                { [Op.notLike]: '%guest%' }
-              ]
-            }
-          }
-        ]
+        ...registeredUserWhere()
       } as any,
       attributes: ['id'],
       raw: true
@@ -4822,7 +4806,6 @@ export const getLeaguePlayerAverages = async (ctx: Context) => {
     const playerIds = Object.keys(playerMap);
     const totalPlayers = playerIds.length;
 
-    let totalGoalsAvg = 0, totalAssistsAvg = 0, totalCSAvg = 0, totalDefAvg = 0, totalMotmAvg = 0, totalDefImpactAvg = 0, totalImpactAvg = 0;
     const leagueTotals = playerIds.reduce((acc, uid) => {
       const p = playerMap[uid];
       acc.goals += p.goals;
@@ -4832,8 +4815,9 @@ export const getLeaguePlayerAverages = async (ctx: Context) => {
       acc.motmVotes += p.motmVotes;
       acc.defensiveImpactVotes += p.defensiveImpactVotes;
       acc.impact += p.impact;
+      acc.matches += p.matches;
       return acc;
-    }, { goals: 0, assists: 0, cleanSheets: 0, defence: 0, motmVotes: 0, defensiveImpactVotes: 0, impact: 0 });
+    }, { goals: 0, assists: 0, cleanSheets: 0, defence: 0, motmVotes: 0, defensiveImpactVotes: 0, impact: 0, matches: 0 });
 
     const percentShare = (value: number, total: number): number => {
       if (!Number.isFinite(value) || !Number.isFinite(total) || total <= 0 || value <= 0) return 0;
@@ -4857,13 +4841,6 @@ export const getLeaguePlayerAverages = async (ctx: Context) => {
         matches: p.matches
       };
       playersResult[uid] = avg;
-      totalGoalsAvg += avg.goals;
-      totalAssistsAvg += avg.assists;
-      totalCSAvg += avg.cleanSheets;
-      totalDefAvg += avg.defence;
-      totalMotmAvg += avg.motmVotes;
-      totalDefImpactAvg += avg.defensiveImpactVotes;
-      totalImpactAvg += avg.impact;
       playerTotals[uid] = {
         goals: p.goals,
         assists: p.assists,
@@ -4887,14 +4864,16 @@ export const getLeaguePlayerAverages = async (ctx: Context) => {
     }
 
     const divider = Math.max(totalPlayers, 1);
+    // Product rule for the dashboard Goals comparison: average (total goals + player appearances)
+    // across registered league players, excluding migrated guests.
     const leagueAvg = {
-      goals: +(totalGoalsAvg / divider).toFixed(2),
-      assists: +(totalAssistsAvg / divider).toFixed(2),
-      cleanSheets: +(totalCSAvg / divider).toFixed(2),
-      defence: +(totalDefAvg / divider).toFixed(2),
-      motmVotes: +(totalMotmAvg / divider).toFixed(2),
-      defensiveImpactVotes: +(totalDefImpactAvg / divider).toFixed(2),
-      impact: +(totalImpactAvg / divider).toFixed(2)
+      goals: +((leagueTotals.goals + leagueTotals.matches) / divider).toFixed(2),
+      assists: +(leagueTotals.assists / divider).toFixed(2),
+      cleanSheets: +(leagueTotals.cleanSheets / divider).toFixed(2),
+      defence: +(leagueTotals.defence / divider).toFixed(2),
+      motmVotes: +(leagueTotals.motmVotes / divider).toFixed(2),
+      defensiveImpactVotes: +(leagueTotals.defensiveImpactVotes / divider).toFixed(2),
+      impact: +(leagueTotals.impact / divider).toFixed(2)
     };
 
     ctx.body = {

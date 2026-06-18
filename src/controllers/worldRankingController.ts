@@ -4,6 +4,7 @@ import { Op, QueryTypes } from 'sequelize';
 import sequelize from '../config/database';
 import cache from '../utils/cache';
 import { xpAchievements } from '../utils/xpAchievements';
+import { registeredUserWhere } from '../utils/playerIdentity';
 
 const getTableName = (model: any): string => {
   const tn = model.getTableName?.() ?? model.tableName;
@@ -35,7 +36,7 @@ export const getWorldRanking = async (ctx: Context) => {
     return;
   }
 
-  const cacheKey = `wr_${mode}_${positionType || ''}_${country || ''}_${year || ''}_${page}_${limit}`;
+  const cacheKey = `wr_registered_v2_${mode}_${positionType || ''}_${country || ''}_${year || ''}_${page}_${limit}`;
 
   if (!fresh) {
     const cached = cache.get(cacheKey);
@@ -60,8 +61,13 @@ export const getWorldRanking = async (ctx: Context) => {
     const replacements: Record<string, any> = {};
     const rankingMetric = mode === 'avg' ? '"avgXP"' : '"totalXP"';
 
-    whereConditions.push(`u."lastName" != 'Guest'`);
-    whereConditions.push(`COALESCE(u."provider", '') <> 'guest'`);
+    whereConditions.push(`LOWER(COALESCE(u."provider", '')) <> 'guest'`);
+    whereConditions.push(`NULLIF(TRIM(COALESCE(u."email", '')), '') IS NOT NULL`);
+    whereConditions.push(`LOWER(COALESCE(u."email", '')) NOT LIKE '%guest%'`);
+    whereConditions.push(`LOWER(COALESCE(u."email", '')) NOT LIKE '%@local.invalid'`);
+    whereConditions.push(`LOWER(COALESCE(u."email", '')) NOT LIKE 'migrated+%@local.invalid'`);
+    whereConditions.push(`LOWER(COALESCE(u."firstName", '')) <> 'guest'`);
+    whereConditions.push(`LOWER(COALESCE(u."lastName", '')) <> 'guest'`);
 
     if (positionType) {
       whereConditions.push(`u."positionType" = :positionType`);
@@ -231,7 +237,7 @@ export const getCountryRanking = async (ctx: Context) => {
     return;
   }
 
-  const cacheKey = `country_ranking_${country}`;
+  const cacheKey = `country_ranking_registered_v2_${country}`;
   const cached = cache.get(cacheKey);
 
   if (cached) {
@@ -246,15 +252,7 @@ export const getCountryRanking = async (ctx: Context) => {
     const players = await models.User.findAll({
       where: {
         country,
-        [Op.and]: [
-          {
-            [Op.or]: [
-              { provider: { [Op.ne]: 'guest' } },
-              { provider: { [Op.is]: null } },
-              { provider: '' }
-            ]
-          }
-        ],
+        ...registeredUserWhere(),
         xp: { [Op.gt]: 0 }
       },
       attributes: [
@@ -302,7 +300,7 @@ export const getPositionRanking = async (ctx: Context) => {
     return;
   }
 
-  const cacheKey = `position_ranking_${positionType}`;
+  const cacheKey = `position_ranking_registered_v2_${positionType}`;
   const cached = cache.get(cacheKey);
 
   if (cached) {
@@ -317,15 +315,7 @@ export const getPositionRanking = async (ctx: Context) => {
     const players = await models.User.findAll({
       where: {
         positionType,
-        [Op.and]: [
-          {
-            [Op.or]: [
-              { provider: { [Op.ne]: 'guest' } },
-              { provider: { [Op.is]: null } },
-              { provider: '' }
-            ]
-          }
-        ],
+        ...registeredUserWhere(),
         xp: { [Op.gt]: 0 }
       },
       attributes: [

@@ -3,11 +3,12 @@ import models from '../models';
 import { Op } from 'sequelize';
 import cache from '../utils/cache';
 import sequelize from '../config/database';
+import { registeredUserWhere } from '../utils/playerIdentity';
 
 const { User: UserModel, Match: MatchModel, MatchStatistics, League: LeagueModel, Vote } = models;
 
 export const getAllPlayers = async (ctx: Context) => {
-  const cacheKey = 'players_all_ultra_fast';
+  const cacheKey = 'players_all_registered_v2_ultra_fast';
   const cached = cache.get(cacheKey);
   if (cached) {
     ctx.set('X-Cache', 'HIT');
@@ -19,6 +20,7 @@ export const getAllPlayers = async (ctx: Context) => {
     const players = await UserModel.findAll({
       attributes: ['id', 'firstName', 'lastName', 'profilePicture', 'xp', 'position', 'positionType'],
       where: {
+        ...registeredUserWhere(),
         xp: { [Op.gt]: 0 }
       },
       order: [['xp', 'DESC']],
@@ -284,6 +286,7 @@ export const searchPlayers = async (ctx: Context) => {
   try {
     const players = await UserModel.findAll({
       where: {
+        ...registeredUserWhere(),
         [Op.or]: [
           { firstName: { [Op.iLike]: `%${q}%` } },
           { lastName: { [Op.iLike]: `%${q}%` } },
@@ -344,6 +347,22 @@ export const getPlayerProfile = async (ctx: Context) => {
     const uniqueMatchIds = Array.from(new Set((statRows as any[]).map((stat) => String(stat.match_id)).filter(Boolean)));
     const selectedLeagueId = typeof leagueId === 'string' && leagueId.trim() && leagueId !== 'all' ? leagueId.trim() : '';
     const selectedYear = typeof year === 'string' && year.trim() && year !== 'all' ? Number(year) : null;
+
+    const allPublishedMatchRows: any[] = uniqueMatchIds.length
+      ? await MatchModel.findAll({
+          where: {
+            id: { [Op.in]: uniqueMatchIds },
+            status: 'RESULT_PUBLISHED',
+          },
+          attributes: ['date'],
+          raw: true,
+        })
+      : [];
+    const allYears = [...new Set(
+      allPublishedMatchRows
+        .map((match) => new Date(match.date).getFullYear())
+        .filter((matchYear) => Number.isFinite(matchYear))
+    )];
 
     const matchWhere: any = {
       id: { [Op.in]: uniqueMatchIds },
@@ -533,6 +552,7 @@ export const getPlayerProfile = async (ctx: Context) => {
         },
         leagues: leagues,
         years: [...new Set(allStats.map((s: any) => new Date(s.match?.date).getFullYear()))].filter(Boolean),
+        allYears,
         currentStats: {},
         accumulativeStats: {},
         trophies: {}

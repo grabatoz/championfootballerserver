@@ -6,6 +6,7 @@ import { Op } from 'sequelize';
 import sequelize from '../config/database';
 import cache from '../utils/cache';
 import { computeAchievementState, toAchievementMatchInput } from '../utils/achievementChecker';
+import { isRegisteredUserRecord } from '../utils/playerIdentity';
 
 const { User: UserModel, Match: MatchModel, MatchStatistics, League: LeagueModel, Vote } = models;
 
@@ -63,7 +64,7 @@ router.get('/by-league', required, async (ctx) => {
     // Fetch league with members; keep attributes minimal for speed
     const league = await LeagueModel.findByPk(leagueId, {
       include: [
-        { model: models.User, as: 'members', attributes: ['id', 'firstName', 'lastName', 'profilePicture', 'xp', 'shirtNumber', 'email', 'position', 'positionType', 'style'] },
+        { model: models.User, as: 'members', attributes: ['id', 'firstName', 'lastName', 'profilePicture', 'xp', 'shirtNumber', 'email', 'provider', 'position', 'positionType', 'style'] },
         { model: models.User, as: 'administeredLeagues', attributes: ['id'] },
       ],
       attributes: ['id', 'name'],
@@ -100,12 +101,7 @@ router.get('/by-league', required, async (ctx) => {
       }
     }
     
-    // Filter out guest players (those without proper user accounts)
-    // Real players have email and are properly registered users
-    const realPlayers = members.filter((p) => {
-      // Exclude if it's a guest player or doesn't have a valid email
-      return p.email && p.email.trim() !== '' && !p.email.includes('guest');
-    });
+    const realPlayers = members.filter(isRegisteredUserRecord);
     
     const players = realPlayers.map((p) => ({
       id: p.id,
@@ -182,13 +178,10 @@ router.get('/played-with', required, async (ctx) => {
           [Op.in]: Array.from(playerIds)
         }
       },
-      attributes: ['id', 'firstName', 'lastName', 'profilePicture', 'xp', 'shirtNumber', 'email', 'position', 'positionType', 'style']
+      attributes: ['id', 'firstName', 'lastName', 'profilePicture', 'xp', 'shirtNumber', 'email', 'provider', 'position', 'positionType', 'style']
     });
 
-    // Filter out guest players - only include real registered players
-    const realPlayers = players.filter(p => 
-      p.email && p.email.trim() !== '' && !p.email.includes('guest')
-    );
+    const realPlayers = players.filter(isRegisteredUserRecord);
 
     ctx.body = {
       success: true,
@@ -290,7 +283,7 @@ router.get('/:playerId/leagues/:leagueId/teammates', required, async (ctx) => {
     }
 
     // Cache key
-    const cacheKey = `league_teammates_${playerId}_${leagueId}`;
+    const cacheKey = `league_teammates_registered_v2_${playerId}_${leagueId}`;
     const cached = cache.get(cacheKey);
     if (cached) {
       ctx.body = cached;
@@ -359,6 +352,8 @@ router.get('/:playerId/leagues/:leagueId/teammates', required, async (ctx) => {
         'lastName',
         'profilePicture',
         'xp',
+        'email',
+        'provider',
         'position',
         'positionType',
         'shirtNumber'
@@ -389,7 +384,7 @@ router.get('/:playerId/leagues/:leagueId/teammates', required, async (ctx) => {
       };
     });
 
-    const resultPlayers = teammates.map(t => {
+    const resultPlayers = teammates.filter(isRegisteredUserRecord).map(t => {
       const stats = statMap[t.id] || { goals: 0, assists: 0, appearances: 0 };
       return {
         id: t.id,
