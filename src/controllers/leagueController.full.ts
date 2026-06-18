@@ -48,6 +48,8 @@ const MIN_REGISTERED_PLAYERS_FOR_TEAM_UPLOAD = 6;
 const MIN_REGISTERED_PLAYERS_MESSAGE = 'A minimum of 6 registered players is required to choose teams';
 const MIN_TOTAL_PLAYERS_MESSAGE = 'A minimum of 8 total players (including at least 6 registered league players) is required to save teams.';
 const FINALIZED_MATCH_STATUSES = new Set(['RESULT_UPLOADED', 'RESULT_PUBLISHED']);
+const LEAGUE_DETAIL_META_CACHE_TTL_SECONDS = Number(process.env.LEAGUE_DETAIL_META_CACHE_TTL_SECONDS || 60);
+const LEAGUE_DETAIL_WITH_MATCHES_CACHE_TTL_SECONDS = Number(process.env.LEAGUE_DETAIL_WITH_MATCHES_CACHE_TTL_SECONDS || 60);
 
 const parseJsonArrayField = (value: unknown, fieldName: string): any[] => {
   if (value === undefined || value === null || value === '') return [];
@@ -284,6 +286,103 @@ const deriveLeagueLifecycle = (
     isLocked,
     locked: isLocked,
   };
+};
+
+const fetchMatchesWithLightRelations = async (matchWhere: any): Promise<any[]> => {
+  const matches = await Match.findAll({
+    where: matchWhere,
+    order: [['createdAt', 'ASC']],
+    raw: true,
+  });
+
+  const matchIds: string[] = matches
+    .map((m: any) => String(m.id || '').trim())
+    .filter(Boolean);
+
+  if (!matchIds.length) return [];
+
+  const sequelize = Match.sequelize!;
+  const [homeRows, awayRows, guestRows, voteRows] = await Promise.all([
+    sequelize.query<{ matchId: string; userId: string }>(
+      `SELECT "matchId", "userId" FROM "UserHomeMatches" WHERE "matchId" IN (:matchIds)`,
+      { replacements: { matchIds }, type: QueryTypes.SELECT }
+    ),
+    sequelize.query<{ matchId: string; userId: string }>(
+      `SELECT "matchId", "userId" FROM "UserAwayMatches" WHERE "matchId" IN (:matchIds)`,
+      { replacements: { matchIds }, type: QueryTypes.SELECT }
+    ),
+    MatchGuest.findAll({
+      where: { matchId: { [Op.in]: matchIds } },
+      attributes: ['id', 'matchId', 'firstName', 'lastName', 'team'],
+      raw: true,
+    }),
+    Vote.findAll({
+      where: { matchId: { [Op.in]: matchIds } },
+      attributes: ['matchId', 'voterId', 'votedForId'],
+      raw: true,
+    }),
+  ]);
+
+  const teamUserIds: string[] = Array.from(new Set<string>([
+    ...(homeRows || []).map((row: any) => String(row.userId || '').trim()),
+    ...(awayRows || []).map((row: any) => String(row.userId || '').trim()),
+  ].filter(Boolean)));
+
+  const teamUsers = teamUserIds.length > 0
+    ? await User.findAll({
+        where: { id: { [Op.in]: teamUserIds } },
+        attributes: ['id', 'firstName', 'lastName', 'profilePicture', 'shirtNumber'],
+        raw: true,
+      })
+    : [];
+  const userById = new Map((teamUsers as any[]).map((user: any) => [String(user.id), user]));
+
+  const buildTeamMap = (rows: Array<{ matchId: string; userId: string }>) => {
+    const map: Record<string, any[]> = {};
+    rows.forEach((row) => {
+      const matchId = String(row.matchId);
+      const user = userById.get(String(row.userId));
+      if (!user) return;
+      if (!map[matchId]) map[matchId] = [];
+      map[matchId].push(user);
+    });
+    return map;
+  };
+
+  const homeByMatch = buildTeamMap(homeRows || []);
+  const awayByMatch = buildTeamMap(awayRows || []);
+  const guestsByMatch: Record<string, any[]> = {};
+  (guestRows as any[] || []).forEach((guest: any) => {
+    const matchId = String(guest.matchId);
+    if (!guestsByMatch[matchId]) guestsByMatch[matchId] = [];
+    guestsByMatch[matchId].push({
+      id: guest.id,
+      firstName: guest.firstName,
+      lastName: guest.lastName,
+      team: guest.team,
+    });
+  });
+
+  const votesByMatch: Record<string, any[]> = {};
+  (voteRows as any[] || []).forEach((vote: any) => {
+    const matchId = String(vote.matchId);
+    if (!votesByMatch[matchId]) votesByMatch[matchId] = [];
+    votesByMatch[matchId].push({
+      voterId: vote.voterId,
+      votedForId: vote.votedForId,
+    });
+  });
+
+  return (matches as any[]).map((match: any) => {
+    const matchId = String(match.id);
+    return {
+      ...match,
+      homeTeamUsers: homeByMatch[matchId] || [],
+      awayTeamUsers: awayByMatch[matchId] || [],
+      guestPlayers: guestsByMatch[matchId] || [],
+      votes: votesByMatch[matchId] || [],
+    };
+  });
 };
 
 // Get all leagues for current user
@@ -1947,7 +2046,7 @@ export const getLeagueById = async (ctx: Context) => {
             isAdmin
           }
         };
-        cache.set(cacheKey, ctx.body, 12);
+        cache.set(cacheKey, ctx.body, LEAGUE_DETAIL_META_CACHE_TTL_SECONDS);
         ctx.set('X-Cache', 'MISS');
         return;
       }
@@ -1996,7 +2095,7 @@ export const getLeagueById = async (ctx: Context) => {
           isAdmin
         }
       };
-      cache.set(cacheKey, ctx.body, 12);
+      cache.set(cacheKey, ctx.body, LEAGUE_DETAIL_META_CACHE_TTL_SECONDS);
       ctx.set('X-Cache', 'MISS');
       return;
     }
@@ -2007,21 +2106,10 @@ export const getLeagueById = async (ctx: Context) => {
       userSeasonId = activeSeason?.id || (seasons.length > 0 ? seasons[0].id : null);
 
       // Fetch ALL matches for ALL seasons (admin can switch between seasons in frontend)
-      const { Vote } = await importWithFallback('../models/Vote.js');
-      const matches = await Match.findAll({
-        where: {
-          leagueId: id,
-          deleted: false,
-          ...(requestedSeasonId ? { seasonId: requestedSeasonId } : {})
-        },
-        attributes: { exclude: [] },
-        include: [
-          { model: User, as: 'homeTeamUsers', attributes: ['id', 'firstName', 'lastName', 'profilePicture', 'shirtNumber'] },
-          { model: User, as: 'awayTeamUsers', attributes: ['id', 'firstName', 'lastName', 'profilePicture', 'shirtNumber'] },
-          { model: MatchGuest, as: 'guestPlayers', attributes: ['id', 'firstName', 'lastName', 'team'] },
-          { model: Vote, as: 'votes', attributes: ['voterId', 'votedForId'] }
-        ],
-        order: [['createdAt', 'ASC']] // Order by creation date to assign matchNumber
+      const matches = await fetchMatchesWithLightRelations({
+        leagueId: id,
+        deleted: false,
+        ...(requestedSeasonId ? { seasonId: requestedSeasonId } : {})
       });
 
       console.log(`📊 [ADMIN] Fetching ALL matches for league ${id}: ${matches.length} matches`);
@@ -2031,19 +2119,23 @@ export const getLeagueById = async (ctx: Context) => {
 
       // Fetch availability data for all matches in this league
       const matchIds = matches.map((m: any) => m.id);
-      const availabilityRecords = await MatchAvailability.findAll({
-        where: {
-          match_id: matchIds,
-          status: 'available' // Only get users who are AVAILABLE
-        }
-      });
+      const availabilityRecords = matchIds.length > 0
+        ? await MatchAvailability.findAll({
+            where: {
+              match_id: matchIds,
+              status: 'available' // Only get users who are AVAILABLE
+            }
+          })
+        : [];
 
       // Get all user IDs who are available
-      const availableUserIds = [...new Set(availabilityRecords.map((a: any) => a.user_id))];
-      const availableUsersData = await User.findAll({
-        where: { id: availableUserIds },
-        attributes: ['id', 'firstName', 'lastName', 'profilePicture']
-      });
+      const availableUserIds: string[] = Array.from(new Set<string>(availabilityRecords.map((a: any) => String(a.user_id))));
+      const availableUsersData = availableUserIds.length > 0
+        ? await User.findAll({
+            where: { id: { [Op.in]: availableUserIds } },
+            attributes: ['id', 'firstName', 'lastName', 'profilePicture']
+          })
+        : [];
 
       // Create a map of userId -> user data
       const userMap = new Map(availableUsersData.map((u: any) => [u.id, u.toJSON()]));
@@ -2080,7 +2172,7 @@ export const getLeagueById = async (ctx: Context) => {
             return dateA - dateB; // Ascending order (oldest first)
           })
           .map((match: any, index: number) => {
-            const matchJson = match.toJSON();
+            const matchJson = typeof match.toJSON === 'function' ? match.toJSON() : { ...match };
             const guests = Array.isArray(matchJson.guestPlayers) ? matchJson.guestPlayers : [];
             
             // Convert votes array to manOfTheMatchVotes object format
@@ -2177,7 +2269,7 @@ export const getLeagueById = async (ctx: Context) => {
           computedStatus
         }
       };
-      cache.set(cacheKey, ctx.body, 8);
+      cache.set(cacheKey, ctx.body, LEAGUE_DETAIL_WITH_MATCHES_CACHE_TTL_SECONDS);
       ctx.set('X-Cache', 'MISS');
       return;
     }
@@ -2225,8 +2317,7 @@ export const getLeagueById = async (ctx: Context) => {
     }
 
     // Fetch ALL matches for seasons user is a member of (frontend will filter by selected season)
-    const { Vote } = await importWithFallback('../models/Vote.js');
-    
+
     // Get all season IDs user is a member of
     const userSeasonIds = seasons
       .filter((s: any) => {
@@ -2264,17 +2355,7 @@ export const getLeagueById = async (ctx: Context) => {
       matchWhere.id = { [Op.is]: null };
     }
 
-    const matches = await Match.findAll({
-      where: matchWhere,
-      attributes: { exclude: [] },
-      include: [
-        { model: User, as: 'homeTeamUsers', attributes: ['id', 'firstName', 'lastName', 'profilePicture', 'shirtNumber'] },
-        { model: User, as: 'awayTeamUsers', attributes: ['id', 'firstName', 'lastName', 'profilePicture', 'shirtNumber'] },
-        { model: MatchGuest, as: 'guestPlayers', attributes: ['id', 'firstName', 'lastName', 'team'] },
-        { model: Vote, as: 'votes', attributes: ['voterId', 'votedForId'] }
-      ],
-      order: [['createdAt', 'ASC']] // Order by creation date to assign matchNumber
-    });
+    const matches = await fetchMatchesWithLightRelations(matchWhere);
     
     console.log(`📊 [MEMBER] Fetching matches for user's seasons: ${matches.length} matches`);
     matches.forEach((m: any) => {
@@ -2283,19 +2364,23 @@ export const getLeagueById = async (ctx: Context) => {
 
     // Fetch availability data for all matches
     const matchIds = matches.map((m: any) => m.id);
-    const availabilityRecords = await MatchAvailability.findAll({
-      where: {
-        match_id: matchIds,
-        status: 'available' // Only get users who are AVAILABLE
-      }
-    });
+    const availabilityRecords = matchIds.length > 0
+      ? await MatchAvailability.findAll({
+          where: {
+            match_id: matchIds,
+            status: 'available' // Only get users who are AVAILABLE
+          }
+        })
+      : [];
 
     // Get all user IDs who are available
-    const availableUserIds = [...new Set(availabilityRecords.map((a: any) => a.user_id))];
-    const availableUsersData = await User.findAll({
-      where: { id: availableUserIds },
-      attributes: ['id', 'firstName', 'lastName', 'profilePicture']
-    });
+    const availableUserIds: string[] = Array.from(new Set<string>(availabilityRecords.map((a: any) => String(a.user_id))));
+    const availableUsersData = availableUserIds.length > 0
+      ? await User.findAll({
+          where: { id: { [Op.in]: availableUserIds } },
+          attributes: ['id', 'firstName', 'lastName', 'profilePicture']
+        })
+      : [];
 
     // Create a map of userId -> user data
     const userMap = new Map(availableUsersData.map((u: any) => [u.id, u.toJSON()]));
@@ -2332,7 +2417,7 @@ export const getLeagueById = async (ctx: Context) => {
           return dateA - dateB; // Ascending order (oldest first)
         })
         .map((match: any, index: number) => {
-          const matchJson = match.toJSON();
+          const matchJson = typeof match.toJSON === 'function' ? match.toJSON() : { ...match };
           const guests = Array.isArray(matchJson.guestPlayers) ? matchJson.guestPlayers : [];
           
           // Convert votes array to manOfTheMatchVotes object format
@@ -2437,7 +2522,7 @@ export const getLeagueById = async (ctx: Context) => {
         computedStatus: computedStatusMember
       }
     };
-    cache.set(cacheKey, ctx.body, 8);
+    cache.set(cacheKey, ctx.body, LEAGUE_DETAIL_WITH_MATCHES_CACHE_TTL_SECONDS);
     ctx.set('X-Cache', 'MISS');
   } catch (err) {
     console.error('Get league by ID error', err);

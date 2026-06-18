@@ -509,7 +509,7 @@ router.get('/:id/trophies', required, async (ctx) => {
     if (leagueId && leagueId !== 'all') {
       // FAST PATH: fetch only the specific league directly
       const league = await LeagueModel.findByPk(leagueId, {
-        attributes: ['id', 'name', 'maxGames'],
+        attributes: ['id', 'name', 'maxGames', 'active', 'archived', 'createdAt', 'updatedAt'],
         include: [
           { model: models.User, as: 'members', attributes: ['id', 'firstName', 'lastName', 'position', 'positionType', 'xp'] },
         ],
@@ -517,12 +517,41 @@ router.get('/:id/trophies', required, async (ctx) => {
       allLeagues = league ? [league] : [];
     } else {
       // ALL leagues: split into lightweight queries to avoid cartesian-product timeout
-      // Step 1: get league IDs for this player
-      const memberRows: any[] = await sequelize.query(
-        `SELECT "leagueId" FROM "LeagueMember" WHERE "userId" = :uid`,
-        { replacements: { uid: playerId }, type: (sequelize as any).constructor.QueryTypes.SELECT }
-      );
-      const userLeagueIds = memberRows.map((r: any) => r.leagueId);
+      // Step 1: get league IDs for this player. Migration fallback includes admin rows
+      // and leagues where the player has match statistics but no LeagueMember row.
+      const queryType = (sequelize as any).constructor.QueryTypes.SELECT;
+      const [memberRows, adminRows, playedStatRows]: any[] = await Promise.all([
+        sequelize.query(
+          `SELECT "leagueId" FROM "LeagueMember" WHERE "userId" = :uid`,
+          { replacements: { uid: playerId }, type: queryType }
+        ),
+        sequelize.query(
+          `SELECT "leagueId" FROM "LeagueAdmin" WHERE "userId" = :uid`,
+          { replacements: { uid: playerId }, type: queryType }
+        ),
+        MatchStatistics.findAll({
+          where: { user_id: playerId },
+          attributes: ['match_id'],
+          raw: true,
+        }),
+      ]);
+      const playedMatchIds: string[] = Array.from(new Set<string>((playedStatRows || [])
+        .map((row: any) => String(row.match_id || '').trim())
+        .filter((id: string) => Boolean(id))));
+      const playedLeagueRows = playedMatchIds.length > 0
+        ? await MatchModel.findAll({
+            where: { id: { [Op.in]: playedMatchIds } },
+            attributes: ['leagueId'],
+            raw: true,
+          })
+        : [];
+      const userLeagueIds = Array.from(new Set([
+        ...(memberRows || []),
+        ...(adminRows || []),
+        ...(playedLeagueRows || []),
+      ]
+        .map((r: any) => String(r.leagueId || '').trim())
+        .filter(Boolean)));
       if (!userLeagueIds.length) {
         const payload = { success: true, data: { trophies: {}, counts: {} as Record<string, number> } };
         cache.set(cacheKey, payload, 300);
@@ -532,7 +561,7 @@ router.get('/:id/trophies', required, async (ctx) => {
       // Step 2: fetch leagues with members + completed matches (no User root = no cartesian)
       const fetchedLeagues = await LeagueModel.findAll({
         where: { id: { [Op.in]: userLeagueIds } },
-        attributes: ['id', 'name', 'maxGames'],
+        attributes: ['id', 'name', 'maxGames', 'active', 'archived', 'createdAt', 'updatedAt'],
         include: [
           { model: models.User, as: 'members', attributes: ['id', 'firstName', 'lastName', 'position', 'positionType', 'xp'] },
         ],
@@ -601,7 +630,7 @@ router.get('/:id/trophies', required, async (ctx) => {
 
     const allSeasons = await models.Season.findAll({
       where: { leagueId: { [Op.in]: leagueIds }, deleted: false },
-      attributes: ['id', 'leagueId', 'seasonNumber', 'name', 'isActive', 'archived', 'maxGames', 'trophyAwardSnapshot'],
+      attributes: ['id', 'leagueId', 'seasonNumber', 'name', 'isActive', 'archived', 'startDate', 'endDate', 'maxGames', 'trophyAwardSnapshot', 'createdAt', 'updatedAt'],
       raw: true,
     });
     // Group seasons by leagueId
@@ -668,12 +697,24 @@ router.get('/:id/trophies', required, async (ctx) => {
     const countCompletedMatches = (matches: any[]): number =>
       (matches || []).filter((m: any) => normalizeStatus(m?.status) === 'RESULT_PUBLISHED').length;
 
-    const isSeasonCompletedForTrophies = (seasonRow: any, matches: any[]): boolean => {
+    const isSeasonCompletedForTrophies = (seasonRow: any, matches: any[], leagueRow?: any): boolean => {
       const completedCount = countCompletedMatches(matches);
-      const maxGames = Number(seasonRow?.maxGames ?? 0);
+      const maxGames = Number(seasonRow?.maxGames ?? leagueRow?.maxGames ?? 0);
       if (maxGames > 0) return completedCount >= maxGames;
       if (seasonRow && seasonRow.isActive === false) return completedCount > 0;
       if (seasonRow && seasonRow.archived === true) return completedCount > 0;
+      if (seasonRow?.endDate && new Date(seasonRow.endDate).getTime() <= Date.now()) return completedCount > 0;
+
+      const leagueStatus = String(leagueRow?.status || '').toLowerCase();
+      const inactiveByLeague =
+        leagueRow?.active === false ||
+        leagueRow?.archived === true ||
+        leagueStatus.includes('complete') ||
+        leagueStatus.includes('finish') ||
+        leagueStatus.includes('archive') ||
+        leagueStatus.includes('inactive');
+      if (inactiveByLeague) return completedCount > 0;
+
       return false;
     };
 
@@ -924,6 +965,79 @@ router.get('/:id/trophies', required, async (ctx) => {
     // Aggregate trophies for this player — iterate per season within each league
     const trophyMap: Record<string, { leagueId: string; leagueName: string; seasonId?: string; seasonName?: string; awardedAt?: string | null }[]> = {};
 
+    const normalizeTrophyTitle = (rawTitle: unknown): string => {
+      const title = String(rawTitle || '').trim();
+      if (!title) return '';
+      const key = title
+        .toLowerCase()
+        .replace(/[’']/g, "'")
+        .replace(/[_-]+/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+      const aliases: Record<string, string> = {
+        'champion footballer': 'League Champion',
+        'league champion': 'League Champion',
+        'league winner': 'League Champion',
+        'winner': 'League Champion',
+        'champion': 'League Champion',
+        'runner up': 'Runner-Up',
+        "ballon d'or": "Ballon D'or",
+        'ballon d or': "Ballon D'or",
+        'ballon dor': "Ballon D'or",
+        'golden boot': 'Golden Boot',
+        'king playmaker': 'King Playmaker',
+        'legendary shield': 'Legendary Shield',
+        'the dark horse': 'The Dark Horse',
+        'star keeper': 'Star Keeper',
+        'goat': 'GOAT',
+      };
+      return aliases[key] || title;
+    };
+
+    const getSnapshotWinnerId = (entry: any): string | null => {
+      if (entry === null || entry === undefined) return null;
+      if (typeof entry === 'string' || typeof entry === 'number') {
+        const id = String(entry).trim();
+        return id || null;
+      }
+      const raw = entry.winnerId ?? entry.winner_id ?? entry.winnerID ?? entry.userId ?? entry.user_id ?? entry.playerId ?? entry.player_id ?? entry.id;
+      const id = String(raw ?? '').trim();
+      return id || null;
+    };
+
+    const getSnapshotAwardedAt = (entry: any, seasonRow: any, leagueRow: any) => {
+      if (entry && typeof entry === 'object') {
+        return entry.awardedAt || entry.awarded_at || entry.updatedAt || entry.updated_at || entry.createdAt || entry.created_at || seasonRow?.updatedAt || seasonRow?.createdAt || leagueRow?.createdAt || null;
+      }
+      return seasonRow?.updatedAt || seasonRow?.createdAt || leagueRow?.createdAt || null;
+    };
+
+    const addTrophyAward = (
+      rawTitle: unknown,
+      award: { leagueId: string; leagueName: string; seasonId?: string; seasonName?: string; awardedAt?: string | null }
+    ) => {
+      const title = normalizeTrophyTitle(rawTitle);
+      if (!title) return;
+      if (!trophyMap[title]) trophyMap[title] = [];
+      const duplicate = trophyMap[title].some((item) =>
+        String(item.leagueId) === String(award.leagueId) &&
+        String(item.seasonId || '') === String(award.seasonId || '')
+      );
+      if (!duplicate) trophyMap[title].push(award);
+    };
+
+    const addSnapshotAward = (rawTitle: unknown, entry: any, leagueRow: any, seasonRow: any, seasonId?: string, seasonName?: string) => {
+      const winnerId = getSnapshotWinnerId(entry);
+      if (!winnerId || String(winnerId) !== String(playerId)) return;
+      addTrophyAward(rawTitle, {
+        leagueId: String(seasonRow?.leagueId || leagueRow?.id),
+        leagueName: leagueRow.name,
+        seasonId,
+        seasonName,
+        awardedAt: getSnapshotAwardedAt(entry, seasonRow, leagueRow),
+      });
+    };
+
     filteredLeagues.forEach((l: any) => {
       let allMatches = (l.matches || []);
       const seasons: any[] = seasonsByLeague[String(l.id)] || [];
@@ -944,6 +1058,18 @@ router.get('/:id/trophies', required, async (ctx) => {
           }
         }
         return (snapshot && typeof snapshot === 'object' && Object.keys(snapshot).length > 0) ? snapshot : null;
+      };
+
+      const getMatchesForSeason = (seasonRow: any, allowLegacyFallback = false): any[] => {
+        const sid = String(seasonRow?.id || '');
+        const directMatches = allMatches.filter((m: any) => String(m.seasonId || '') === sid);
+        if (directMatches.length > 0) return directMatches;
+
+        const hasTaggedMatches = allMatches.some((m: any) => Boolean(m.seasonId));
+        if (!hasTaggedMatches && (allowLegacyFallback || seasons.length === 1)) {
+          return allMatches;
+        }
+        return directMatches;
       };
 
       // Helper to process one batch of matches (one season or whole league)
@@ -973,14 +1099,13 @@ router.get('/:id/trophies', required, async (ctx) => {
 
         winners.forEach((w) => {
           if (w.winnerId && String(w.winnerId) === String(playerId)) {
-            if (!trophyMap[w.title]) trophyMap[w.title] = [];
-            trophyMap[w.title].push({ leagueId: w.leagueId, leagueName: w.leagueName, seasonId, seasonName, awardedAt });
+            addTrophyAward(w.title, { leagueId: w.leagueId, leagueName: w.leagueName, seasonId, seasonName, awardedAt });
           }
         });
         console.log(`📊 [Trophies] League ${l.name}${seasonName ? ` / ${seasonName}` : ''}: ${matches.length} matches, player wins: ${winners.filter((w) => w.winnerId && String(w.winnerId) === String(playerId)).length}`);
 
         // Write back computed snapshot if completed season has no snapshot yet
-        if (seasonId && seasonRow && (!seasonRow.trophyAwardSnapshot || Object.keys(seasonRow.trophyAwardSnapshot).length === 0)) {
+        if (seasonId && seasonRow && !getParsedSnapshot(seasonRow)) {
           const nextSnapshot: Record<string, any> = {};
           const nowIso = new Date().toISOString();
           winners.forEach((w) => {
@@ -1010,20 +1135,11 @@ router.get('/:id/trophies', required, async (ctx) => {
           const snapshot = getParsedSnapshot(season);
           if (snapshot) {
             Object.entries(snapshot).forEach(([title, entry]: [string, any]) => {
-              if (entry && String(entry.winnerId) === String(playerId)) {
-                if (!trophyMap[title]) trophyMap[title] = [];
-                trophyMap[title].push({
-                  leagueId: String(season.leagueId),
-                  leagueName: l.name,
-                  seasonId: selectedSeasonId,
-                  seasonName,
-                  awardedAt: entry.awardedAt || entry.updatedAt || season.updatedAt || season.createdAt || l.createdAt
-                });
-              }
+              addSnapshotAward(title, entry, l, season, selectedSeasonId, seasonName);
             });
           } else {
-            const seasonMatches = allMatches.filter((m: any) => String(m.seasonId) === selectedSeasonId);
-            if (isSeasonCompletedForTrophies(season, seasonMatches)) {
+            const seasonMatches = getMatchesForSeason(season, true);
+            if (isSeasonCompletedForTrophies(season, seasonMatches, l)) {
               processMatches(seasonMatches, selectedSeasonId, seasonName, season);
             }
           }
@@ -1036,20 +1152,11 @@ router.get('/:id/trophies', required, async (ctx) => {
           const snapshot = getParsedSnapshot(season);
           if (snapshot) {
             Object.entries(snapshot).forEach(([title, entry]: [string, any]) => {
-              if (entry && String(entry.winnerId) === String(playerId)) {
-                if (!trophyMap[title]) trophyMap[title] = [];
-                trophyMap[title].push({
-                  leagueId: String(season.leagueId),
-                  leagueName: l.name,
-                  seasonId: sid,
-                  seasonName: sName,
-                  awardedAt: entry.awardedAt || entry.updatedAt || season.updatedAt || season.createdAt || l.createdAt
-                });
-              }
+              addSnapshotAward(title, entry, l, season, sid, sName);
             });
           } else {
-            const seasonMatches = allMatches.filter((m: any) => String(m.seasonId) === sid);
-            if (seasonMatches.length > 0 && isSeasonCompletedForTrophies(season, seasonMatches)) {
+            const seasonMatches = getMatchesForSeason(season);
+            if (seasonMatches.length > 0 && isSeasonCompletedForTrophies(season, seasonMatches, l)) {
               processMatches(seasonMatches, sid, sName, season);
             }
           }
