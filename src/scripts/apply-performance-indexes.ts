@@ -25,6 +25,15 @@ async function apply() {
   await q('CREATE INDEX IF NOT EXISTS idx_leagueadmin_leagueid ON "LeagueAdmin"("leagueId");');
   await q('CREATE INDEX IF NOT EXISTS idx_leagueadmin_user_league ON "LeagueAdmin"("userId", "leagueId");');
 
+  // High-performance composite indexes for users, match statistics, votes and sessions
+  await q('CREATE INDEX IF NOT EXISTS idx_users_xp_fast ON users(xp DESC NULLS LAST, "positionType") WHERE xp > 0 AND "positionType" IS NOT NULL;');
+  await q('CREATE INDEX IF NOT EXISTS idx_match_stats_user_metrics ON match_statistics(user_id, goals, assists, defence) WHERE goals > 0 OR assists > 0 OR defence > 0;');
+  await q('CREATE INDEX IF NOT EXISTS idx_match_stats_league_fast ON match_statistics(match_id, user_id);');
+  await q('CREATE INDEX IF NOT EXISTS idx_votes_motm_fast ON "Votes"("matchId", "votedForId");');
+  await q('CREATE INDEX IF NOT EXISTS idx_users_auth_fast ON users(email, "firstName", "lastName") WHERE email IS NOT NULL;');
+  await q('CREATE INDEX IF NOT EXISTS idx_users_active ON users(id, "firstName", "lastName", "profilePicture");');
+  await q('CREATE INDEX IF NOT EXISTS idx_sessions_fast ON "Sessions"("userId", "updatedAt" DESC);');
+
     console.log('✅ Performance indexes applied');
   } catch (err) {
     console.error('❌ Failed to apply performance indexes:', err);

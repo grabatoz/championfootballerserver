@@ -330,10 +330,10 @@ const fetchMatchesWithLightRelations = async (matchWhere: any): Promise<any[]> =
 
   const teamUsers = teamUserIds.length > 0
     ? await User.findAll({
-        where: { id: { [Op.in]: teamUserIds } },
-        attributes: ['id', 'firstName', 'lastName', 'profilePicture', 'shirtNumber'],
-        raw: true,
-      })
+      where: { id: { [Op.in]: teamUserIds } },
+      attributes: ['id', 'firstName', 'lastName', 'profilePicture', 'shirtNumber'],
+      raw: true,
+    })
     : [];
   const userById = new Map((teamUsers as any[]).map((user: any) => [String(user.id), user]));
 
@@ -460,10 +460,10 @@ export const getTrophyRoom = async (ctx: Context) => {
   const leagueIdQ = typeof ctx.query?.leagueId === 'string' ? ctx.query.leagueId.trim() : '';
   const seasonIdQ = typeof ctx.query?.seasonId === 'string' ? ctx.query.seasonId.trim() : '';
 
-  console.log('🏆 [Trophy Room] Request:', { 
-    userId, 
-    leagueId: leagueIdQ || 'all', 
-    seasonId: seasonIdQ || 'all' 
+  console.log('🏆 [Trophy Room] Request:', {
+    userId,
+    leagueId: leagueIdQ || 'all',
+    seasonId: seasonIdQ || 'all'
   });
 
   type PlayerStats = {
@@ -759,10 +759,10 @@ export const getTrophyRoom = async (ctx: Context) => {
     leagues.forEach((league: any) => {
       const allMatches = league.matches || [];
       const seasons = seasonsByLeague[String(league.id)] || [];
-      
+
       let matchesToUse = allMatches;
       let currentSeasonRow: any | null = null;
-      
+
       if (seasonIdQ && seasonIdQ !== 'all') {
         matchesToUse = allMatches.filter((m: any) => String(m.seasonId) === seasonIdQ);
         const season = seasons.find((s: any) => String(s.id) === seasonIdQ) || null;
@@ -773,7 +773,7 @@ export const getTrophyRoom = async (ctx: Context) => {
         const currentSeasonId = String(activeSeason.id);
         matchesToUse = allMatches.filter((m: any) => String(m.seasonId) === currentSeasonId);
       }
-      
+
       if (!hasValidSnapshot(currentSeasonRow)) {
         matchesToUse.forEach((m: any) => neededMatchIds.add(String(m.id)));
       }
@@ -844,13 +844,13 @@ export const getTrophyRoom = async (ctx: Context) => {
     leagues.forEach((league: any) => {
       const allMatches = league.matches || [];
       const seasons = seasonsByLeague[String(league.id)] || [];
-      
+
       // Filter matches by season if seasonId is provided
       let matchesToUse = allMatches;
       let currentSeasonId = seasonIdQ;
       let currentSeasonName = '';
       let currentSeasonRow: any | null = null;
-      
+
       if (seasonIdQ && seasonIdQ !== 'all') {
         matchesToUse = allMatches.filter((m: any) => String(m.seasonId) === seasonIdQ);
         const season = seasons.find((s: any) => String(s.id) === seasonIdQ) || null;
@@ -936,7 +936,7 @@ export const getTrophyRoom = async (ctx: Context) => {
       };
 
       const leagueTable = [...playerIds].sort(sortByStandings);
-      
+
       const isGoalkeeperRole = (rawRole: unknown) => {
         const role = String(rawRole || '').trim().toLowerCase();
         return role === 'gk' || role.includes('goalkeeper') || role.includes('keeper');
@@ -1084,10 +1084,10 @@ export const getTrophyRoom = async (ctx: Context) => {
 
         const awardedAt = hasValidWinner
           ? (hasTrophySnapshotColumn
-              ? (winnerChanged
-                  ? nowIso
-                  : (toIsoString(prev?.awardedAt) || toIsoString(prev?.updatedAt) || nowIso))
-              : null)
+            ? (winnerChanged
+              ? nowIso
+              : (toIsoString(prev?.awardedAt) || toIsoString(prev?.updatedAt) || nowIso))
+            : null)
           : null;
         const updatedAt = hasTrophySnapshotColumn
           ? (winnerChanged ? nowIso : (toIsoString(prev?.updatedAt) || null))
@@ -1142,7 +1142,7 @@ export const getTrophyRoom = async (ctx: Context) => {
     }
 
     console.log(`✅ [Trophy Room] Returning ${trophyWinners.length} trophy winners`);
-    
+
     const winnerUpdateMs = trophyWinners
       .map((row: any) => toIsoString(row.awardedAt) || toIsoString(row.updatedAt))
       .filter((v): v is string => typeof v === 'string')
@@ -1150,8 +1150,8 @@ export const getTrophyRoom = async (ctx: Context) => {
       .filter((ms) => Number.isFinite(ms));
     const lastUpdatedAt = winnerUpdateMs.length > 0 ? new Date(Math.max(...winnerUpdateMs)).toISOString() : null;
 
-    const trPayload = { 
-      success: true, 
+    const trPayload = {
+      success: true,
       trophyWinners,
       backendTotalXP: 0,
       lastUpdatedAt,
@@ -1482,7 +1482,7 @@ export const getTeamView = async (ctx: Context) => {
 
     const homeTeam = homeUsers.map(mapUser);
     const awayTeam = awayUsers.map(mapUser);
-    let guests = ((match as any).guestPlayers  || []).map((g: any) => ({
+    let guests = ((match as any).guestPlayers || []).map((g: any) => ({
       id: String(g.id),
       firstName: g.firstName,
       lastName: g.lastName,
@@ -2121,20 +2121,20 @@ export const getLeagueById = async (ctx: Context) => {
       const matchIds = matches.map((m: any) => m.id);
       const availabilityRecords = matchIds.length > 0
         ? await MatchAvailability.findAll({
-            where: {
-              match_id: matchIds,
-              status: 'available' // Only get users who are AVAILABLE
-            }
-          })
+          where: {
+            match_id: matchIds,
+            status: 'available' // Only get users who are AVAILABLE
+          }
+        })
         : [];
 
       // Get all user IDs who are available
       const availableUserIds: string[] = Array.from(new Set<string>(availabilityRecords.map((a: any) => String(a.user_id))));
       const availableUsersData = availableUserIds.length > 0
         ? await User.findAll({
-            where: { id: { [Op.in]: availableUserIds } },
-            attributes: ['id', 'firstName', 'lastName', 'profilePicture']
-          })
+          where: { id: { [Op.in]: availableUserIds } },
+          attributes: ['id', 'firstName', 'lastName', 'profilePicture']
+        })
         : [];
 
       // Create a map of userId -> user data
@@ -2174,7 +2174,7 @@ export const getLeagueById = async (ctx: Context) => {
           .map((match: any, index: number) => {
             const matchJson = typeof match.toJSON === 'function' ? match.toJSON() : { ...match };
             const guests = Array.isArray(matchJson.guestPlayers) ? matchJson.guestPlayers : [];
-            
+
             // Convert votes array to manOfTheMatchVotes object format
             const manOfTheMatchVotes: Record<string, string> = {};
             if (matchJson.votes && Array.isArray(matchJson.votes)) {
@@ -2184,7 +2184,7 @@ export const getLeagueById = async (ctx: Context) => {
             }
             delete matchJson.votes; // Remove votes array
             delete matchJson.guestPlayers; // Normalize key for frontend
-            
+
             return {
               ...matchJson,
               seasonMatchNumber: index + 1, // Season-specific match number
@@ -2194,7 +2194,7 @@ export const getLeagueById = async (ctx: Context) => {
               availableUsers: matchAvailabilityMap[match.id] || []
             };
           });
-        
+
         matchesWithNumbers.push(...seasonMatches);
       });
 
@@ -2277,7 +2277,7 @@ export const getLeagueById = async (ctx: Context) => {
     // For non-admin members - find their LATEST/HIGHEST season
     // Sort seasons by seasonNumber DESC to find highest first
     const sortedSeasons = [...seasons].sort((a: any, b: any) => (b.seasonNumber || 0) - (a.seasonNumber || 0));
-    
+
     // Find user's highest season number they are a member of
     for (const season of sortedSeasons) {
       const seasonPlayers = season.players || [];
@@ -2292,7 +2292,7 @@ export const getLeagueById = async (ctx: Context) => {
     if (!userSeasonId) {
       const Notification = (await importWithFallback('../models/Notification.js')).default as any;
       const activeSeason = seasons.find((s: any) => s.isActive);
-      
+
       if (activeSeason) {
         const declinedNotification = await Notification.findOne({
           where: {
@@ -2307,7 +2307,7 @@ export const getLeagueById = async (ctx: Context) => {
 
         // User hasn't joined the new season yet (either declined or no response)
         // Show them the previous season
-        const previousSeason = seasons.find((s: any) => 
+        const previousSeason = seasons.find((s: any) =>
           s.seasonNumber === activeSeason.seasonNumber - 1
         );
         if (previousSeason) {
@@ -2340,9 +2340,9 @@ export const getLeagueById = async (ctx: Context) => {
     if (selectedMemberSeasonId) {
       userSeasonId = selectedMemberSeasonId;
     }
-    
+
     console.log(`📊 [MEMBER] User ${userId} is in seasons:`, userSeasonIds);
-    
+
     const matchWhere: any = {
       leagueId: id,
       deleted: false,
@@ -2356,7 +2356,7 @@ export const getLeagueById = async (ctx: Context) => {
     }
 
     const matches = await fetchMatchesWithLightRelations(matchWhere);
-    
+
     console.log(`📊 [MEMBER] Fetching matches for user's seasons: ${matches.length} matches`);
     matches.forEach((m: any) => {
       console.log(`   - ${m.homeTeamName} vs ${m.awayTeamName} | seasonId: ${m.seasonId}`);
@@ -2366,20 +2366,20 @@ export const getLeagueById = async (ctx: Context) => {
     const matchIds = matches.map((m: any) => m.id);
     const availabilityRecords = matchIds.length > 0
       ? await MatchAvailability.findAll({
-          where: {
-            match_id: matchIds,
-            status: 'available' // Only get users who are AVAILABLE
-          }
-        })
+        where: {
+          match_id: matchIds,
+          status: 'available' // Only get users who are AVAILABLE
+        }
+      })
       : [];
 
     // Get all user IDs who are available
     const availableUserIds: string[] = Array.from(new Set<string>(availabilityRecords.map((a: any) => String(a.user_id))));
     const availableUsersData = availableUserIds.length > 0
       ? await User.findAll({
-          where: { id: { [Op.in]: availableUserIds } },
-          attributes: ['id', 'firstName', 'lastName', 'profilePicture']
-        })
+        where: { id: { [Op.in]: availableUserIds } },
+        attributes: ['id', 'firstName', 'lastName', 'profilePicture']
+      })
       : [];
 
     // Create a map of userId -> user data
@@ -2419,7 +2419,7 @@ export const getLeagueById = async (ctx: Context) => {
         .map((match: any, index: number) => {
           const matchJson = typeof match.toJSON === 'function' ? match.toJSON() : { ...match };
           const guests = Array.isArray(matchJson.guestPlayers) ? matchJson.guestPlayers : [];
-          
+
           // Convert votes array to manOfTheMatchVotes object format
           const manOfTheMatchVotes: Record<string, string> = {};
           if (matchJson.votes && Array.isArray(matchJson.votes)) {
@@ -2429,7 +2429,7 @@ export const getLeagueById = async (ctx: Context) => {
           }
           delete matchJson.votes; // Remove votes array
           delete matchJson.guestPlayers; // Normalize key for frontend
-          
+
           return {
             ...matchJson,
             seasonMatchNumber: index + 1, // Season-specific match number
@@ -2439,7 +2439,7 @@ export const getLeagueById = async (ctx: Context) => {
             availableUsers: matchAvailabilityMap[match.id] || []
           };
         });
-      
+
       matchesWithNumbers.push(...seasonMatches);
     });
 
@@ -2456,9 +2456,9 @@ export const getLeagueById = async (ctx: Context) => {
       }));
 
     // Get the user's current season (highest season they are in)
-    const userCurrentSeason = filteredSeasons.find((s: any) => s.id === userSeasonId) || 
-                              (filteredSeasons.length > 0 ? filteredSeasons[0] : null);
-    
+    const userCurrentSeason = filteredSeasons.find((s: any) => s.id === userSeasonId) ||
+      (filteredSeasons.length > 0 ? filteredSeasons[0] : null);
+
     console.log(`📊 [MEMBER] User ${userId} - filteredSeasons: ${filteredSeasons.map((s: any) => s.seasonNumber).join(', ')}, currentSeason: ${userCurrentSeason?.seasonNumber}`);
     filteredSeasons.forEach((s: any) => {
       console.log(`   - Season ${s.seasonNumber}: ${s.members?.length || 0} members`);
@@ -3110,7 +3110,7 @@ export const createLeague = async (ctx: Context) => {
     try {
       invalidateServerCache('/leagues');
       invalidateServerCache('/matches');
-    } catch {}
+    } catch { }
 
     ctx.status = 201;
     ctx.body = {
@@ -3128,14 +3128,14 @@ export const createLeague = async (ctx: Context) => {
     };
   } catch (err: any) {
     console.error('Create league error', err);
-    
+
     // Handle unique constraint violation for league name
     if (err?.name === 'SequelizeUniqueConstraintError' && err?.fields?.name) {
       ctx.status = 400;
       ctx.body = { success: false, message: 'A league with this name already exists. Please choose a different name.' };
       return;
     }
-    
+
     ctx.status = 500;
     ctx.body = { success: false, message: 'Failed to create league' };
   }
@@ -3254,7 +3254,7 @@ export const updateLeagueStatus = async (ctx: Context) => {
     try {
       invalidateServerCache('/leagues');
       invalidateServerCache('/matches');
-    } catch {}
+    } catch { }
 
     ctx.body = {
       success: true,
@@ -3341,7 +3341,7 @@ export const updateLeague = async (ctx: Context) => {
     }
 
     const userId = ctx.state.user.userId || ctx.state.user.id;
-    
+
     // Check admin via association first, then fallback to direct DB query
     const adminList = (league as any).administeredLeagues || [];
     console.log('🔍 updateLeague admin check:', {
@@ -3351,7 +3351,7 @@ export const updateLeague = async (ctx: Context) => {
       adminCount: adminList.length
     });
     let isAdmin = adminList.some((a: any) => String(a.id) === String(userId));
-    
+
     if (!isAdmin) {
       // Fallback: direct query on LeagueAdmin table
       const directResult = await (League as any).sequelize.query(
@@ -3361,7 +3361,7 @@ export const updateLeague = async (ctx: Context) => {
       console.log('🔍 updateLeague fallback query result:', JSON.stringify(directResult));
       isAdmin = Array.isArray(directResult) && directResult.length > 0;
     }
-    
+
     if (!isAdmin) {
       ctx.throw(403, 'Only league admins can update');
       return;
@@ -3544,7 +3544,7 @@ export const updateLeague = async (ctx: Context) => {
     try {
       invalidateServerCache('/leagues');
       invalidateServerCache('/matches');
-    } catch {}
+    } catch { }
 
     ctx.body = {
       success: true,
@@ -3653,7 +3653,7 @@ export const deleteLeague = async (ctx: Context) => {
       try {
         invalidateServerCache('/leagues');
         invalidateServerCache('/matches');
-      } catch {}
+      } catch { }
 
       ctx.body = {
         success: true,
@@ -3736,7 +3736,7 @@ export const deleteLeague = async (ctx: Context) => {
     try {
       invalidateServerCache('/leagues');
       invalidateServerCache('/matches');
-    } catch {}
+    } catch { }
 
     ctx.body = {
       success: true,
@@ -3927,7 +3927,7 @@ export const joinLeague = async (ctx: Context) => {
     try {
       invalidateServerCache('/leagues');
       invalidateServerCache('/matches');
-    } catch {}
+    } catch { }
 
     ctx.body = {
       success: true,
@@ -3998,7 +3998,7 @@ export const leaveLeague = async (ctx: Context) => {
         try {
           invalidateServerCache('/leagues');
           invalidateServerCache('/matches');
-        } catch {}
+        } catch { }
         ctx.body = {
           success: true,
           message: 'You were the last member. League has been archived.',
@@ -4075,7 +4075,7 @@ export const leaveLeague = async (ctx: Context) => {
     try {
       invalidateServerCache('/leagues');
       invalidateServerCache('/matches');
-    } catch {}
+    } catch { }
 
     ctx.body = {
       success: true,
@@ -4141,7 +4141,7 @@ export const removeUserFromLeague = async (ctx: Context) => {
     try {
       invalidateServerCache('/leagues');
       invalidateServerCache('/matches');
-    } catch {}
+    } catch { }
 
     ctx.body = {
       success: true,
@@ -4186,7 +4186,7 @@ export const notifyMembersNewSeason = async (ctx: Context) => {
 
     // Send notification to all members except the admin who created it
     const Notification = (await importWithFallback('../models/Notification.js')).default as any;
-    
+
     const notificationsToCreate = members
       .filter((member: any) => member.id !== currentUserId)
       .map((member: any) => ({
@@ -4240,7 +4240,7 @@ export const createMatchInLeague = async (ctx: Context) => {
   }
 
   const { id: leagueId } = ctx.params;
-  
+
   // Get form data (FormData from frontend)
   const body = ctx.request.body as any;
   const files = (ctx.request as any).files as any;
@@ -4502,7 +4502,7 @@ export const updateMatchInLeague = async (ctx: Context) => {
 
   const { id: leagueId, matchId } = ctx.params;
   const currentUserId = ctx.state.user.userId;
-  
+
   // Get form data
   const body = ctx.request.body as any;
   const files = (ctx.request as any).files as any;
@@ -4674,7 +4674,7 @@ export const updateMatchInLeague = async (ctx: Context) => {
     console.log('📢 [SERVER] Checking notification - notificationMessage:', JSON.stringify(normalizedNotificationMessage));
     console.log('📢 [SERVER] notificationMessage truthy?', !!normalizedNotificationMessage);
     console.log('📢 [SERVER] notificationMessage trim?', normalizedNotificationMessage || 'N/A');
-    
+
     if (normalizedNotificationMessage) {
       console.log('📢 [SERVER] INSIDE notification block - will send notifications');
       try {
@@ -4687,7 +4687,7 @@ export const updateMatchInLeague = async (ctx: Context) => {
         console.log('📢 [SERVER] Current user (admin):', currentUserId);
 
         // Send to ALL players including admin
-        console.log('📢 [SERVER] Player IDs (including admin):',  Array.from(allPlayerIds));
+        console.log('📢 [SERVER] Player IDs (including admin):', Array.from(allPlayerIds));
         console.log('📢 [SERVER] Players to notify:', allPlayerIds.size);
 
         if (allPlayerIds.size > 0) {

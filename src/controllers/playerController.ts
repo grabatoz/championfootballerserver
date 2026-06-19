@@ -320,6 +320,16 @@ export const getPlayerProfile = async (ctx: Context) => {
   const { leagueId, year } = ctx.query;
 
   try {
+    const cacheLeagueId = typeof leagueId === 'string' && leagueId.trim() && leagueId !== 'all' ? leagueId.trim() : 'all';
+    const cacheYear = typeof year === 'string' && year.trim() && year !== 'all' ? year.trim() : 'all';
+
+    const cacheKey = `player_profile_${id}_${cacheLeagueId}_${cacheYear}`;
+    const cached = cache.get(cacheKey);
+    if (cached) {
+      ctx.body = cached;
+      return;
+    }
+
     // 1. Get player basic info
     const player = await UserModel.findByPk(id, {
       attributes: ['id', 'firstName', 'lastName', 'profilePicture', 'xp', 'position', 'positionType', 'shirtNumber', 'email'],
@@ -559,6 +569,7 @@ export const getPlayerProfile = async (ctx: Context) => {
       }
     };
 
+    cache.set(cacheKey, response, 300);
     ctx.body = response;
   } catch (error) {
     console.error('Error fetching player profile:', error);

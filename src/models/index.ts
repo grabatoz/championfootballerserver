@@ -8,10 +8,11 @@ import MatchStatistics from './MatchStatistics';
 import Session from './Session';
 import Vote from './Vote';
 import MatchGuest from './MatchGuest';
-import  Notification  from './Notification';
+import Notification from './Notification';
 import { MatchPlayerLayout } from './MatchPlayerLayout';
 import { realtime } from '../services/realtime';
 import { invalidateCache as invalidateServerCache } from '../middleware/memoryCache';
+import cache from '../utils/cache';
 
 // Initialize models that need it
 MatchAvailability.initModel(sequelize);
@@ -39,14 +40,26 @@ Object.values(models).forEach((model: any) => {
 export default models;
 export { User, League, Match, Season, MatchGuest, MatchStatistics, Session, Vote, MatchAvailability, Notification, MatchPlayerLayout };
 
+// Helper to clear player-related caches
+const clearPlayerCaches = () => {
+  try {
+    cache.clearPattern('player_profile_');
+    cache.clearPattern('player_trophies_');
+    cache.clearPattern('achievements:');
+  } catch (err) {
+    console.error('Failed to clear player caches:', err);
+  }
+};
+
 // Root-level realtime hooks (non-destructive): broadcast key entity changes
 try {
   Match.addHook('afterCreate', (instance: any) => {
-    try { invalidateServerCache('/matches'); invalidateServerCache('/leagues'); } catch {}
+    try { invalidateServerCache('/matches'); invalidateServerCache('/leagues'); } catch { }
+    try { clearPlayerCaches(); } catch { }
     try {
       const payload = JSON.stringify({ id: instance.id, leagueId: instance.leagueId, status: instance.status });
       sequelize.query("NOTIFY match_updates, '" + payload.replace(/'/g, "''") + "'");
-    } catch {}
+    } catch { }
     realtime.broadcast('match-created', {
       id: instance.id,
       leagueId: instance.leagueId,
@@ -55,11 +68,12 @@ try {
     });
   });
   Match.addHook('afterUpdate', (instance: any) => {
-    try { invalidateServerCache('/matches'); invalidateServerCache('/leagues'); } catch {}
+    try { invalidateServerCache('/matches'); invalidateServerCache('/leagues'); } catch { }
+    try { clearPlayerCaches(); } catch { }
     try {
       const payload = JSON.stringify({ id: instance.id, leagueId: instance.leagueId, status: instance.status });
       sequelize.query("NOTIFY match_updates, '" + payload.replace(/'/g, "''") + "'");
-    } catch {}
+    } catch { }
     realtime.broadcast('match-updated', {
       id: instance.id,
       leagueId: instance.leagueId,
@@ -70,36 +84,40 @@ try {
     });
   });
   Match.addHook('afterDestroy', (instance: any) => {
-    try { invalidateServerCache('/matches'); invalidateServerCache('/leagues'); } catch {}
+    try { invalidateServerCache('/matches'); invalidateServerCache('/leagues'); } catch { }
+    try { clearPlayerCaches(); } catch { }
     try {
       const payload = JSON.stringify({ id: instance.id, leagueId: instance.leagueId, deleted: true });
       sequelize.query("NOTIFY match_updates, '" + payload.replace(/'/g, "''") + "'");
-    } catch {}
+    } catch { }
     realtime.broadcast('match-deleted', { id: instance.id, leagueId: instance.leagueId });
   });
 
   League.addHook('afterCreate', (l: any) => {
-    try { invalidateServerCache('/leagues'); } catch {}
+    try { invalidateServerCache('/leagues'); } catch { }
+    try { clearPlayerCaches(); } catch { }
     try {
       const payload = JSON.stringify({ id: l.id, name: l.name });
       sequelize.query("NOTIFY league_updates, '" + payload.replace(/'/g, "''") + "'");
-    } catch {}
+    } catch { }
     realtime.broadcast('league-created', { id: l.id, name: l.name });
   });
   League.addHook('afterUpdate', (l: any) => {
-    try { invalidateServerCache('/leagues'); } catch {}
+    try { invalidateServerCache('/leagues'); } catch { }
+    try { clearPlayerCaches(); } catch { }
     try {
       const payload = JSON.stringify({ id: l.id, name: l.name });
       sequelize.query("NOTIFY league_updates, '" + payload.replace(/'/g, "''") + "'");
-    } catch {}
+    } catch { }
     realtime.broadcast('league-updated', { id: l.id, name: l.name });
   });
   League.addHook('afterDestroy', (l: any) => {
-    try { invalidateServerCache('/leagues'); invalidateServerCache('/matches'); } catch {}
+    try { invalidateServerCache('/leagues'); invalidateServerCache('/matches'); } catch { }
+    try { clearPlayerCaches(); } catch { }
     try {
       const payload = JSON.stringify({ id: l.id, deleted: true });
       sequelize.query("NOTIFY league_updates, '" + payload.replace(/'/g, "''") + "'");
-    } catch {}
+    } catch { }
     realtime.broadcast('league-deleted', { id: l.id });
   });
 
@@ -109,11 +127,12 @@ try {
 
   // Votes affect leaderboard and match vote tallies
   Vote.addHook('afterCreate', (v: any) => {
-    try { invalidateServerCache('/leaderboard'); invalidateServerCache('/matches'); } catch {}
+    try { invalidateServerCache('/leaderboard'); invalidateServerCache('/matches'); } catch { }
+    try { clearPlayerCaches(); } catch { }
     try {
       const payload = JSON.stringify({ matchId: v.matchId || v.match_id, voterId: v.voterId || v.voter_id, votedForId: v.votedForId || v.voted_for_id });
       sequelize.query("NOTIFY vote_updates, '" + payload.replace(/'/g, "''") + "'");
-    } catch {}
+    } catch { }
     realtime.broadcast('vote-updated', {
       matchId: v.matchId || v.match_id,
       voterId: v.voterId || v.voter_id,
@@ -122,11 +141,12 @@ try {
     });
   });
   Vote.addHook('afterDestroy', (v: any) => {
-    try { invalidateServerCache('/leaderboard'); invalidateServerCache('/matches'); } catch {}
+    try { invalidateServerCache('/leaderboard'); invalidateServerCache('/matches'); } catch { }
+    try { clearPlayerCaches(); } catch { }
     try {
       const payload = JSON.stringify({ matchId: v.matchId || v.match_id, voterId: v.voterId || v.voter_id, votedForId: v.votedForId || v.voted_for_id, deleted: true });
       sequelize.query("NOTIFY vote_updates, '" + payload.replace(/'/g, "''") + "'");
-    } catch {}
+    } catch { }
     realtime.broadcast('vote-updated', {
       matchId: v.matchId || v.match_id,
       voterId: v.voterId || v.voter_id,
@@ -137,11 +157,12 @@ try {
 
   // Match statistics updates impact player stats, rankings, and match views
   MatchStatistics.addHook('afterCreate', (s: any) => {
-    try { invalidateServerCache('/players'); invalidateServerCache('/world-ranking'); invalidateServerCache('/matches'); } catch {}
+    try { invalidateServerCache('/players'); invalidateServerCache('/world-ranking'); invalidateServerCache('/matches'); } catch { }
+    try { clearPlayerCaches(); } catch { }
     try {
       const payload = JSON.stringify({ matchId: s.matchId || s.match_id, playerId: s.userId || s.user_id, action: 'created' });
       sequelize.query("NOTIFY stats_updates, '" + payload.replace(/'/g, "''") + "'");
-    } catch {}
+    } catch { }
     realtime.broadcast('match-stats-updated', {
       matchId: s.matchId || s.match_id,
       playerId: s.userId || s.user_id,
@@ -149,11 +170,12 @@ try {
     });
   });
   MatchStatistics.addHook('afterUpdate', (s: any) => {
-    try { invalidateServerCache('/players'); invalidateServerCache('/world-ranking'); invalidateServerCache('/matches'); } catch {}
+    try { invalidateServerCache('/players'); invalidateServerCache('/world-ranking'); invalidateServerCache('/matches'); } catch { }
+    try { clearPlayerCaches(); } catch { }
     try {
       const payload = JSON.stringify({ matchId: s.matchId || s.match_id, playerId: s.userId || s.user_id, action: 'updated' });
       sequelize.query("NOTIFY stats_updates, '" + payload.replace(/'/g, "''") + "'");
-    } catch {}
+    } catch { }
     realtime.broadcast('match-stats-updated', {
       matchId: s.matchId || s.match_id,
       playerId: s.userId || s.user_id,

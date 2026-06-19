@@ -7,9 +7,9 @@ dotenv.config({ path: path.join(__dirname, '../.env') });
 import playersRouter from '../src/routes/players';
 
 async function main() {
-  const layer = playersRouter.stack.find((l) => l.path === '/players/:id/profile' && l.methods.includes('GET'));
+  const layer = playersRouter.stack.find((l) => l.path === '/players/:id/achievements' && l.methods.includes('GET'));
   if (!layer) {
-    console.error('Could not find route matching /players/:id/profile');
+    console.error('Could not find route matching /players/:id/achievements');
     return;
   }
 
@@ -22,7 +22,8 @@ async function main() {
     },
     query: {
       leagueId: 'all',
-      year: 'all'
+      year: 'all',
+      seasonId: 'all'
     },
     state: {
       user: {
@@ -40,17 +41,13 @@ async function main() {
   };
 
   try {
-    console.log('Calling /players/:id/profile controller...');
+    console.log('Calling /players/:id/achievements controller...');
     const start = Date.now();
     await controller(ctx, async () => {});
     const end = Date.now();
     console.log(`\n--- Controller Response (Took ${end - start}ms) ---`);
     console.log('Status:', ctx.status || 200);
     console.log('Body keys:', Object.keys(ctx.body || {}));
-    if (ctx.body && ctx.body.data) {
-      console.log('Player info:', ctx.body.data.player);
-      console.log('Leagues count:', ctx.body.data.leagues?.length);
-    }
   } catch (err) {
     console.error('Controller crashed:', err);
   }

@@ -1249,7 +1249,7 @@ router.get('/:id/achievements', required, async (ctx) => {
           { id: 'rising_xp', title: 'Rising Star', count: 0, xp: Number(user.xp || 0), unlocked: true },
         ],
       };
-      cache.set(cacheKey, emptyResult, 20);
+      cache.set(cacheKey, emptyResult, 300);
       ctx.body = emptyResult;
       return;
     }
@@ -1428,7 +1428,7 @@ router.get('/:id/achievements', required, async (ctx) => {
     const response = { success: true, userId: playerId, totalXP: Number(user.xp || 0), badges };
     
     // Keep this cache short so reward XP updates reflect quickly after match edits.
-    cache.set(cacheKey, response, 20);
+    cache.set(cacheKey, response, 300);
     
     console.log('[Achievements] âœ… Computed badges:', badges.filter(b => b.unlocked).length, 'unlocked');
     
