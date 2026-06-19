@@ -6,7 +6,7 @@ import { Op } from 'sequelize';
 import sequelize from '../config/database';
 import cache from '../utils/cache';
 import { computeAchievementState, toAchievementMatchInput } from '../utils/achievementChecker';
-import { isRegisteredUserRecord } from '../utils/playerIdentity';
+import { isRegisteredUserRecord, isGuestUserRecord } from '../utils/playerIdentity';
 
 const { User: UserModel, Match: MatchModel, MatchStatistics, League: LeagueModel, Vote } = models;
 
@@ -733,7 +733,14 @@ router.get('/:id/trophies', required, async (ctx) => {
 
     const calcStats = (league: any): Record<string, PlayerStats> => {
       const stats: Record<string, PlayerStats> = {};
+      const memberIdSet = new Set(
+        (league.members || [])
+          .filter((p: any) => !isGuestUserRecord(p))
+          .map((p: any) => String(p.id))
+      );
+
       const ensure = (pid: string) => {
+        if (!memberIdSet.has(pid)) return;
         if (!stats[pid]) {
           stats[pid] = {
             played: 0,
@@ -777,12 +784,12 @@ router.get('/:id/trophies', required, async (ctx) => {
           if (m.homeDefensiveImpactId) {
             const id = String(m.homeDefensiveImpactId);
             ensure(id);
-            stats[id].defensiveImpactVotes++;
+            if (stats[id]) stats[id].defensiveImpactVotes++;
           }
           if (m.awayDefensiveImpactId) {
             const id = String(m.awayDefensiveImpactId);
             ensure(id);
-            stats[id].defensiveImpactVotes++;
+            if (stats[id]) stats[id].defensiveImpactVotes++;
           }
 
           const hg = Number(m.homeTeamGoals || 0), ag = Number(m.awayTeamGoals || 0);
@@ -1047,7 +1054,7 @@ router.get('/:id/trophies', required, async (ctx) => {
         allMatches = allMatches.filter((m: any) => new Date(m.date).getFullYear() === selectedYear);
       }
 
-      const getParsedSnapshot = (seasonRow: any) => {
+      const getParsedSnapshot = (seasonRow: any, members: any[]) => {
         if (!seasonRow || !seasonRow.trophyAwardSnapshot) return null;
         let snapshot = seasonRow.trophyAwardSnapshot;
         if (typeof snapshot === 'string') {
@@ -1057,7 +1064,20 @@ router.get('/:id/trophies', required, async (ctx) => {
             return null;
           }
         }
-        return (snapshot && typeof snapshot === 'object' && Object.keys(snapshot).length > 0) ? snapshot : null;
+        if (!snapshot || typeof snapshot !== 'object' || Object.keys(snapshot).length === 0) return null;
+
+        // Invalidate if any winner in the snapshot is a guest/non-member of the league
+        const memberMap = new Map((members || []).map((p: any) => [String(p.id), p]));
+        for (const entry of Object.values(snapshot) as any[]) {
+          if (entry?.winnerId) {
+            const member = memberMap.get(String(entry.winnerId));
+            if (!member || isGuestUserRecord(member)) {
+              console.log(`⚠️ [Trophies] Invalidating snapshot because winner ${entry.winnerId} is not a member or is guest.`);
+              return null;
+            }
+          }
+        }
+        return snapshot;
       };
 
       const getMatchesForSeason = (seasonRow: any, allowLegacyFallback = false): any[] => {
@@ -1105,7 +1125,7 @@ router.get('/:id/trophies', required, async (ctx) => {
         console.log(`📊 [Trophies] League ${l.name}${seasonName ? ` / ${seasonName}` : ''}: ${matches.length} matches, player wins: ${winners.filter((w) => w.winnerId && String(w.winnerId) === String(playerId)).length}`);
 
         // Write back computed snapshot if completed season has no snapshot yet
-        if (seasonId && seasonRow && !getParsedSnapshot(seasonRow)) {
+        if (seasonId && seasonRow && !getParsedSnapshot(seasonRow, l.members || [])) {
           const nextSnapshot: Record<string, any> = {};
           const nowIso = new Date().toISOString();
           winners.forEach((w) => {
@@ -1132,7 +1152,7 @@ router.get('/:id/trophies', required, async (ctx) => {
         const season = seasons.find((s: any) => String(s.id) === selectedSeasonId);
         const seasonName = season?.name || `Season ${season?.seasonNumber || '?'}`;
         if (season) {
-          const snapshot = getParsedSnapshot(season);
+          const snapshot = getParsedSnapshot(season, l.members || []);
           if (snapshot) {
             Object.entries(snapshot).forEach(([title, entry]: [string, any]) => {
               addSnapshotAward(title, entry, l, season, selectedSeasonId, seasonName);
@@ -1149,7 +1169,7 @@ router.get('/:id/trophies', required, async (ctx) => {
         seasons.forEach((season: any) => {
           const sid = String(season.id);
           const sName = season.name || `Season ${season.seasonNumber || '?'}`;
-          const snapshot = getParsedSnapshot(season);
+          const snapshot = getParsedSnapshot(season, l.members || []);
           if (snapshot) {
             Object.entries(snapshot).forEach(([title, entry]: [string, any]) => {
               addSnapshotAward(title, entry, l, season, sid, sName);
@@ -1219,10 +1239,22 @@ router.get('/:id/achievements', required, async (ctx) => {
       return;
     }
 
-    const user = await UserModel.findByPk(playerId, { attributes: ['id', 'xp'] });
+    const user = await UserModel.findByPk(playerId, { attributes: ['id', 'xp', 'firstName', 'lastName', 'email', 'provider', 'isGuest', 'guestId', 'type', 'role'] });
     if (!user) {
       ctx.status = 404;
       ctx.body = { success: false, message: 'Player not found' };
+      return;
+    }
+
+    if (isGuestUserRecord(user)) {
+      const emptyResult = {
+        success: true,
+        userId: playerId,
+        totalXP: 0,
+        badges: [],
+      };
+      cache.set(cacheKey, emptyResult, 300);
+      ctx.body = emptyResult;
       return;
     }
 

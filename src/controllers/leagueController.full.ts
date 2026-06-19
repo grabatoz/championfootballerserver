@@ -12,7 +12,7 @@ import { MatchAvailability } from '../models/MatchAvailability';
 import { MatchPlayerLayout } from '../models/MatchPlayerLayout';
 import { checkLeagueCompletion, checkLeagueCompletionBulk } from '../utils/leagueCompletion';
 import { invalidateCache as invalidateServerCache } from '../middleware/memoryCache';
-import { registeredUserWhere } from '../utils/playerIdentity';
+import { registeredUserWhere, isGuestUserRecord } from '../utils/playerIdentity';
 
 const { League, Match, User, MatchGuest } = models;
 
@@ -563,7 +563,14 @@ export const getTrophyRoom = async (ctx: Context) => {
 
   const calcStats = (matches: any[], members: any[]): Record<string, PlayerStats> => {
     const stats: Record<string, PlayerStats> = {};
+    const memberIdSet = new Set(
+      (members || [])
+        .filter((p: any) => !isGuestUserRecord(p))
+        .map((p: any) => String(p.id))
+    );
+
     const ensure = (pid: string) => {
+      if (!memberIdSet.has(pid)) return;
       if (!stats[pid]) {
         stats[pid] = {
           played: 0,
@@ -615,12 +622,12 @@ export const getTrophyRoom = async (ctx: Context) => {
         if (m.homeDefensiveImpactId) {
           const id = String(m.homeDefensiveImpactId);
           ensure(id);
-          stats[id].defensiveImpactVotes++;
+          if (stats[id]) stats[id].defensiveImpactVotes++;
         }
         if (m.awayDefensiveImpactId) {
           const id = String(m.awayDefensiveImpactId);
           ensure(id);
-          stats[id].defensiveImpactVotes++;
+          if (stats[id]) stats[id].defensiveImpactVotes++;
         }
 
         const homeWon = (m.homeTeamGoals ?? 0) > (m.awayTeamGoals ?? 0);
@@ -748,10 +755,23 @@ export const getTrophyRoom = async (ctx: Context) => {
     const trophyWinners: any[] = [];
     const seasonSnapshotUpdates: Array<{ seasonId: string; snapshot: TrophySnapshot }> = [];
 
-    const hasValidSnapshot = (seasonRow: any): boolean => {
+    const hasValidSnapshot = (seasonRow: any, members: any[]): boolean => {
       if (!hasTrophySnapshotColumn || !seasonRow || !seasonRow.trophyAwardSnapshot) return false;
       const parsed = parseSnapshot(seasonRow.trophyAwardSnapshot);
-      return Object.keys(parsed).length > 0;
+      if (Object.keys(parsed).length === 0) return false;
+
+      // Invalidate if any winner in the snapshot is a guest/non-member of the league
+      const memberMap = new Map((members || []).map((p: any) => [String(p.id), p]));
+      for (const entry of Object.values(parsed)) {
+        if (entry.winnerId) {
+          const member = memberMap.get(String(entry.winnerId));
+          if (!member || isGuestUserRecord(member)) {
+            console.log(`⚠️ [Trophy Room] Invaliding snapshot for season because winner ${entry.winnerId} is not a member or is guest.`);
+            return false;
+          }
+        }
+      }
+      return true;
     };
 
     // Determine which match details we actually need to fetch (excluding seasons that already have snapshots)
@@ -774,7 +794,7 @@ export const getTrophyRoom = async (ctx: Context) => {
         matchesToUse = allMatches.filter((m: any) => String(m.seasonId) === currentSeasonId);
       }
 
-      if (!hasValidSnapshot(currentSeasonRow)) {
+      if (!hasValidSnapshot(currentSeasonRow, league.members || [])) {
         matchesToUse.forEach((m: any) => neededMatchIds.add(String(m.id)));
       }
     });
@@ -867,7 +887,7 @@ export const getTrophyRoom = async (ctx: Context) => {
         console.log(`🔍 [Trophy Room] Using active season ${currentSeasonName} with ${matchesToUse.length} matches`);
       }
 
-      if (hasValidSnapshot(currentSeasonRow)) {
+      if (hasValidSnapshot(currentSeasonRow, league.members || [])) {
         console.log(`🏆 [Trophy Room] Using cached snapshot for season: ${currentSeasonName}`);
         const snapshot = parseSnapshot(currentSeasonRow.trophyAwardSnapshot);
         Object.entries(snapshot).forEach(([title, entry]) => {
@@ -1139,6 +1159,14 @@ export const getTrophyRoom = async (ctx: Context) => {
           )
         )
       );
+
+      // Invalidate trophy room cache
+      try {
+        cache.clearPattern('trophy_room_v2_');
+        console.log('🧹 [Trophy Room] Invalidated trophy room cache.');
+      } catch (err) {
+        console.error('Failed to clear trophy room cache:', err);
+      }
     }
 
     console.log(`✅ [Trophy Room] Returning ${trophyWinners.length} trophy winners`);

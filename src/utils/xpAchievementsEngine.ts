@@ -8,6 +8,7 @@ import { xpAchievements } from './xpAchievements';
 import { xpPointsTable } from './xpPointsTable';
 import sequelize from '../config/database';
 import { computeAchievementState, toAchievementMatchInput } from './achievementChecker';
+import { isGuestUserRecord } from './playerIdentity';
 
 // Helper: Get all stats for a user in a league
 async function getUserLeagueStats(userId: string, leagueId: string) {
@@ -172,8 +173,8 @@ export async function calculateAndAwardXPAchievements(userId: string, leagueId?:
   console.log(`Starting XP achievement sync for user ${userId}${leagueId ? ` in league ${leagueId}` : ''}`);
 
   const user = await User.findByPk(userId);
-  if (!user) {
-    console.log(`User ${userId} not found for achievement sync`);
+  if (!user || isGuestUserRecord(user)) {
+    console.log(`User ${userId} not found or is guest player for achievement sync`);
     return;
   }
 
@@ -503,6 +504,7 @@ export async function calculateAllUsersXP() {
   
   for (const user of users) {
     try {
+      if (isGuestUserRecord(user)) continue;
       await calculateAndAwardXPAchievements(user.id);
       totalAwarded++;
     } catch (error) {
@@ -602,6 +604,10 @@ export async function awardXPForMatch(matchId: string) {
 
   // Award XP for each player
   for (const player of allPlayers) {
+    if (isGuestUserRecord(player)) {
+      console.log(`   ⏭️ Skipping XP award for guest player ${player.id}`);
+      continue;
+    }
     let xp = 0;
     const xpBreakdown: string[] = [];
     

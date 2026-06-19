@@ -2,6 +2,7 @@ import { Context } from 'koa';
 import models from '../models';
 import { Op, fn, col, literal } from 'sequelize';
 import cache from '../utils/cache';
+import { registeredUserWhere } from '../utils/playerIdentity';
 
 const METRIC_MAP: Record<string, string> = {
   goals: 'goals',
@@ -13,13 +14,7 @@ const METRIC_MAP: Record<string, string> = {
   cleanSheet: 'clean_sheets'
 };
 
-const NON_GUEST_PROVIDER_WHERE = {
-  [Op.or]: [
-    { provider: { [Op.ne]: 'guest' } },
-    { provider: { [Op.is]: null } },
-    { provider: '' }
-  ]
-};
+const NON_GUEST_PROVIDER_WHERE = registeredUserWhere();
 
 const FINALIZED_MATCH_STATUSES = ['RESULT_PUBLISHED', 'RESULT_UPLOADED'];
 
