@@ -4976,17 +4976,27 @@ export const getLeaguePlayerAverages = async (ctx: Context) => {
       };
     }
 
-    const divider = Math.max(totalPlayers, 1);
-    // Product rule for the dashboard Goals comparison: average (total goals + player appearances)
-    // across registered league players, excluding migrated guests.
+    // Compute per-match averages: for each player compute their per-match average,
+    // then average those across all players. This gives the true "league average per match".
+    const metricKeysForAvg = ['goals', 'assists', 'cleanSheets', 'defence', 'motmVotes', 'defensiveImpactVotes', 'impact'] as const;
+    const perMatchAverages: Record<string, number> = {};
+    for (const key of metricKeysForAvg) {
+      const playerAvgs = playerIds.map(uid => {
+        const p = playerMap[uid];
+        const mc = Math.max(p.matches, 1);
+        return p[key] / mc;
+      });
+      const sumAvg = playerAvgs.reduce((a, b) => a + b, 0);
+      perMatchAverages[key] = totalPlayers > 0 ? +(sumAvg / totalPlayers).toFixed(2) : 0;
+    }
     const leagueAvg = {
-      goals: +((leagueTotals.goals + leagueTotals.matches) / divider).toFixed(2),
-      assists: +(leagueTotals.assists / divider).toFixed(2),
-      cleanSheets: +(leagueTotals.cleanSheets / divider).toFixed(2),
-      defence: +(leagueTotals.defence / divider).toFixed(2),
-      motmVotes: +(leagueTotals.motmVotes / divider).toFixed(2),
-      defensiveImpactVotes: +(leagueTotals.defensiveImpactVotes / divider).toFixed(2),
-      impact: +(leagueTotals.impact / divider).toFixed(2)
+      goals: perMatchAverages.goals,
+      assists: perMatchAverages.assists,
+      cleanSheets: perMatchAverages.cleanSheets,
+      defence: perMatchAverages.defence,
+      motmVotes: perMatchAverages.motmVotes,
+      defensiveImpactVotes: perMatchAverages.defensiveImpactVotes,
+      impact: perMatchAverages.impact,
     };
 
     ctx.body = {
