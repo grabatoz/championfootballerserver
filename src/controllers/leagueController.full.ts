@@ -4877,12 +4877,38 @@ export const getLeaguePlayerAverages = async (ctx: Context) => {
     });
     const nonGuestUserIds = new Set(nonGuests.map((u: any) => String(u.id)));
 
+    interface AggregatedPlayerStats {
+      goals: number;
+      assists: number;
+      cleanSheets: number;
+      defence: number;
+      impact: number;
+      motmVotes: number;
+      defensiveImpactVotes: number;
+      matches: number;
+      matchesWithGoals: number;
+      matchesWithAssists: number;
+      matchesWithCleanSheets: number;
+    }
+
     // Build per-player aggregations (excluding guests)
-    const playerMap: Record<string, { goals: number; assists: number; cleanSheets: number; defence: number; impact: number; motmVotes: number; defensiveImpactVotes: number; matches: number }> = {};
+    const playerMap: Record<string, AggregatedPlayerStats> = {};
     const ensurePlayerStats = (uid: string) => {
       if (!nonGuestUserIds.has(uid)) return null;
       if (!playerMap[uid]) {
-        playerMap[uid] = { goals: 0, assists: 0, cleanSheets: 0, defence: 0, impact: 0, motmVotes: 0, defensiveImpactVotes: 0, matches: 0 };
+        playerMap[uid] = {
+          goals: 0,
+          assists: 0,
+          cleanSheets: 0,
+          defence: 0,
+          impact: 0,
+          motmVotes: 0,
+          defensiveImpactVotes: 0,
+          matches: 0,
+          matchesWithGoals: 0,
+          matchesWithAssists: 0,
+          matchesWithCleanSheets: 0
+        };
       }
       return playerMap[uid];
     };
@@ -4891,12 +4917,20 @@ export const getLeaguePlayerAverages = async (ctx: Context) => {
       const uid = String(stat.user_id);
       const playerStats = ensurePlayerStats(uid);
       if (!playerStats) continue;
-      playerStats.goals += Number(stat.goals) || 0;
-      playerStats.assists += Number(stat.assists) || 0;
-      playerStats.cleanSheets += Number(stat.cleanSheets) || 0;
+      const g = Number(stat.goals) || 0;
+      const a = Number(stat.assists) || 0;
+      const cs = Number(stat.cleanSheets) || 0;
+
+      playerStats.goals += g;
+      playerStats.assists += a;
+      playerStats.cleanSheets += cs;
       playerStats.defence += Number(stat.defence) || 0;
       playerStats.impact += Number(stat.impact) || 0;
       playerStats.matches += 1;
+
+      if (g > 0) playerStats.matchesWithGoals += 1;
+      if (a > 0) playerStats.matchesWithAssists += 1;
+      if (cs > 0) playerStats.matchesWithCleanSheets += 1;
     }
 
     // Add MOTM votes
@@ -4951,7 +4985,10 @@ export const getLeaguePlayerAverages = async (ctx: Context) => {
         impact: +(p.impact / mc).toFixed(2),
         motmVotes: +(p.motmVotes / mc).toFixed(2),
         defensiveImpactVotes: +(p.defensiveImpactVotes / mc).toFixed(2),
-        matches: p.matches
+        matches: p.matches,
+        expectedGoals: +(p.matchesWithGoals / mc).toFixed(2),
+        expectedAssists: +(p.matchesWithAssists / mc).toFixed(2),
+        expectedCleanSheets: +(p.matchesWithCleanSheets / mc).toFixed(2)
       };
       playersResult[uid] = avg;
       playerTotals[uid] = {
@@ -4989,6 +5026,24 @@ export const getLeaguePlayerAverages = async (ctx: Context) => {
       const sumAvg = playerAvgs.reduce((a, b) => a + b, 0);
       perMatchAverages[key] = totalPlayers > 0 ? +(sumAvg / totalPlayers).toFixed(2) : 0;
     }
+
+    // Expected rates averages
+    const expectedKeys = {
+      expectedGoals: 'matchesWithGoals',
+      expectedAssists: 'matchesWithAssists',
+      expectedCleanSheets: 'matchesWithCleanSheets'
+    } as const;
+
+    for (const [expKey, rawKey] of Object.entries(expectedKeys)) {
+      const playerAvgs = playerIds.map(uid => {
+        const p = playerMap[uid];
+        const mc = Math.max(p.matches, 1);
+        return p[rawKey as keyof AggregatedPlayerStats] / mc;
+      });
+      const sumAvg = playerAvgs.reduce((a, b) => a + b, 0);
+      perMatchAverages[expKey] = totalPlayers > 0 ? +(sumAvg / totalPlayers).toFixed(2) : 0;
+    }
+
     const leagueAvg = {
       goals: perMatchAverages.goals,
       assists: perMatchAverages.assists,
@@ -4997,6 +5052,9 @@ export const getLeaguePlayerAverages = async (ctx: Context) => {
       motmVotes: perMatchAverages.motmVotes,
       defensiveImpactVotes: perMatchAverages.defensiveImpactVotes,
       impact: perMatchAverages.impact,
+      expectedGoals: perMatchAverages.expectedGoals,
+      expectedAssists: perMatchAverages.expectedAssists,
+      expectedCleanSheets: perMatchAverages.expectedCleanSheets,
     };
 
     ctx.body = {
