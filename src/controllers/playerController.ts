@@ -354,7 +354,28 @@ export const getPlayerProfile = async (ctx: Context) => {
       raw: true,
     });
 
-    const uniqueMatchIds = Array.from(new Set((statRows as any[]).map((stat) => String(stat.match_id)).filter(Boolean)));
+    const uniqueMatchIdsFromStats = Array.from(new Set((statRows as any[]).map((stat) => String(stat.match_id)).filter(Boolean)));
+    const [homeMatches, awayMatches] = await Promise.all([
+      sequelize.query(
+        `SELECT "matchId" FROM "UserHomeMatches" WHERE "userId" = :playerId`,
+        { replacements: { playerId: id }, type: 'SELECT' as any }
+      ),
+      sequelize.query(
+        `SELECT "matchId" FROM "UserAwayMatches" WHERE "userId" = :playerId`,
+        { replacements: { playerId: id }, type: 'SELECT' as any }
+      )
+    ]);
+
+    const playedMatchIds = Array.from(new Set([
+      ...(homeMatches as any[]).map((row) => String(row.matchId)),
+      ...(awayMatches as any[]).map((row) => String(row.matchId))
+    ])).filter(Boolean);
+
+    const uniqueMatchIds = Array.from(new Set([
+      ...uniqueMatchIdsFromStats,
+      ...playedMatchIds
+    ])).filter(Boolean);
+
     const selectedLeagueId = typeof leagueId === 'string' && leagueId.trim() && leagueId !== 'all' ? leagueId.trim() : '';
     const selectedYear = typeof year === 'string' && year.trim() && year !== 'all' ? Number(year) : null;
 
@@ -362,7 +383,7 @@ export const getPlayerProfile = async (ctx: Context) => {
       ? await MatchModel.findAll({
           where: {
             id: { [Op.in]: uniqueMatchIds },
-            status: 'RESULT_PUBLISHED',
+            status: { [Op.in]: ['RESULT_PUBLISHED', 'RESULT_UPLOADED', 'REVISION_REQUESTED'] },
           },
           attributes: ['date'],
           raw: true,
@@ -376,7 +397,7 @@ export const getPlayerProfile = async (ctx: Context) => {
 
     const matchWhere: any = {
       id: { [Op.in]: uniqueMatchIds },
-      status: 'RESULT_PUBLISHED',
+      status: { [Op.in]: ['RESULT_PUBLISHED', 'RESULT_UPLOADED', 'REVISION_REQUESTED'] },
     };
     if (selectedLeagueId) {
       matchWhere.leagueId = selectedLeagueId;
@@ -450,8 +471,21 @@ export const getPlayerProfile = async (ctx: Context) => {
 
     const allStats = matchRows
       .map((match) => {
-        const stat = statsByMatchId.get(String(match.id));
-        if (!stat) return null;
+        let stat = statsByMatchId.get(String(match.id));
+        if (!stat) {
+          stat = {
+            goals: 0,
+            assists: 0,
+            cleanSheets: 0,
+            penalties: 0,
+            freeKicks: 0,
+            defence: 0,
+            impact: 0,
+            rating: 0,
+            xpAwarded: 0,
+            match_id: match.id,
+          };
+        }
         return {
           ...stat,
           match: {
