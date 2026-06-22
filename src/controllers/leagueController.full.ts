@@ -430,12 +430,15 @@ export const getAllLeagues = async (ctx: Context) => {
           missing: completionInfo?.missing ?? [],
           seasons: (completionInfo?.seasons ?? []).map(s => ({
             seasonId: s.seasonId,
+            seasonNumber: s.seasonNumber,
             seasonName: s.seasonName,
+            isActive: s.isActive,
             maxGames: s.maxGames,
             completedMatches: s.completedMatches,
             isCompleted: s.isCompleted,
             last2MatchesStatsComplete: s.last2MatchesStatsComplete,
             missingStatsPlayers: s.missingStatsPlayers,
+            inviteCode: s.inviteCode,
           })),
         },
       };
@@ -1926,12 +1929,15 @@ export const getUserLeagues = async (ctx: Context) => {
             missing: completionInfo?.missing ?? [],
             seasons: (completionInfo?.seasons ?? []).map(s => ({
               seasonId: s.seasonId,
+              seasonNumber: s.seasonNumber,
               seasonName: s.seasonName,
+              isActive: s.isActive,
               maxGames: s.maxGames,
               completedMatches: s.completedMatches,
               isCompleted: s.isCompleted,
               last2MatchesStatsComplete: s.last2MatchesStatsComplete,
               missingStatsPlayers: s.missingStatsPlayers,
+              inviteCode: s.inviteCode,
             })),
           },
         };
@@ -4794,6 +4800,14 @@ export const getLeaguePlayerAverages = async (ctx: Context) => {
     return;
   }
 
+  const cacheKey = `league_player_averages_${id}_${selectedSeasonId || 'all'}_${selectedYear || 'all'}`;
+  const cached = cache.get(cacheKey);
+  if (cached) {
+    ctx.set('X-Cache', 'HIT');
+    ctx.body = cached;
+    return;
+  }
+
   try {
     const matchWhere: any = {
       leagueId: id,
@@ -5057,7 +5071,7 @@ export const getLeaguePlayerAverages = async (ctx: Context) => {
       expectedCleanSheets: perMatchAverages.expectedCleanSheets,
     };
 
-    ctx.body = {
+    const result = {
       success: true,
       totalMatches: matchIds.length,
       totalPlayers,
@@ -5067,6 +5081,10 @@ export const getLeaguePlayerAverages = async (ctx: Context) => {
       playerTotals,
       players: playersResult
     };
+
+    cache.set(cacheKey, result, 120); // Cache for 2 minutes
+    ctx.set('X-Cache', 'MISS');
+    ctx.body = result;
   } catch (err) {
     console.error('Get league player averages error:', err);
     ctx.status = 500;

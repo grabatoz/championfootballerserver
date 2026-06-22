@@ -34,6 +34,7 @@ export interface SeasonCompletionInfo {
   isCompleted: boolean;
   last2MatchesStatsComplete: boolean;
   missingStatsPlayers: string[]; // player IDs who haven't submitted stats in last 2 matches
+  inviteCode?: string;
 }
 
 export interface LeagueCompletionInfo {
@@ -270,6 +271,7 @@ export const isSeasonCompleted = async (seasonId: string): Promise<SeasonComplet
       isCompleted: false, // No maxGames set = never auto-complete
       last2MatchesStatsComplete: false,
       missingStatsPlayers: [],
+      inviteCode: season.inviteCode,
     };
   }
 
@@ -300,6 +302,7 @@ export const isSeasonCompleted = async (seasonId: string): Promise<SeasonComplet
     isCompleted: matchesReached && statsCheck.allComplete,
     last2MatchesStatsComplete: statsCheck.allComplete,
     missingStatsPlayers: statsCheck.missingPlayerIds,
+    inviteCode: season.inviteCode,
   };
 };
 
@@ -371,6 +374,7 @@ export const checkLeagueCompletion = async (
       isCompleted,
       last2MatchesStatsComplete: statsCheck.allComplete,
       missingStatsPlayers: statsCheck.missingPlayerIds,
+      inviteCode: season.inviteCode,
     });
   }
 

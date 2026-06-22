@@ -5,20 +5,17 @@ import path from 'path';
 dotenv.config({ path: path.join(__dirname, '../.env') });
 
 import models from '../src/models';
-import { Op } from 'sequelize';
 import sequelize from '../src/config/database';
+import { Op } from 'sequelize';
 
 const { User: UserModel, Match: MatchModel, MatchStatistics, League: LeagueModel, Vote } = models;
 
 async function main() {
-  const id = 'a60adc4b-9054-453f-bc5b-af02e06fb4fe'; // sample playerId
-  const leagueId = 'all';
-  const year = 'all';
+  const id = 'a60adc4b-9054-453f-bc5b-af02e06fb4fe';
+  console.log(`Profiling queries for player ID: ${id}\n`);
 
-  console.log('Profiling queries inside getPlayerProfile...');
-
-  // 1. Get player basic info
-  let t = Date.now();
+  // Query 1
+  let start = Date.now();
   const player = await UserModel.findByPk(id, {
     attributes: ['id', 'firstName', 'lastName', 'profilePicture', 'xp', 'position', 'positionType', 'shirtNumber', 'email'],
     include: [{
@@ -27,107 +24,86 @@ async function main() {
       attributes: ['id', 'name', 'image']
     }]
   });
-  console.log(`- Query 1 (User info & leagues): ${Date.now() - t}ms`);
+  console.log(`Query 1 (User + leagues) took: ${Date.now() - start}ms`);
 
-  // 2. Get MatchStatistics
-  t = Date.now();
+  // Query 2
+  start = Date.now();
   const statRows = await MatchStatistics.findAll({
     where: { user_id: id },
     attributes: ['id', 'goals', 'assists', 'cleanSheets', 'penalties', 'freeKicks', 'defence', 'impact', 'rating', 'xpAwarded', 'match_id'],
     raw: true,
   });
-  console.log(`- Query 2 (MatchStatistics): ${Date.now() - t}ms (rows: ${statRows.length})`);
+  console.log(`Query 2 (MatchStatistics) took: ${Date.now() - start}ms`);
 
-  const uniqueMatchIds = Array.from(new Set((statRows as any[]).map((stat) => String(stat.match_id)).filter(Boolean)));
-  console.log(`Unique matches: ${uniqueMatchIds.length}`);
+  // Query 3
+  start = Date.now();
+  const [homeMatches, awayMatches] = await Promise.all([
+    sequelize.query(
+      `SELECT "matchId" FROM "UserHomeMatches" WHERE "userId" = :playerId`,
+      { replacements: { playerId: id }, type: 'SELECT' as any }
+    ),
+    sequelize.query(
+      `SELECT "matchId" FROM "UserAwayMatches" WHERE "userId" = :playerId`,
+      { replacements: { playerId: id }, type: 'SELECT' as any }
+    )
+  ]);
+  console.log(`Query 3 (UserHome/Away Matches IDs) took: ${Date.now() - start}ms`);
 
-  if (uniqueMatchIds.length === 0) {
-    console.log('No matches found for player.');
-    return;
-  }
+  const uniqueMatchIdsFromStats = Array.from(new Set((statRows as any[]).map((stat) => String(stat.match_id)).filter(Boolean)));
+  const userHomeMatchIds = new Set((homeMatches as any[]).map((row) => String(row.matchId)));
+  const userAwayMatchIds = new Set((awayMatches as any[]).map((row) => String(row.matchId)));
+  const playedMatchIds = Array.from(new Set([
+    ...userHomeMatchIds,
+    ...userAwayMatchIds
+  ])).filter(Boolean);
+  const uniqueMatchIds = Array.from(new Set([
+    ...uniqueMatchIdsFromStats,
+    ...playedMatchIds
+  ])).filter(Boolean);
 
-  // 3. Get all published match rows (date only)
-  t = Date.now();
-  const allPublishedMatchRows = await MatchModel.findAll({
-    where: {
-      id: { [Op.in]: uniqueMatchIds },
-      status: 'RESULT_PUBLISHED',
-    },
-    attributes: ['date'],
-    raw: true,
-  });
-  console.log(`- Query 3 (All published match rows): ${Date.now() - t}ms`);
+  console.log(`Total unique match IDs: ${uniqueMatchIds.length}`);
 
-  const selectedLeagueId = typeof leagueId === 'string' && leagueId.trim() && leagueId !== 'all' ? leagueId.trim() : '';
-  const selectedYear = typeof year === 'string' && year.trim() && year !== 'all' ? Number(year) : null;
+  // Query 4
+  start = Date.now();
+  const allMatches = uniqueMatchIds.length
+    ? await MatchModel.findAll({
+        where: {
+          id: { [Op.in]: uniqueMatchIds },
+          status: { [Op.in]: ['RESULT_PUBLISHED', 'RESULT_UPLOADED', 'REVISION_REQUESTED'] },
+        },
+        attributes: [
+          'id',
+          'date',
+          'seasonId',
+          'homeTeamName',
+          'awayTeamName',
+          'location',
+          'leagueId',
+          'end',
+          'homeDefensiveImpactId',
+          'awayDefensiveImpactId',
+          'homeMentalityId',
+          'awayMentalityId',
+          'homeTeamGoals',
+          'awayTeamGoals',
+        ],
+        raw: true,
+      })
+    : [];
+  console.log(`Query 4 (All player matches) took: ${Date.now() - start}ms`);
 
-  const matchWhere: any = {
-    id: { [Op.in]: uniqueMatchIds },
-    status: 'RESULT_PUBLISHED',
-  };
-  if (selectedLeagueId) {
-    matchWhere.leagueId = selectedLeagueId;
-  }
+  const visibleMatchIds = allMatches.map((match: any) => String(match.id));
 
-  // 4. Get detailed match rows
-  t = Date.now();
-  let matchRows = await MatchModel.findAll({
-    where: matchWhere,
-    attributes: [
-      'id',
-      'date',
-      'seasonId',
-      'homeTeamName',
-      'awayTeamName',
-      'location',
-      'leagueId',
-      'end',
-      'homeDefensiveImpactId',
-      'awayDefensiveImpactId',
-      'homeMentalityId',
-      'awayMentalityId',
-      'homeTeamGoals',
-      'awayTeamGoals',
-    ],
-    raw: true,
-  });
-  console.log(`- Query 4 (Detailed match rows): ${Date.now() - t}ms (rows: ${matchRows.length})`);
-
-  if (selectedYear && Number.isFinite(selectedYear)) {
-    matchRows = matchRows.filter((match) => new Date(match.date).getFullYear() === selectedYear);
-  }
-
-  const visibleMatchIds = matchRows.map((match) => String(match.id));
-
-  if (visibleMatchIds.length === 0) {
-    console.log('No visible matches.');
-    return;
-  }
-
-  // 5. Vote query
-  t = Date.now();
-  const voteRows = await Vote.findAll({
-    where: { matchId: { [Op.in]: visibleMatchIds } },
-    attributes: ['voterId', 'votedForId', 'matchId'],
-    raw: true,
-  });
-  console.log(`- Query 5 (Votes): ${Date.now() - t}ms (rows: ${voteRows.length})`);
-
-  // 6. UserHomeMatches query
-  t = Date.now();
-  const homeRows = await sequelize.query(
-    `SELECT "matchId" FROM "UserHomeMatches" WHERE "userId" = :playerId AND "matchId" IN (:matchIds)`,
-    { replacements: { playerId: id, matchIds: visibleMatchIds }, type: 'SELECT' as any }
-  );
-  console.log(`- Query 6 (UserHomeMatches): ${Date.now() - t}ms (rows: ${homeRows.length})`);
-
-  // 7. UserAwayMatches query
-  t = Date.now();
-  const awayRows = await sequelize.query(
-    `SELECT "matchId" FROM "UserAwayMatches" WHERE "userId" = :playerId AND "matchId" IN (:matchIds)`,
-    { replacements: { playerId: id, matchIds: visibleMatchIds }, type: 'SELECT' as any }
-  );
-  console.log(`- Query 7 (UserAwayMatches): ${Date.now() - t}ms (rows: ${awayRows.length})`);
+  // Query 5
+  start = Date.now();
+  const voteRows = visibleMatchIds.length
+    ? await Vote.findAll({
+        where: { matchId: { [Op.in]: visibleMatchIds } },
+        attributes: ['voterId', 'votedForId', 'matchId'],
+        raw: true,
+      })
+    : [];
+  console.log(`Query 5 (Votes) took: ${Date.now() - start}ms`);
 }
 
 main().then(() => process.exit(0)).catch(e => { console.error(e); process.exit(1); });

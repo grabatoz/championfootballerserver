@@ -366,9 +366,12 @@ export const getPlayerProfile = async (ctx: Context) => {
       )
     ]);
 
+    const userHomeMatchIds = new Set((homeMatches as any[]).map((row) => String(row.matchId)));
+    const userAwayMatchIds = new Set((awayMatches as any[]).map((row) => String(row.matchId)));
+
     const playedMatchIds = Array.from(new Set([
-      ...(homeMatches as any[]).map((row) => String(row.matchId)),
-      ...(awayMatches as any[]).map((row) => String(row.matchId))
+      ...userHomeMatchIds,
+      ...userAwayMatchIds
     ])).filter(Boolean);
 
     const uniqueMatchIds = Array.from(new Set([
@@ -379,33 +382,13 @@ export const getPlayerProfile = async (ctx: Context) => {
     const selectedLeagueId = typeof leagueId === 'string' && leagueId.trim() && leagueId !== 'all' ? leagueId.trim() : '';
     const selectedYear = typeof year === 'string' && year.trim() && year !== 'all' ? Number(year) : null;
 
-    const allPublishedMatchRows: any[] = uniqueMatchIds.length
+    // Fetch all published matches for the player in a single query
+    const allMatches: any[] = uniqueMatchIds.length
       ? await MatchModel.findAll({
           where: {
             id: { [Op.in]: uniqueMatchIds },
             status: { [Op.in]: ['RESULT_PUBLISHED', 'RESULT_UPLOADED', 'REVISION_REQUESTED'] },
           },
-          attributes: ['date'],
-          raw: true,
-        })
-      : [];
-    const allYears = [...new Set(
-      allPublishedMatchRows
-        .map((match) => new Date(match.date).getFullYear())
-        .filter((matchYear) => Number.isFinite(matchYear))
-    )];
-
-    const matchWhere: any = {
-      id: { [Op.in]: uniqueMatchIds },
-      status: { [Op.in]: ['RESULT_PUBLISHED', 'RESULT_UPLOADED', 'REVISION_REQUESTED'] },
-    };
-    if (selectedLeagueId) {
-      matchWhere.leagueId = selectedLeagueId;
-    }
-
-    let matchRows: any[] = uniqueMatchIds.length
-      ? await MatchModel.findAll({
-          where: matchWhere,
           attributes: [
             'id',
             'date',
@@ -426,6 +409,17 @@ export const getPlayerProfile = async (ctx: Context) => {
         })
       : [];
 
+    const allYears = [...new Set(
+      allMatches
+        .map((match) => new Date(match.date).getFullYear())
+        .filter((matchYear) => Number.isFinite(matchYear))
+    )];
+
+    // Filter matches for the specific request in-memory
+    let matchRows = allMatches;
+    if (selectedLeagueId) {
+      matchRows = matchRows.filter((match) => String(match.leagueId) === selectedLeagueId);
+    }
     if (selectedYear && Number.isFinite(selectedYear)) {
       matchRows = matchRows.filter((match) => new Date(match.date).getFullYear() === selectedYear);
     }
@@ -440,23 +434,14 @@ export const getPlayerProfile = async (ctx: Context) => {
       }
     });
 
-    const [voteRows, homeRows, awayRows] = visibleMatchIds.length
-      ? await Promise.all([
-          Vote.findAll({
-            where: { matchId: { [Op.in]: visibleMatchIds } },
-            attributes: ['voterId', 'votedForId', 'matchId'],
-            raw: true,
-          }),
-          sequelize.query(
-            `SELECT "matchId" FROM "UserHomeMatches" WHERE "userId" = :playerId AND "matchId" IN (:matchIds)`,
-            { replacements: { playerId: id, matchIds: visibleMatchIds }, type: 'SELECT' as any }
-          ),
-          sequelize.query(
-            `SELECT "matchId" FROM "UserAwayMatches" WHERE "userId" = :playerId AND "matchId" IN (:matchIds)`,
-            { replacements: { playerId: id, matchIds: visibleMatchIds }, type: 'SELECT' as any }
-          ),
-        ])
-      : [[], [], []];
+    // Only fetch votes; home/away team mappings are computed in-memory
+    const voteRows = visibleMatchIds.length
+      ? await Vote.findAll({
+          where: { matchId: { [Op.in]: visibleMatchIds } },
+          attributes: ['voterId', 'votedForId', 'matchId'],
+          raw: true,
+        })
+      : [];
 
     const votesByMatchId = new Map<string, any[]>();
     (voteRows as any[]).forEach((vote) => {
@@ -466,8 +451,13 @@ export const getPlayerProfile = async (ctx: Context) => {
     });
 
     const teamByMatchId = new Map<string, 'home' | 'away'>();
-    (homeRows as any[]).forEach((row) => teamByMatchId.set(String(row.matchId), 'home'));
-    (awayRows as any[]).forEach((row) => teamByMatchId.set(String(row.matchId), 'away'));
+    visibleMatchIds.forEach((mId) => {
+      if (userHomeMatchIds.has(mId)) {
+        teamByMatchId.set(mId, 'home');
+      } else if (userAwayMatchIds.has(mId)) {
+        teamByMatchId.set(mId, 'away');
+      }
+    });
 
     const allStats = matchRows
       .map((match) => {
@@ -523,12 +513,7 @@ export const getPlayerProfile = async (ctx: Context) => {
         });
       }
 
-      console.log(`🔍 Match ${match.id} data:`, {
-        homeDefensiveImpactId: match.homeDefensiveImpactId,
-        awayDefensiveImpactId: match.awayDefensiveImpactId,
-        votesCount: match.votes?.length || 0,
-        votes: match.votes
-      });
+
 
       const isHomePlayer = match.playerTeam === 'home';
       const homeGoals = Number(match.homeTeamGoals || 0);
