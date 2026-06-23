@@ -58,52 +58,96 @@ export const getDreamTeam = async (ctx: Context) => {
       matchWhere.seasonId = seasonId;
     }
 
-    // Get users who are members of this league/season
+    // 1. Fetch matches in the league/season that have status 'RESULT_PUBLISHED'
+    const matches = await Match.findAll({
+      where: matchWhere,
+      include: [
+        { model: User, as: 'homeTeamUsers', attributes: ['id'] },
+        { model: User, as: 'awayTeamUsers', attributes: ['id'] }
+      ]
+    });
+
+    const matchIds = matches.map(m => m.id);
+
+    // If there are no published matches, return empty dream team immediately
+    if (matchIds.length === 0) {
+      const result = {
+        success: true,
+        dreamTeam: {
+          goalkeeper: [],
+          defenders: [],
+          midfielders: [],
+          forwards: []
+        },
+        formation: '1-1-1-2'
+      };
+      cache.set(cacheKey, result, 3600);
+      ctx.body = result;
+      return;
+    }
+
+    // 2. Fetch match statistics for the league members in these matches
+    const statistics = await MatchStatistics.findAll({
+      where: {
+        user_id: memberIds,
+        match_id: matchIds
+      }
+    });
+
+    // 3. Fetch votes for these matches
+    const votes = await Vote.findAll({
+      where: {
+        votedForId: memberIds,
+        matchId: matchIds
+      }
+    });
+
+    // 4. Fetch basic user details for these members
     const users = await User.findAll({
       where: { id: memberIds },
-      include: [
-        {
-          model: MatchStatistics,
-          as: 'statistics',
-          include: [{
-            model: Match,
-            as: 'match',
-            where: matchWhere,
-            include: [
-              { model: User, as: 'homeTeamUsers', attributes: ['id'] },
-              { model: User, as: 'awayTeamUsers', attributes: ['id'] }
-            ]
-          }]
-        },
-        {
-          model: Vote,
-          as: 'receivedVotes',
-          include: [{
-            model: Match,
-            as: 'votedMatch',
-            where: matchWhere,
-            attributes: []
-          }]
-        }
-      ]
+      attributes: ['id', 'firstName', 'lastName', 'position', 'positionType', 'profilePicture']
+    });
+
+    // Map statistics and votes by userId for fast O(1) lookup
+    const statsByUser = new Map<string, any[]>();
+    statistics.forEach((stat: any) => {
+      if (!statsByUser.has(stat.user_id)) {
+        statsByUser.set(stat.user_id, []);
+      }
+      statsByUser.get(stat.user_id)!.push(stat);
+    });
+
+    const votesByUser = new Map<string, any[]>();
+    votes.forEach((vote: any) => {
+      if (!votesByUser.has(vote.votedForId)) {
+        votesByUser.set(vote.votedForId, []);
+      }
+      votesByUser.get(vote.votedForId)!.push(vote);
+    });
+
+    const matchesMap = new Map<string, any>();
+    matches.forEach((m: any) => {
+      matchesMap.set(m.id, m);
     });
 
     // Calculate player scores
     const playersWithScores = users.map((user: any) => {
-      const stats = user.statistics || [];
+      const stats = statsByUser.get(user.id) || [];
+      const userVotes = votesByUser.get(user.id) || [];
+      
       let totalGoals = 0;
       let totalAssists = 0;
       let totalRating = 0;
       let wins = 0;
-      let matches = stats.length;
-      let motm = (user.receivedVotes || []).length;
+      let matchesPlayed = stats.length;
+      let motm = userVotes.length;
 
       stats.forEach((stat: any) => {
         totalGoals += stat.goals || 0;
         totalAssists += stat.assists || 0;
         totalRating += stat.rating || 0;
 
-        const match = stat.match;
+        const match = matchesMap.get(stat.match_id);
         if (match) {
           const homeTeamIds = match.homeTeamUsers?.map((u: any) => u.id) || [];
           const awayTeamIds = match.awayTeamUsers?.map((u: any) => u.id) || [];
@@ -115,7 +159,7 @@ export const getDreamTeam = async (ctx: Context) => {
         }
       });
 
-      const avgRating = matches > 0 ? totalRating / matches : 0;
+      const avgRating = matchesPlayed > 0 ? totalRating / matchesPlayed : 0;
       const score = (totalGoals * 3) + (totalAssists * 2) + (avgRating * 0.5) + (wins * 1) + (motm * 5);
 
       return {
@@ -130,7 +174,7 @@ export const getDreamTeam = async (ctx: Context) => {
           goals: totalGoals,
           assists: totalAssists,
           rating: parseFloat(avgRating.toFixed(1)),
-          matches,
+          matches: matchesPlayed,
           wins,
           motm
         },
