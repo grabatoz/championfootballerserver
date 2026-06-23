@@ -263,12 +263,7 @@ router.get('/me/achievements', required, async (ctx) => {
     const UserModel = (models as any).User;
     const MatchStatisticsModel = (models as any).MatchStatistics;
     const cacheKey = `user_achievements_${userId}`;
-    const forceRefresh =
-      ctx.query?.refresh === '1' ||
-      ctx.query?.nocache === '1' ||
-      typeof ctx.query?._ !== 'undefined' ||
-      typeof ctx.query?._t !== 'undefined';
-    const cached = forceRefresh ? null : cache.get<any>(cacheKey);
+    const cached = cache.get<any>(cacheKey);
     if (cached) {
       ctx.body = cached;
       return;
@@ -324,7 +319,7 @@ router.get('/me/achievements', required, async (ctx) => {
           { id: 'rising_xp', title: 'Rising Star', count: 0, xp: Number(user.xp || 0), unlocked: true },
         ],
       };
-      cache.set(cacheKey, response, 20);
+      cache.set(cacheKey, response, 600);
       ctx.body = response;
       return;
     }
@@ -444,7 +439,7 @@ router.get('/me/achievements', required, async (ctx) => {
     ];
 
     const response = { success: true, userId, totalXP: Number(user.xp || 0), badges };
-    cache.set(cacheKey, response, 20);
+    cache.set(cacheKey, response, 600);
     console.log(
       `[Achievements API] /users/me user=${userId} playedMatches=${playedMatchIds.length} leagues=${leagueIds.length} durationMs=${Date.now() - startedAt}`
     );
@@ -466,6 +461,14 @@ router.post('/me/achievements/award', required, async (ctx) => {
 
   const userId = String(ctx.state.user.userId);
   try {
+    const persistedCacheKey = `user_achievements_persisted_${userId}`;
+    const cached = cache.get<any>(persistedCacheKey);
+    if (cached) {
+      console.log(`[Achievements API] POST /award cache hit for user=${userId}. Skipping recalculation.`);
+      ctx.body = cached;
+      return;
+    }
+
     // Compute and award any missing achievements across all leagues
     await calculateAndAwardXPAchievements(userId);
 
@@ -493,13 +496,15 @@ router.post('/me/achievements/award', required, async (ctx) => {
       invalidateMemoryCache('/auth/status');
     } catch {}
 
-    ctx.body = {
+    const response = {
       success: true,
       message: 'Achievements XP persisted',
       userId,
       totalXP: Number(user.xp || 0),
       achievements: Array.isArray(user.achievements) ? user.achievements : [],
     };
+    cache.set(persistedCacheKey, response, 600);
+    ctx.body = response;
   } catch (e) {
     console.error('POST /users/me/achievements/award failed', e);
     ctx.status = 500;

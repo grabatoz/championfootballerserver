@@ -1220,8 +1220,7 @@ router.get('/:id/achievements', required, async (ctx) => {
   const selectedSeasonId = seasonIdRaw && seasonIdRaw !== 'all' && isUuid(seasonIdRaw) ? seasonIdRaw : null;
   const selectedYear = parseYearValue(yearRaw && yearRaw !== 'all' ? yearRaw : null)
     ?? (seasonIdRaw && seasonIdRaw !== 'all' && !selectedSeasonId ? parseYearFromSeasonToken(seasonIdRaw) : null);
-  
-  console.log('ًںژ–ï¸ڈ [Achievements] Request:', { playerId, leagueId: leagueId || 'all', year: year || 'all', seasonId: seasonId || 'all' });
+
   
   if (!playerId) {
     ctx.status = 400;
@@ -1234,12 +1233,11 @@ router.get('/:id/achievements', required, async (ctx) => {
     const cacheKey = `achievements:${playerId}:${leagueId || 'all'}:${year || 'all'}:${seasonId || 'all'}`;
     const cached = cache.get(cacheKey);
     if (cached) {
-      console.log('âœ… [Achievements] Returning cached data');
       ctx.body = cached;
       return;
     }
 
-    const user = await UserModel.findByPk(playerId, { attributes: ['id', 'xp', 'firstName', 'lastName', 'email', 'provider', 'isGuest', 'guestId', 'type', 'role'] });
+    const user = await UserModel.findByPk(playerId, { attributes: ['id', 'xp', 'firstName', 'lastName', 'email', 'provider'] });
     if (!user) {
       ctx.status = 404;
       ctx.body = { success: false, message: 'Player not found' };
@@ -1292,17 +1290,13 @@ router.get('/:id/achievements', required, async (ctx) => {
     
     // Apply league filter
     if (leagueId && leagueId !== 'all') {
-      console.log('[Achievements] ًںڈ† Applying league filter:', leagueId);
       matchWhere.leagueId = leagueId;
     }
     
     // Apply season filter
     if (selectedSeasonId) {
-      console.log('[Achievements] ًں“… Applying season filter:', seasonId);
       matchWhere.seasonId = selectedSeasonId;
     }
-    
-    console.log('[Achievements] ًں”ژ Match where clause:', JSON.stringify(matchWhere));
     
     const matches = await Match.findAll({
       where: matchWhere,
@@ -1335,7 +1329,6 @@ router.get('/:id/achievements', required, async (ctx) => {
           const matchYear = new Date(m.date || m.start || m.createdAt).getFullYear();
           return matchYear === yearNum;
         });
-        console.log('[Achievements] ًں“ٹ Year filter applied:', yearNum, '| Matches:', filteredMatches.length, '/', matches.length);
       }
     }
     
@@ -1434,7 +1427,6 @@ router.get('/:id/achievements', required, async (ctx) => {
       raw: true,
     });
 
-    console.log('[Achievements] Stats rows found:', statsRows.length, '| Matches processed:', processedMatches.length);
     const statsByMatch = new Map<string, { goals: number; assists: number }>();
     for (const r of statsRows as any[]) {
       statsByMatch.set(String(r.match_id), {
@@ -1461,8 +1453,6 @@ router.get('/:id/achievements', required, async (ctx) => {
     
     // Keep this cache short so reward XP updates reflect quickly after match edits.
     cache.set(cacheKey, response, 300);
-    
-    console.log('[Achievements] âœ… Computed badges:', badges.filter(b => b.unlocked).length, 'unlocked');
     
     ctx.body = response;
   } catch (e) {

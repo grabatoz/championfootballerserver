@@ -1,4 +1,4 @@
-﻿import Router from '@koa/router';
+import Router from '@koa/router';
 import { transporter } from "../modules/sendEmail"
 import { none, required } from "../modules/auth"
 import models, { MatchAvailability } from "../models"
@@ -1432,113 +1432,89 @@ router.get("/me", required, async (ctx: CustomContext) => {
     
     console.log(`[AUTH] Fetching /me for user: ${userId}`);
     
-    // OPTIMIZED: Removed heavy nested includes to prevent timeout
     const user = await User.findOne({ 
-      where: { id: userId },
-      include: [{
-        model: League,
-        as: 'leagues',
-        attributes: ['id', 'name', 'image', 'createdAt'],
-        include: [{
-          model: User,
-          as: 'members',
-          attributes: ['id', 'firstName', 'lastName', 'profilePicture', 'xp']
-        }]
-      }, {
-        model: League,
-        as: 'administeredLeagues',
-        attributes: ['id', 'name', 'image', 'createdAt'],
-        include: [{
-          model: User,
-          as: 'members',
-          attributes: ['id', 'firstName', 'lastName', 'profilePicture', 'xp']
-        }]
-      }]
-    }) as any;
+      where: { id: userId }
+    });
 
-  if (!user) {
-    ctx.throw(404, "User not found");
-  }
-
-  // Add leagues to personal account for testing
-  const myUserEmail = "huzaifahj29@gmail.com"
-  const extractFromUserEmail = "ru.uddin@hotmail.com"
-  if (user.email === myUserEmail) {
-    const extractFromUser = await User.findOne({
-      where: { email: extractFromUserEmail },
-      include: [{
-        model: League,
-        as: 'leagues',
-        include: [{
-          model: User,
-          as: 'members'
-        }, {
-          model: Match,
-          as: 'matches',
-          include: [
-            { model: User, as: 'availableUsers' },
-            { model: User, as: 'homeTeamUsers' },
-            { model: User, as: 'awayTeamUsers' },
-            { model: User, as: 'statistics' }
-          ]
-        }]
-      }]
-    }) as unknown as { 
-      id: string;
-      email: string;
-      leagues: typeof League[];
-    };
-    if (extractFromUser) {
-      const userWithLeagues = user as unknown as { leagues: typeof League[] };
-      userWithLeagues.leagues = [...userWithLeagues.leagues, ...extractFromUser.leagues];
+    if (!user) {
+      ctx.throw(404, "User not found");
     }
-  }
 
-  // Delete sensitive data
-  const propertiesToDelete = [
-    "loginCode",
-    "email",
-    "age",
-    "ipAddress",
-    "gender",
-  ]
-  const deleteProperties = (input: User[] | User) => {
-    if (Array.isArray(input)) {
-      for (const user of input) {
+    // Load leagues and administeredLeagues in separate queries to avoid Cartesian explosion
+    const [leagues, administeredLeagues] = await Promise.all([
+      (user as any).getLeagues({
+        attributes: ['id', 'name', 'image', 'createdAt'],
+        joinTableAttributes: [],
+        include: [{
+          model: User,
+          as: 'members',
+          attributes: ['id', 'firstName', 'lastName', 'profilePicture', 'xp'],
+          through: { attributes: [] }
+        }]
+      }),
+      (user as any).getAdministeredLeagues({
+        attributes: ['id', 'name', 'image', 'createdAt'],
+        joinTableAttributes: [],
+        include: [{
+          model: User,
+          as: 'members',
+          attributes: ['id', 'firstName', 'lastName', 'profilePicture', 'xp'],
+          through: { attributes: [] }
+        }]
+      })
+    ]);
+
+    const userPlain = user.get({ plain: true }) as any;
+    userPlain.leagues = leagues.map((l: any) => l.get({ plain: true }));
+    userPlain.administeredLeagues = administeredLeagues.map((l: any) => l.get({ plain: true }));
+
+    // Delete sensitive data
+    const propertiesToDelete = [
+      "loginCode",
+      "email",
+      "age",
+      "ipAddress",
+      "gender",
+    ];
+
+    const deleteProperties = (input: any) => {
+      if (Array.isArray(input)) {
+        for (const item of input) {
+          for (const property of propertiesToDelete) {
+            delete item[property];
+          }
+        }
+      } else if (typeof input === "object" && input !== null) {
         for (const property of propertiesToDelete) {
-          delete (user as any)[property]
+          delete input[property];
         }
       }
-    } else if (typeof input === "object") {
-      for (const property of propertiesToDelete) {
-        delete (input as any)[property]
+    };
+
+    delete userPlain["password"];
+    
+    // Handle both leagues and administeredLeagues
+    if (userPlain.leagues) {
+      for (const league of userPlain.leagues) {
+        deleteProperties(league.members);
+        deleteProperties(league.matches);
       }
     }
-  }
-  delete (user as any)["password"]
-  
-  // Handle both leagues and administeredLeagues
-  if ((user as any).leagues) {
-    for (const league of (user as any).leagues) {
-      deleteProperties(league.members)
-      deleteProperties(league.matches)
+    
+    if (userPlain.administeredLeagues) {
+      for (const league of userPlain.administeredLeagues) {
+        deleteProperties(league.members);
+        deleteProperties(league.matches);
+      }
     }
-  }
-  
-  if ((user as any).administeredLeagues) {
-    for (const league of (user as any).administeredLeagues) {
-      deleteProperties(league.members)
-      deleteProperties(league.matches)
-    }
-  }
 
-  ctx.body = {
-    success: true,
-    user: user,
-  };
-  
-  console.log(`[AUTH] /me successful for user: ${userId}`);
-  
+    ctx.body = {
+      success: true,
+      user: userPlain,
+    };
+    
+    console.log(`[AUTH] /me successful for user: ${userId}`);
+    
   } catch (error: any) {
     console.error(`[AUTH] /me endpoint error for user ${ctx.state.user?.userId}:`, error.message);
     console.error('Stack:', error.stack);

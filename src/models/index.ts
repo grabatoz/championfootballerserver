@@ -46,8 +46,21 @@ const clearPlayerCaches = () => {
     cache.clearPattern('player_profile_');
     cache.clearPattern('player_trophies_');
     cache.clearPattern('achievements:');
+    cache.clearPattern('user_achievements_');
+    cache.clearPattern('user_global_stats_');
+    cache.clearPattern('trophy_room_v2_');
   } catch (err) {
     console.error('Failed to clear player caches:', err);
+  }
+};
+
+// Helper to clear league completion cache safely without static circular dependencies
+const clearLeagueCompletionCache = (leagueId?: string) => {
+  try {
+    const { invalidateLeagueCompletionCache } = require('../utils/leagueCompletion');
+    invalidateLeagueCompletionCache(leagueId);
+  } catch (err) {
+    console.error('Failed to invalidate league completion cache:', err);
   }
 };
 
@@ -56,6 +69,7 @@ try {
   Match.addHook('afterCreate', (instance: any) => {
     try { invalidateServerCache('/matches'); invalidateServerCache('/leagues'); } catch { }
     try { clearPlayerCaches(); } catch { }
+    try { clearLeagueCompletionCache(instance.leagueId); } catch { }
     try {
       const payload = JSON.stringify({ id: instance.id, leagueId: instance.leagueId, status: instance.status });
       sequelize.query("NOTIFY match_updates, '" + payload.replace(/'/g, "''") + "'");
@@ -70,6 +84,7 @@ try {
   Match.addHook('afterUpdate', (instance: any) => {
     try { invalidateServerCache('/matches'); invalidateServerCache('/leagues'); } catch { }
     try { clearPlayerCaches(); } catch { }
+    try { clearLeagueCompletionCache(instance.leagueId); } catch { }
     try {
       const payload = JSON.stringify({ id: instance.id, leagueId: instance.leagueId, status: instance.status });
       sequelize.query("NOTIFY match_updates, '" + payload.replace(/'/g, "''") + "'");
@@ -86,6 +101,7 @@ try {
   Match.addHook('afterDestroy', (instance: any) => {
     try { invalidateServerCache('/matches'); invalidateServerCache('/leagues'); } catch { }
     try { clearPlayerCaches(); } catch { }
+    try { clearLeagueCompletionCache(instance.leagueId); } catch { }
     try {
       const payload = JSON.stringify({ id: instance.id, leagueId: instance.leagueId, deleted: true });
       sequelize.query("NOTIFY match_updates, '" + payload.replace(/'/g, "''") + "'");
@@ -156,9 +172,17 @@ try {
   });
 
   // Match statistics updates impact player stats, rankings, and match views
-  MatchStatistics.addHook('afterCreate', (s: any) => {
+  MatchStatistics.addHook('afterCreate', async (s: any) => {
     try { invalidateServerCache('/players'); invalidateServerCache('/world-ranking'); invalidateServerCache('/matches'); } catch { }
     try { clearPlayerCaches(); } catch { }
+    try {
+      const match = await Match.findByPk(s.match_id || s.matchId, { attributes: ['leagueId'] });
+      if (match && match.leagueId) {
+        clearLeagueCompletionCache(match.leagueId);
+      }
+    } catch (err) {
+      console.error('Failed to invalidate league completion cache on match statistics create:', err);
+    }
     try {
       const payload = JSON.stringify({ matchId: s.matchId || s.match_id, playerId: s.userId || s.user_id, action: 'created' });
       sequelize.query("NOTIFY stats_updates, '" + payload.replace(/'/g, "''") + "'");
@@ -169,9 +193,17 @@ try {
       action: 'created'
     });
   });
-  MatchStatistics.addHook('afterUpdate', (s: any) => {
+  MatchStatistics.addHook('afterUpdate', async (s: any) => {
     try { invalidateServerCache('/players'); invalidateServerCache('/world-ranking'); invalidateServerCache('/matches'); } catch { }
     try { clearPlayerCaches(); } catch { }
+    try {
+      const match = await Match.findByPk(s.match_id || s.matchId, { attributes: ['leagueId'] });
+      if (match && match.leagueId) {
+        clearLeagueCompletionCache(match.leagueId);
+      }
+    } catch (err) {
+      console.error('Failed to invalidate league completion cache on match statistics update:', err);
+    }
     try {
       const payload = JSON.stringify({ matchId: s.matchId || s.match_id, playerId: s.userId || s.user_id, action: 'updated' });
       sequelize.query("NOTIFY stats_updates, '" + payload.replace(/'/g, "''") + "'");

@@ -22,7 +22,7 @@ const { Match, League, User } = models;
 
 // Statuses that count as "completed" matches
 const COMPLETED_STATUSES = ['RESULT_PUBLISHED', 'RESULT_UPLOADED'];
-const LEAGUE_COMPLETION_CACHE_TTL_MS = Number(process.env.LEAGUE_COMPLETION_CACHE_TTL_MS || 15000);
+const LEAGUE_COMPLETION_CACHE_TTL_MS = Number(process.env.LEAGUE_COMPLETION_CACHE_TTL_MS || 300000);
 
 export interface SeasonCompletionInfo {
   seasonId: string;

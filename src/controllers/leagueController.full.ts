@@ -226,6 +226,8 @@ type LeagueListRow = {
   image: string | null;
   maxGames: number | null;
   createdAt?: string;
+  adminId?: string | null;
+  memberCount?: number;
 };
 
 const fetchUserLeaguesBasic = async (userId: string): Promise<LeagueListRow[]> => {
@@ -239,7 +241,9 @@ const fetchUserLeaguesBasic = async (userId: string): Promise<LeagueListRow[]> =
         COALESCE(l.archived, false) AS archived,
         l.image,
         l."maxGames",
-        l."createdAt" AS "createdAt"
+        l."createdAt" AS "createdAt",
+        (SELECT "userId"::text FROM "LeagueAdmin" la2 WHERE la2."leagueId" = l.id LIMIT 1) AS "adminId",
+        (SELECT COUNT(*)::int FROM "LeagueMember" lm2 WHERE lm2."leagueId" = l.id) AS "memberCount"
       FROM "Leagues" l
       LEFT JOIN "LeagueMember" lm
         ON lm."leagueId" = l.id
@@ -262,7 +266,9 @@ const fetchUserLeaguesBasic = async (userId: string): Promise<LeagueListRow[]> =
     archived: Boolean(row.archived),
     image: row.image || null,
     maxGames: row.maxGames == null ? null : Number(row.maxGames),
-    createdAt: row.createdAt ? ((row.createdAt as any) instanceof Date ? (row.createdAt as any).toISOString() : String(row.createdAt)) : undefined
+    createdAt: row.createdAt ? ((row.createdAt as any) instanceof Date ? (row.createdAt as any).toISOString() : String(row.createdAt)) : undefined,
+    adminId: row.adminId || null,
+    memberCount: row.memberCount ? Number(row.memberCount) : 0
   }));
 };
 
@@ -417,6 +423,8 @@ export const getAllLeagues = async (ctx: Context) => {
         isComplete: lifecycle.isComplete,
         isCompleted: lifecycle.isCompleted,
         isLocked: lifecycle.isLocked,
+        adminId: league.adminId,
+        memberCount: league.memberCount,
         computedStatus: {
           isCompleted: lifecycle.isCompleted,
           isComplete: lifecycle.isComplete,
@@ -798,7 +806,23 @@ export const getTrophyRoom = async (ctx: Context) => {
       }
 
       if (!hasValidSnapshot(currentSeasonRow, league.members || [])) {
-        matchesToUse.forEach((m: any) => neededMatchIds.add(String(m.id)));
+        const completedMatches = countCompleted(matchesToUse);
+        const scopedMaxGames = Number(currentSeasonRow?.maxGames ?? league.maxGames ?? 0);
+        const scopeCompleted = (() => {
+          if (scopedMaxGames > 0) return completedMatches >= scopedMaxGames;
+          if (currentSeasonRow) {
+            if (currentSeasonRow.archived === true || currentSeasonRow.isActive === false) {
+              return completedMatches > 0;
+            }
+            return false;
+          }
+          const leagueArchivedOrInactive = Boolean((league as any)?.archived === true || (league as any)?.active === false);
+          return leagueArchivedOrInactive && completedMatches > 0;
+        })();
+
+        if (scopeCompleted) {
+          matchesToUse.forEach((m: any) => neededMatchIds.add(String(m.id)));
+        }
       }
     });
 
@@ -1187,7 +1211,7 @@ export const getTrophyRoom = async (ctx: Context) => {
       backendTotalXP: 0,
       lastUpdatedAt,
     };
-    cache.set(trCacheKey, trPayload, 20); // keep short so trophy updates appear quickly
+    cache.set(trCacheKey, trPayload, 600); // Cached for 10 minutes since invalidation is reactive
     ctx.body = trPayload;
   } catch (err) {
     console.error('❌ [Trophy Room] Error:', err);
@@ -1916,6 +1940,8 @@ export const getUserLeagues = async (ctx: Context) => {
           isComplete: lifecycle.isComplete,
           isCompleted: lifecycle.isCompleted,
           isLocked: lifecycle.isLocked,
+          adminId: league.adminId,
+          memberCount: league.memberCount,
           computedStatus: {
             isCompleted: lifecycle.isCompleted,
             isComplete: lifecycle.isComplete,
@@ -2147,9 +2173,6 @@ export const getLeagueById = async (ctx: Context) => {
       });
 
       console.log(`📊 [ADMIN] Fetching ALL matches for league ${id}: ${matches.length} matches`);
-      matches.forEach((m: any) => {
-        console.log(`   - ${m.homeTeamName} vs ${m.awayTeamName} | seasonId: ${m.seasonId}`);
-      });
 
       // Fetch availability data for all matches in this league
       const matchIds = matches.map((m: any) => m.id);
@@ -2238,12 +2261,7 @@ export const getLeagueById = async (ctx: Context) => {
         members: season.players || [] // Rename 'players' to 'members' for frontend
       }));
 
-      console.log('📊 [ADMIN] Returning league data:');
-      console.log(`   - League: ${league.name}`);
-      console.log(`   - Total seasons: ${formattedSeasons.length}`);
-      formattedSeasons.forEach((s: any) => {
-        console.log(`   - Season ${s.seasonNumber}: ${s.members?.length || 0} members`);
-      });
+      console.log(`📊 [ADMIN] Returning league data for ${league.name} (${formattedSeasons.length} seasons)`);
 
       // Compute league/season completion status
       const completionInfo = await checkLeagueCompletion(String(league.id));
@@ -2392,9 +2410,6 @@ export const getLeagueById = async (ctx: Context) => {
     const matches = await fetchMatchesWithLightRelations(matchWhere);
 
     console.log(`📊 [MEMBER] Fetching matches for user's seasons: ${matches.length} matches`);
-    matches.forEach((m: any) => {
-      console.log(`   - ${m.homeTeamName} vs ${m.awayTeamName} | seasonId: ${m.seasonId}`);
-    });
 
     // Fetch availability data for all matches
     const matchIds = matches.map((m: any) => m.id);
