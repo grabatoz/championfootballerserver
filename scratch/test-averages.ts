@@ -9,10 +9,10 @@ import { getLeaguePlayerAverages } from '../src/controllers/leagueController.ful
 async function main() {
   const ctx: any = {
     params: {
-      id: 'fe5b6171-2e94-4c37-bbbc-e2d804210956' // Season 3 Sun-Fairlop league ID
+      id: '560f68b4-86f9-49be-b60f-f5391f7b26e4' // Season 7 FNF League ID
     },
     query: {
-      seasonId: 'year-2024',
+      seasonId: 'all',
       year: 'all'
     },
     state: {

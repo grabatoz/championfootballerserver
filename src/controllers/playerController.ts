@@ -544,6 +544,7 @@ export const getPlayerProfile = async (ctx: Context) => {
         result,
         votes: match.votes || [],
         playerStats: {
+          id: stat.id,
           goals: stat.goals || 0,
           assists: stat.assists || 0,
           cleanSheets: stat.cleanSheets || 0,
