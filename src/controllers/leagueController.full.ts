@@ -2014,6 +2014,7 @@ export const getLeagueById = async (ctx: Context) => {
 
     const [members, administeredLeagues, seasons] = await Promise.all([
       User.findAll({
+        where: registeredUserWhere(),
         attributes: ['id', 'firstName', 'lastName', 'profilePicture', 'position', 'positionType', 'xp', 'shirtNumber', 'style'],
         include: [
           {
@@ -2046,8 +2047,10 @@ export const getLeagueById = async (ctx: Context) => {
           {
             model: User,
             as: 'players',
+            where: registeredUserWhere(),
             attributes: ['id', 'firstName', 'lastName', 'profilePicture', 'position', 'positionType', 'xp', 'shirtNumber', 'style'],
-            through: { attributes: [] }
+            through: { attributes: [] },
+            required: false
           }
         ],
         order: [['seasonNumber', 'DESC'], ['createdAt', 'DESC']]
@@ -4909,22 +4912,42 @@ export const getLeaguePlayerAverages = async (ctx: Context) => {
       }
     }
 
-    // Collect all candidate user IDs to filter out guests
-    const candidateUserIds = [...new Set([
-      ...allStats.map((s: any) => String(s.user_id)),
-      ...motmVotes.map((v: any) => String(v.votedForId)),
-      ...Object.keys(defImpactVoteMap)
-    ].filter((id) => id && id.trim() !== ''))];
+    // Fetch all registered non-guest players added to this league or season
+    let activeUserIds: string[] = [];
+    if (selectedSeasonId) {
+      const season = await Season.findByPk(selectedSeasonId, {
+        include: [
+          {
+            model: User,
+            as: 'players',
+            where: registeredUserWhere(),
+            attributes: ['id'],
+            through: { attributes: [] }
+          }
+        ]
+      });
+      if (season && season.players) {
+        activeUserIds = season.players.map((p: any) => String(p.id));
+      }
+    } else {
+      const members = await User.findAll({
+        where: registeredUserWhere(),
+        attributes: ['id'],
+        include: [
+          {
+            model: League,
+            as: 'leagues',
+            attributes: [],
+            through: { attributes: [] },
+            where: { id },
+            required: true
+          }
+        ]
+      });
+      activeUserIds = members.map((m: any) => String(m.id));
+    }
 
-    const nonGuests = await User.findAll({
-      where: {
-        id: { [Op.in]: candidateUserIds },
-        ...registeredUserWhere()
-      } as any,
-      attributes: ['id'],
-      raw: true
-    });
-    const nonGuestUserIds = new Set(nonGuests.map((u: any) => String(u.id)));
+    const nonGuestUserIds = new Set(activeUserIds);
 
     interface AggregatedPlayerStats {
       goals: number;
@@ -4941,8 +4964,25 @@ export const getLeaguePlayerAverages = async (ctx: Context) => {
       wins: number;
     }
 
-    // Build per-player aggregations (excluding guests)
+    // Build per-player aggregations (excluding guests, seeded with all active players)
     const playerMap: Record<string, AggregatedPlayerStats> = {};
+    for (const uid of activeUserIds) {
+      playerMap[uid] = {
+        goals: 0,
+        assists: 0,
+        cleanSheets: 0,
+        defence: 0,
+        impact: 0,
+        motmVotes: 0,
+        defensiveImpactVotes: 0,
+        matches: 0,
+        matchesWithGoals: 0,
+        matchesWithAssists: 0,
+        matchesWithCleanSheets: 0,
+        wins: 0
+      };
+    }
+
     const ensurePlayerStats = (uid: string) => {
       if (!nonGuestUserIds.has(uid)) return null;
       if (!playerMap[uid]) {
