@@ -4864,11 +4864,11 @@ export const getLeaguePlayerAverages = async (ctx: Context) => {
 
     // Query lineups to map players to home/away teams (correcting null stat.type)
     const [homeMatches, awayMatches] = await Promise.all([
-      Match.sequelize.query(
+      Match.sequelize!.query(
         `SELECT "matchId", "userId" FROM "UserHomeMatches" WHERE "matchId" IN (:matchIds)`,
         { replacements: { matchIds }, type: QueryTypes.SELECT }
       ),
-      Match.sequelize.query(
+      Match.sequelize!.query(
         `SELECT "matchId", "userId" FROM "UserAwayMatches" WHERE "matchId" IN (:matchIds)`,
         { replacements: { matchIds }, type: QueryTypes.SELECT }
       )
@@ -4892,7 +4892,7 @@ export const getLeaguePlayerAverages = async (ctx: Context) => {
     // Get MOTM vote counts per player for these matches
     const motmVotes = await (Vote as any).findAll({
       where: { matchId: { [Op.in]: matchIds } },
-      attributes: ['votedForId'],
+      attributes: ['votedForId', 'matchId'],
       raw: true
     }) as any[];
 
@@ -5119,6 +5119,57 @@ export const getLeaguePlayerAverages = async (ctx: Context) => {
       perMatchAverages[expKey] = totalPlayers > 0 ? +(sumAvg / totalPlayers).toFixed(2) : 0;
     }
 
+    // Compute player-wise maximum stats in a single match and their league averages
+    const playerMaxGoalsMap: Record<string, number> = {};
+    const playerMaxAssistsMap: Record<string, number> = {};
+    const playerMaxMotmMap: Record<string, number> = {};
+
+    for (const uid of playerIds) {
+      playerMaxGoalsMap[uid] = 0;
+      playerMaxAssistsMap[uid] = 0;
+      playerMaxMotmMap[uid] = 0;
+    }
+
+    for (const stat of allStats) {
+      const uid = String(stat.user_id);
+      if (!nonGuestUserIds.has(uid)) continue;
+      const g = Number(stat.goals) || 0;
+      const a = Number(stat.assists) || 0;
+      
+      if (g > (playerMaxGoalsMap[uid] || 0)) {
+        playerMaxGoalsMap[uid] = g;
+      }
+      if (a > (playerMaxAssistsMap[uid] || 0)) {
+        playerMaxAssistsMap[uid] = a;
+      }
+    }
+
+    const playerMatchMotmMap: Record<string, Record<string, number>> = {};
+    for (const vote of motmVotes) {
+      const uid = String(vote.votedForId);
+      const mid = String(vote.matchId);
+      if (!uid || !mid || !nonGuestUserIds.has(uid)) continue;
+      if (!playerMatchMotmMap[uid]) {
+        playerMatchMotmMap[uid] = {};
+      }
+      playerMatchMotmMap[uid][mid] = (playerMatchMotmMap[uid][mid] || 0) + 1;
+    }
+
+    for (const uid of playerIds) {
+      const matchVotesObj = playerMatchMotmMap[uid];
+      if (matchVotesObj) {
+        playerMaxMotmMap[uid] = Math.max(...Object.values(matchVotesObj), 0);
+      }
+    }
+
+    const sumMaxGoals = playerIds.reduce((sum, uid) => sum + (playerMaxGoalsMap[uid] || 0), 0);
+    const sumMaxAssists = playerIds.reduce((sum, uid) => sum + (playerMaxAssistsMap[uid] || 0), 0);
+    const sumMaxMotm = playerIds.reduce((sum, uid) => sum + (playerMaxMotmMap[uid] || 0), 0);
+
+    const leagueAvgMaxSingleGoals = totalPlayers > 0 ? +(sumMaxGoals / totalPlayers).toFixed(2) : 0;
+    const leagueAvgMaxSingleAssists = totalPlayers > 0 ? +(sumMaxAssists / totalPlayers).toFixed(2) : 0;
+    const leagueAvgMaxSingleMotm = totalPlayers > 0 ? +(sumMaxMotm / totalPlayers).toFixed(2) : 0;
+
     const leagueAvg = {
       goals: perMatchAverages.goals,
       assists: perMatchAverages.assists,
@@ -5131,6 +5182,9 @@ export const getLeaguePlayerAverages = async (ctx: Context) => {
       expectedAssists: perMatchAverages.expectedAssists,
       expectedCleanSheets: perMatchAverages.expectedCleanSheets,
       winRate: leagueTotals.matches > 0 ? (leagueTotals.wins / leagueTotals.matches) * 100 : 0,
+      maxSingleGoals: leagueAvgMaxSingleGoals,
+      maxSingleAssists: leagueAvgMaxSingleAssists,
+      maxSingleMotmVotes: leagueAvgMaxSingleMotm,
     };
 
     const result = {
