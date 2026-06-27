@@ -2437,16 +2437,19 @@ export const getMatchPrediction = async (ctx: Context) => {
       if (idx >= 0) matchNumber = idx + 1;
     }
 
-    const storedHomePctRaw = Number((match as any).homeWinPct);
-    const storedAwayPctRaw = Number((match as any).awayWinPct);
+    const isFinalized = isFinalizedMatchStatus((match as any).status);
+    const storedHomePct = (match as any).homeWinPct;
+    const storedAwayPct = (match as any).awayWinPct;
+
     const hasStoredPrediction =
-      Number.isFinite(storedHomePctRaw) &&
-      Number.isFinite(storedAwayPctRaw) &&
-      storedHomePctRaw >= 0 &&
-      storedAwayPctRaw >= 0;
+      isFinalized &&
+      storedHomePct !== null &&
+      storedHomePct !== undefined &&
+      storedAwayPct !== null &&
+      storedAwayPct !== undefined;
 
     if (hasStoredPrediction) {
-      const storedPrediction = buildPredictionFromMatchupPct(storedHomePctRaw);
+      const storedPrediction = buildPredictionFromMatchupPct(Number(storedHomePct));
       ctx.body = {
         success: true,
         available: true,
