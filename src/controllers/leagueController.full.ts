@@ -227,6 +227,7 @@ type LeagueListRow = {
   maxGames: number | null;
   createdAt?: string;
   adminId?: string | null;
+  adminName?: string | null;
   memberCount?: number;
 };
 
@@ -242,7 +243,16 @@ const fetchUserLeaguesBasic = async (userId: string): Promise<LeagueListRow[]> =
         l.image,
         l."maxGames",
         l."createdAt" AS "createdAt",
-        (SELECT "userId"::text FROM "LeagueAdmin" la2 WHERE la2."leagueId" = l.id LIMIT 1) AS "adminId",
+        COALESCE(
+          (SELECT "userId"::text FROM "LeagueAdmin" la2 WHERE la2."leagueId" = l.id LIMIT 1),
+          (SELECT "userId"::text FROM "LeagueMember" lm_first WHERE lm_first."leagueId" = l.id ORDER BY "createdAt" ASC LIMIT 1)
+        ) AS "adminId",
+        (SELECT TRIM(COALESCE(u."firstName", '') || ' ' || COALESCE(u."lastName", '')) 
+         FROM "users" u 
+         WHERE u.id = COALESCE(
+           (SELECT "userId" FROM "LeagueAdmin" la3 WHERE la3."leagueId" = l.id LIMIT 1),
+           (SELECT "userId" FROM "LeagueMember" lm4 WHERE lm4."leagueId" = l.id ORDER BY "createdAt" ASC LIMIT 1)
+         ) LIMIT 1) AS "adminName",
         (SELECT COUNT(*)::int FROM "LeagueMember" lm2 WHERE lm2."leagueId" = l.id) AS "memberCount"
       FROM "Leagues" l
       LEFT JOIN "LeagueMember" lm
@@ -268,6 +278,7 @@ const fetchUserLeaguesBasic = async (userId: string): Promise<LeagueListRow[]> =
     maxGames: row.maxGames == null ? null : Number(row.maxGames),
     createdAt: row.createdAt ? ((row.createdAt as any) instanceof Date ? (row.createdAt as any).toISOString() : String(row.createdAt)) : undefined,
     adminId: row.adminId || null,
+    adminName: row.adminName || null,
     memberCount: row.memberCount ? Number(row.memberCount) : 0
   }));
 };
@@ -424,6 +435,7 @@ export const getAllLeagues = async (ctx: Context) => {
         isCompleted: lifecycle.isCompleted,
         isLocked: lifecycle.isLocked,
         adminId: league.adminId,
+        adminName: league.adminName,
         memberCount: league.memberCount,
         computedStatus: {
           isCompleted: lifecycle.isCompleted,
@@ -1907,11 +1919,16 @@ export const getUserLeagues = async (ctx: Context) => {
 
   const userId = ctx.state.user.userId;
   const cacheKey = `user_leagues_${userId}`;
-  const cached = cache.get(cacheKey);
-  if (cached) {
-    ctx.set('X-Cache', 'HIT');
-    ctx.body = cached;
-    return;
+  
+  if (String(ctx.query.refresh) === '1') {
+    cache.del(cacheKey);
+  } else {
+    const cached = cache.get(cacheKey);
+    if (cached) {
+      ctx.set('X-Cache', 'HIT');
+      ctx.body = cached;
+      return;
+    }
   }
 
   try {
@@ -1941,6 +1958,7 @@ export const getUserLeagues = async (ctx: Context) => {
           isCompleted: lifecycle.isCompleted,
           isLocked: lifecycle.isLocked,
           adminId: league.adminId,
+          adminName: league.adminName,
           memberCount: league.memberCount,
           computedStatus: {
             isCompleted: lifecycle.isCompleted,
