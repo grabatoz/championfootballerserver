@@ -1919,7 +1919,7 @@ export const getUserLeagues = async (ctx: Context) => {
 
   const userId = ctx.state.user.userId;
   const cacheKey = `user_leagues_${userId}`;
-  
+
   if (String(ctx.query.refresh) === '1') {
     cache.del(cacheKey);
   } else {
@@ -5193,7 +5193,7 @@ export const getLeaguePlayerAverages = async (ctx: Context) => {
       if (!nonGuestUserIds.has(uid)) continue;
       const g = Number(stat.goals) || 0;
       const a = Number(stat.assists) || 0;
-      
+
       if (g > (playerMaxGoalsMap[uid] || 0)) {
         playerMaxGoalsMap[uid] = g;
       }
