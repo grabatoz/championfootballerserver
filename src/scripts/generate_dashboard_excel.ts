@@ -389,42 +389,22 @@ async function run() {
     const focusCalc = [
       [`FOCUS AREA - ${TARGET_LEAGUE_NAME}`],
       [],
-      ['Section Description:'],
-      ['Shows one personalized improvement suggestion per player based on the metric where the player is most below the league average.'],
-      [],
-      ['Calculation Logic:'],
-      ['1. For each player, compare their stats against the league average in the IMPACT comparison table (leagueComparisonRows).'],
-      ['2. Metrics compared: Goals, Assists, Clean Sheets, MOTM Votes, Total Wins, % Win Influence Rate, Captains Performance.'],
-      ['   - Goals and Assists are only considered for attacking players (Striker, Midfield, Forward, Winger, Attacker).'],
-      ['3. For each metric, compute gap = League Average - Player Value.'],
-      ['4. Compute gapRatio = gap / max(|leagueAverage|, 1) for absolute metrics, or gap / 100 for percentage metrics.'],
-      ['5. Pick the metric with the LARGEST positive gapRatio (player is most below league avg).'],
-      ['6. Map that metric to a predefined message:'],
-      ['   Goals → "Focus on building your goal-scoring consistency..."'],
-      ['   Assists → "By increasing your assists, you\'ll elevate your game..."'],
-      ['   Clean Sheets → "Each game provides an opportunity to sharpen your defensive..."'],
-      ['   MOTM Votes → "To stand out even more, focus on delivering consistent performances..."'],
-      ['   Total Wins → "Keep enhancing your performances, and you\'ll start turning every opportunity into more victories..."'],
-      ['   % Win Influence Rate → "To make an even greater impact on matches, maintain your focus throughout..."'],
-      ['7. If ALL metrics are above league average → "All your metrics are currently above the league average. Keep up the excellent work!"'],
-      [],
-      ['Player Name', 'Weakest Metric', 'Your Value', 'League Avg', 'Gap', 'Focus Message'],
+      ['Player Name', 'Focus Message'],
     ];
 
     const focusMessages: Record<string, string> = {
-      'Goals': "Focus on building your goal-scoring consistency, and you'll continue to rise among the league's top scorers.",
-      'Assists': "By increasing your assists, you'll elevate your game even further.",
-      'Clean Sheets': "Each game provides an opportunity to sharpen your defensive and goalkeeping skills.",
-      'MOTM Votes': "To stand out even more, focus on delivering consistent performances in every match.",
-      'Total Wins': "Keep enhancing your performances, and you'll start turning every opportunity into more victories.",
-      '% Win Influence Rate': "To make an even greater impact on matches, maintain your focus throughout.",
-      'Defensive Impact Votes': "Focus on your defensive contributions to make a bigger impact.",
-      'Game Contribution Index': "Work on increasing your overall match impact to boost your contribution index.",
+      'Goals': "Focus on building your goal-scoring consistency, and you'll continue to rise among the league’s top scorers. Keep pushing yourself, and the goals will follow.",
+      'Assists': "By increasing your assists, you'll elevate your game even further. Keep playing with vision and creativity, and you'll make a greater impact on match results",
+      'Clean Sheets': "Each game provides an opportunity to sharpen your defensive and goalkeeping skills. By focusing on these areas, you can help transform losses into wins.",
+      'MOTM Votes': "To stand out even more, focus on delivering consistent performances in every match – keep it simple, effective, and stay confident in your approach.",
+      'Captains Performance': "To enhance your leadership even further, continue delivering outstanding performances. Leading by example will inspire everyone to perform at their highest level.",
+      'Total Wins': "Keep enhancing your performances, and you'll start turning every opportunity into more victories for both yourself and your team",
+      '% Win Influence Rate': "To make an even greater impact on matches, maintain your focus throughout, keep your game simple, effective, and trust your instincts"
     };
 
     aggregated.forEach(a => {
       if (a.matches === 0) {
-        focusCalc.push([name(a) as any, 'N/A' as any, '-' as any, '-' as any, '-' as any, 'Play matches to unlock a personalized focus area.' as any]);
+        focusCalc.push([name(a) as any, 'Play matches to unlock a personalized focus area.' as any]);
         return;
       }
       const n = a.matches;
@@ -435,9 +415,8 @@ async function run() {
         { metric: 'Assists', yours: a.assists, avg: Number(leagueAvg.assists) },
         { metric: 'Clean Sheets', yours: a.cleanSheets, avg: Number(leagueAvg.cleanSheets) },
         { metric: 'MOTM Votes', yours: a.motmVotes, avg: Number(leagueAvg.motmVotes) },
-        { metric: 'Defensive Impact Votes', yours: a.defensiveImpactVotes, avg: Number(leagueAvg.defensiveImpactVotes) },
-        { metric: 'Game Contribution Index', yours: gci, avg: Number(leagueAvg.impact) },
-        { metric: 'Total Wins', yours: a.wins, avg: 0 }, // no direct league avg for wins total, compare against overall
+        { metric: 'Captains Performance', yours: a.wonDefensiveImpact, avg: 0 }, // fallback or custom metric mapping
+        { metric: 'Total Wins', yours: a.wins, avg: 0 },
         { metric: '% Win Influence Rate', yours: Math.round((a.wins / n) * 100), avg: Number(leagueAvg.winRate) },
       ];
 
@@ -445,7 +424,7 @@ async function run() {
       metrics.forEach(m => {
         const gap = m.avg - m.yours;
         if (gap <= 0) return;
-        const isPct = m.metric.includes('%') || m.metric === 'Game Contribution Index';
+        const isPct = m.metric.includes('%') || m.metric === 'Captains Performance';
         const gapRatio = isPct ? gap / 100 : gap / Math.max(Math.abs(m.avg), 1);
         if (!biggest || gapRatio > biggest.gapRatio) {
           biggest = { ...m, gap, gapRatio };
@@ -455,12 +434,12 @@ async function run() {
       if (biggest) {
         const b = biggest as any;
         focusCalc.push([
-          name(a) as any, b.metric as any, b.yours as any, b.avg as any, r2(b.gap) as any,
+          name(a) as any,
           (focusMessages[b.metric] || 'Work on this area to improve.') as any
         ]);
       } else {
-        focusCalc.push([name(a) as any, 'None (all above avg)' as any, '-' as any, '-' as any, 0 as any,
-        'All your metrics are currently above the league average. Keep up the excellent work!' as any]);
+        focusCalc.push([name(a) as any,
+          'All your metrics are currently above the league average. Keep up the excellent work and continue building your consistency to maintain this edge!' as any]);
       }
     });
 
