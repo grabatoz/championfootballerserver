@@ -1390,8 +1390,35 @@ export const submitMatchStats = async (ctx: Context) => {
 
     const isAdmin = (match as any).league?.administeredLeagues?.some((a: any) => String(a.id) === String(ctx.state.user.userId));
 
+    if (!isAdmin) {
+      const season = await Season.findByPk(match.seasonId || undefined);
+      if (season && !season.isActive) {
+        ctx.status = 403;
+        ctx.body = {
+          success: false,
+          message: 'league is complete you are no able to add new stats. Please contact admin to update stats.'
+        };
+        return;
+      }
+    }
+
     // Allow both admins and players to submit their own stats
     const currentUserId = String(ctx.state.user.userId);
+
+    if (!isAdmin) {
+      const homeUsers = await (match as any).getHomeTeamUsers();
+      const awayUsers = await (match as any).getAwayTeamUsers();
+      const isInMatch = homeUsers.some((u: any) => String(u.id) === currentUserId) ||
+                        awayUsers.some((u: any) => String(u.id) === currentUserId);
+      if (!isInMatch) {
+        ctx.status = 403;
+        ctx.body = {
+          success: false,
+          message: 'You are not added in this match.'
+        };
+        return;
+      }
+    }
 
     console.log(`📊 Stats submission - Request body:`, JSON.stringify(statsArray, null, 2));
 
