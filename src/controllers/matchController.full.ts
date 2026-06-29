@@ -60,6 +60,150 @@ const buildPredictionFromMatchupPct = (inputPct: number): Pick<TeamPredictionRes
   return { matchupPct, predicted, predictedScore };
 };
 
+const calculateMatchupPrediction = async (
+  leagueId: string | null,
+  seasonId: string | null,
+  homePlayerIds: string[],
+  awayPlayerIds: string[]
+): Promise<TeamPredictionResult> => {
+  const homeCount = homePlayerIds.length;
+  const awayCount = awayPlayerIds.length;
+
+  if (!leagueId || !seasonId || (homeCount === 0 && awayCount === 0)) {
+    return {
+      homeAvg: 0,
+      awayAvg: 0,
+      homeSum: 0,
+      awaySum: 0,
+      homeCount,
+      awayCount,
+      matchupPct: 50,
+      predicted: 'draw',
+      predictedScore: '0 - 0',
+    };
+  }
+
+  // 1. Fetch current season and discover previous season
+  const currentSeason = await Season.findByPk(seasonId);
+  let previousSeason: any = null;
+  if (currentSeason) {
+    previousSeason = await Season.findOne({
+      where: {
+        leagueId,
+        id: { [Op.ne]: seasonId },
+        createdAt: { [Op.lt]: currentSeason.createdAt }
+      },
+      order: [['createdAt', 'DESC']]
+    });
+  }
+
+  const allPlayerIds = Array.from(new Set([...homePlayerIds, ...awayPlayerIds]));
+  const seasonIds = [seasonId];
+  if (previousSeason) {
+    seasonIds.push(previousSeason.id);
+  }
+
+  // 2. Fetch stats for the players in these seasons
+  let statsRows: any[] = [];
+  if (allPlayerIds.length > 0) {
+    statsRows = await sequelize.query<any>(
+      `SELECT ms.user_id as "userId", m."seasonId", COUNT(*)::int as played, SUM(ms.goals)::int as goals
+       FROM "match_statistics" ms
+       JOIN "Matches" m ON ms.match_id = m.id
+       WHERE ms.user_id IN (:allPlayerIds)
+         AND m."seasonId" IN (:seasonIds)
+         AND m.deleted = false
+         AND m.status IN ('RESULT_PUBLISHED', 'RESULT_UPLOADED')
+       GROUP BY ms.user_id, m."seasonId"`,
+      {
+        replacements: { allPlayerIds, seasonIds },
+        type: QueryTypes.SELECT
+      }
+    );
+  }
+
+  // Group by player and season
+  const statsMap: Record<string, Record<string, { played: number; goals: number }>> = {};
+  statsRows.forEach(row => {
+    const uid = String(row.userId);
+    const sid = String(row.seasonId);
+    if (!statsMap[uid]) statsMap[uid] = {};
+    statsMap[uid][sid] = {
+      played: Number(row.played || 0),
+      goals: Number(row.goals || 0)
+    };
+  });
+
+  // Calculate average for each player
+  const getPlayerAverage = (uid: string): number => {
+    const playerStats = statsMap[uid];
+    if (!playerStats) return 0;
+    
+    // Check current season
+    const curr = playerStats[String(seasonId)];
+    if (curr && curr.played > 0) {
+      return curr.goals / curr.played;
+    }
+
+    // Check previous season
+    if (previousSeason) {
+      const prev = playerStats[String(previousSeason.id)];
+      if (prev && prev.played > 0) {
+        return prev.goals / prev.played;
+      }
+    }
+
+    return 0;
+  };
+
+  // 3. Sum averages for home and away
+  let homePredictedSum = 0;
+  homePlayerIds.forEach(id => {
+    homePredictedSum += getPlayerAverage(id);
+  });
+
+  let awayPredictedSum = 0;
+  awayPlayerIds.forEach(id => {
+    awayPredictedSum += getPlayerAverage(id);
+  });
+
+  const homeAvgGoals = homeCount > 0 ? (homePredictedSum / homeCount) : 0;
+  const awayAvgGoals = awayCount > 0 ? (awayPredictedSum / awayCount) : 0;
+
+  // Round predicted scores to nearest integers
+  const homePredictedScore = Math.round(homePredictedSum);
+  const awayPredictedScore = Math.round(awayPredictedSum);
+
+  let predicted: 'home' | 'away' | 'draw' = 'draw';
+  if (homePredictedScore > awayPredictedScore) {
+    predicted = 'home';
+  } else if (awayPredictedScore > homePredictedScore) {
+    predicted = 'away';
+  }
+
+  const predictedScore = `${homePredictedScore} - ${awayPredictedScore}`;
+
+  // Matchup percentage based on the predicted scores
+  const totalPredictedGoals = homePredictedSum + awayPredictedSum;
+  let matchupPct = 50;
+  if (totalPredictedGoals > 0) {
+    const rawPct = (homePredictedSum / totalPredictedGoals) * 100;
+    matchupPct = Math.round(Math.max(20, Math.min(80, rawPct)));
+  }
+
+  return {
+    homeAvg: homeAvgGoals,
+    awayAvg: awayAvgGoals,
+    homeSum: homePredictedSum,
+    awaySum: awayPredictedSum,
+    homeCount,
+    awayCount,
+    matchupPct,
+    predicted,
+    predictedScore
+  };
+};
+
 const buildPredictionFromAverages = (
   homeAvg: number,
   awayAvg: number,
@@ -2420,10 +2564,6 @@ export const getMatchPrediction = async (ctx: Context) => {
 
     const homePlayers: any[] = (match as any).homeTeamUsers || [];
     const awayPlayers: any[] = (match as any).awayTeamUsers || [];
-    const homeXpSum = homePlayers.reduce((s: number, p: any) => s + (Number(p.xp) || 0), 0);
-    const awayXpSum = awayPlayers.reduce((s: number, p: any) => s + (Number(p.xp) || 0), 0);
-    const homeAvg = homePlayers.length > 0 ? homeXpSum / homePlayers.length : 0;
-    const awayAvg = awayPlayers.length > 0 ? awayXpSum / awayPlayers.length : 0;
 
     // Match number within the league
     let matchNumber: number | null = null;
@@ -2437,32 +2577,6 @@ export const getMatchPrediction = async (ctx: Context) => {
       if (idx >= 0) matchNumber = idx + 1;
     }
 
-    const isFinalized = isFinalizedMatchStatus((match as any).status);
-    const storedHomePct = (match as any).homeWinPct;
-    const storedAwayPct = (match as any).awayWinPct;
-
-    const hasStoredPrediction =
-      isFinalized &&
-      storedHomePct !== null &&
-      storedHomePct !== undefined &&
-      storedAwayPct !== null &&
-      storedAwayPct !== undefined;
-
-    if (hasStoredPrediction) {
-      const storedPrediction = buildPredictionFromMatchupPct(Number(storedHomePct));
-      ctx.body = {
-        success: true,
-        available: true,
-        matchNumber,
-        home: { average: Math.round(homeAvg), total: homeXpSum, count: homePlayers.length },
-        away: { average: Math.round(awayAvg), total: awayXpSum, count: awayPlayers.length },
-        matchupPct: storedPrediction.matchupPct,
-        predicted: storedPrediction.predicted,
-        predictedScore: storedPrediction.predictedScore,
-      };
-      return;
-    }
-
     // Need at least 1 player on each side
     if (homePlayers.length === 0 || awayPlayers.length === 0) {
       ctx.body = {
@@ -2474,26 +2588,14 @@ export const getMatchPrediction = async (ctx: Context) => {
       return;
     }
 
-    const totalAvg = homeAvg + awayAvg;
+    const homePlayerIds = homePlayers.map(p => String(p.id));
+    const awayPlayerIds = awayPlayers.map(p => String(p.id));
 
-    // If both teams have 0 XP total, not enough data
-    if (totalAvg === 0) {
-      ctx.body = {
-        success: true,
-        available: false,
-        matchNumber,
-        reason: 'FIRST_MATCH_NO_STATS',
-      };
-      return;
-    }
-
-    const prediction = buildPredictionFromAverages(
-      homeAvg,
-      awayAvg,
-      homeXpSum,
-      awayXpSum,
-      homePlayers.length,
-      awayPlayers.length
+    const prediction = await calculateMatchupPrediction(
+      match.leagueId || null,
+      match.seasonId || null,
+      homePlayerIds,
+      awayPlayerIds
     );
 
     if (!isFinalizedMatchStatus((match as any).status)) {
@@ -2547,7 +2649,7 @@ export const submitMatchPrediction = async (ctx: Context) => {
   if (body.homeIds !== undefined || body.awayIds !== undefined) {
     try {
       const match = await Match.findByPk(matchId, {
-        attributes: ['id', 'status', 'homeWinPct', 'awayWinPct']
+        attributes: ['id', 'status', 'homeWinPct', 'awayWinPct', 'leagueId', 'seasonId']
       });
 
       if (!match) {
@@ -2558,41 +2660,12 @@ export const submitMatchPrediction = async (ctx: Context) => {
 
       const homeIds = body.homeIds || [];
       const awayIds = body.awayIds || [];
-      const homeTotal = body.homeTotal || homeIds.length;
-      const awayTotal = body.awayTotal || awayIds.length;
 
-      // Calculate team strength based on player XP/stats
-      let homeXPSum = 0;
-      let awayXPSum = 0;
-
-      // Fetch XP for home team players
-      if (homeIds.length > 0) {
-        const homePlayers = await User.findAll({
-          where: { id: { [Op.in]: homeIds } },
-          attributes: ['id', 'xp']
-        });
-        homeXPSum = homePlayers.reduce((sum: number, p: any) => sum + (p.xp || 0), 0);
-      }
-
-      // Fetch XP for away team players
-      if (awayIds.length > 0) {
-        const awayPlayers = await User.findAll({
-          where: { id: { [Op.in]: awayIds } },
-          attributes: ['id', 'xp']
-        });
-        awayXPSum = awayPlayers.reduce((sum: number, p: any) => sum + (p.xp || 0), 0);
-      }
-
-      // Calculate averages
-      const homeAvg = homeTotal > 0 ? homeXPSum / homeTotal : 0;
-      const awayAvg = awayTotal > 0 ? awayXPSum / awayTotal : 0;
-      const prediction = buildPredictionFromAverages(
-        homeAvg,
-        awayAvg,
-        homeXPSum,
-        awayXPSum,
-        Number(homeTotal) || 0,
-        Number(awayTotal) || 0
+      const prediction = await calculateMatchupPrediction(
+        match.leagueId || null,
+        match.seasonId || null,
+        homeIds,
+        awayIds
       );
 
       if (!isFinalizedMatchStatus((match as any).status)) {

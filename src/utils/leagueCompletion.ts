@@ -256,10 +256,12 @@ const getCompletedMatchCountsBySeason = async (
  * Season completed = maxGames reached AND last 2 matches have all stats submitted.
  */
 export const isSeasonCompleted = async (seasonId: string): Promise<SeasonCompletionInfo | null> => {
-  const season = await Season.findByPk(seasonId);
+  const season = await Season.findByPk(seasonId, {
+    include: [{ model: League, as: 'league', attributes: ['maxGames'] }]
+  });
   if (!season) return null;
 
-  const maxGames = Number(season.maxGames ?? 0);
+  const maxGames = Number(season.maxGames ?? (season as any).league?.maxGames ?? 0);
   if (maxGames <= 0) {
     return {
       seasonId: season.id,
@@ -299,7 +301,7 @@ export const isSeasonCompleted = async (seasonId: string): Promise<SeasonComplet
     isActive: season.isActive,
     maxGames,
     completedMatches: completedCount,
-    isCompleted: matchesReached && statsCheck.allComplete,
+    isCompleted: matchesReached,
     last2MatchesStatsComplete: statsCheck.allComplete,
     missingStatsPlayers: statsCheck.missingPlayerIds,
     inviteCode: season.inviteCode,
@@ -320,6 +322,9 @@ export const checkLeagueCompletion = async (
     if (cached) return cached;
   }
 
+  const league = await League.findByPk(leagueKey, { attributes: ['id', 'active', 'maxGames'] });
+  const leagueMaxGames = Number(league?.maxGames ?? 0);
+
   const seasons = await Season.findAll({
     where: { leagueId: leagueKey },
     order: [['seasonNumber', 'ASC']],
@@ -336,7 +341,7 @@ export const checkLeagueCompletion = async (
   const missing: string[] = [];
 
   for (const season of seasons) {
-    const maxGames = Number(season.maxGames ?? 0);
+    const maxGames = Number(season.maxGames ?? leagueMaxGames ?? 0);
 
     let completedCount = 0;
     let statsCheck = { allComplete: true, missingPlayerIds: [] as string[] };
@@ -350,7 +355,7 @@ export const checkLeagueCompletion = async (
     }
 
     const matchesReached = maxGames > 0 && completedCount >= maxGames;
-    const isCompleted = matchesReached && statsCheck.allComplete;
+    const isCompleted = matchesReached;
 
     if (season.isActive && isCompleted) {
       activeSeasonCompleted = true;
@@ -380,15 +385,8 @@ export const checkLeagueCompletion = async (
 
   const seasonsWithMaxGames = seasonInfos.filter(s => s.maxGames > 0);
   const allSeasonsCompleted = seasonsWithMaxGames.length > 0 && seasonsWithMaxGames.every(s => s.isCompleted);
-  const isCompleted = activeSeasonCompleted || allSeasonsCompleted;
-
-  if (isCompleted) {
-    const league = await League.findByPk(leagueKey, { attributes: ['id', 'active'] });
-    if (league && league.active) {
-      await League.update({ active: false }, { where: { id: leagueKey } });
-      console.log(`League ${leagueKey} auto-marked as inactive (completed)`);
-    }
-  }
+  // League is not completed automatically, only seasons are completed
+  const isCompleted = false;
 
   const result: LeagueCompletionInfo = {
     leagueId: leagueKey,
@@ -467,12 +465,8 @@ export const checkAndCompleteLeagueAfterMatch = async (matchId: string): Promise
     return { seasonCompleted: false, leagueCompleted: false, seasonInfo };
   }
 
-  console.log(`Season "${seasonInfo.seasonName}" completed! (${seasonInfo.completedMatches}/${seasonInfo.maxGames} matches)`);
-
-  const leagueInfo = await checkLeagueCompletion(match.leagueId, { bypassCache: true });
-
-  if (leagueInfo.isCompleted) {
-    console.log(`League ${match.leagueId} is now COMPLETED! All season matches are done.`);
+  if (seasonInfo.isCompleted) {
+    console.log(`Season "${seasonInfo.seasonName}" completed! (${seasonInfo.completedMatches}/${seasonInfo.maxGames} matches)`);
 
     try {
       const league = await League.findByPk(match.leagueId, {
@@ -484,7 +478,7 @@ export const checkAndCompleteLeagueAfterMatch = async (matchId: string): Promise
         const notifications = memberIds.map((userId: string) => ({
           user_id: userId,
           type: 'LEAGUE_COMPLETED',
-          title: `League Completed!`,
+          title: `Season Completed!`,
           body: `All matches in "${league.name}" - ${seasonInfo.seasonName} have been completed! Check the Trophy Room for results.`,
           meta: {
             leagueId: match.leagueId,
@@ -497,7 +491,7 @@ export const checkAndCompleteLeagueAfterMatch = async (matchId: string): Promise
         }));
 
         await Notification.bulkCreate(notifications);
-        console.log(`Sent league completion notification to ${memberIds.length} members`);
+        console.log(`Sent season completion notification to ${memberIds.length} members`);
       }
     } catch (notifErr) {
       console.error('Failed to send league completion notification:', notifErr);
@@ -506,7 +500,7 @@ export const checkAndCompleteLeagueAfterMatch = async (matchId: string): Promise
 
   return {
     seasonCompleted: seasonInfo.isCompleted,
-    leagueCompleted: leagueInfo.isCompleted,
+    leagueCompleted: false,
     seasonInfo,
   };
 };

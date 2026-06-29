@@ -1,5 +1,6 @@
 import { Context } from 'koa';
 import models from '../models';
+import sequelize from '../config/database';
 import { Op, fn, col, where, QueryTypes } from 'sequelize';
 import cache from '../utils/cache';
 import { uploadToCloudinary } from '../middleware/upload';
@@ -85,40 +86,110 @@ const clampPredictionPct = (value: number): number =>
   Math.round(Math.max(20, Math.min(80, Number.isFinite(value) ? value : 50)));
 
 const computeTeamWinPercentages = async (params: {
+  leagueId: string | null;
+  seasonId: string | null;
   homeIds: string[];
   awayIds: string[];
-  homeTotal: number;
-  awayTotal: number;
 }): Promise<{ homeWinPct: number; awayWinPct: number }> => {
+  const { leagueId, seasonId } = params;
   const homeIds = (params.homeIds || []).filter(Boolean);
   const awayIds = (params.awayIds || []).filter(Boolean);
-  const homeTotal = Math.max(0, Number(params.homeTotal) || 0);
-  const awayTotal = Math.max(0, Number(params.awayTotal) || 0);
 
-  let homeXPSum = 0;
-  let awayXPSum = 0;
-
-  if (homeIds.length > 0) {
-    const homePlayers = await User.findAll({
-      where: { id: { [Op.in]: homeIds } },
-      attributes: ['id', 'xp'],
-    });
-    homeXPSum = homePlayers.reduce((sum: number, player: any) => sum + (Number(player?.xp) || 0), 0);
+  if (!leagueId || !seasonId || (homeIds.length === 0 && awayIds.length === 0)) {
+    return { homeWinPct: 50, awayWinPct: 50 };
   }
 
-  if (awayIds.length > 0) {
-    const awayPlayers = await User.findAll({
-      where: { id: { [Op.in]: awayIds } },
-      attributes: ['id', 'xp'],
+  // 1. Fetch current season and discover previous season
+  const currentSeason = await Season.findByPk(seasonId);
+  let previousSeason: any = null;
+  if (currentSeason) {
+    previousSeason = await Season.findOne({
+      where: {
+        leagueId,
+        id: { [Op.ne]: seasonId },
+        createdAt: { [Op.lt]: currentSeason.createdAt }
+      },
+      order: [['createdAt', 'DESC']]
     });
-    awayXPSum = awayPlayers.reduce((sum: number, player: any) => sum + (Number(player?.xp) || 0), 0);
   }
 
-  const homeAvg = homeTotal > 0 ? homeXPSum / homeTotal : 0;
-  const awayAvg = awayTotal > 0 ? awayXPSum / awayTotal : 0;
-  const total = homeAvg + awayAvg;
+  const allPlayerIds = Array.from(new Set([...homeIds, ...awayIds]));
+  const seasonIds = [seasonId];
+  if (previousSeason) {
+    seasonIds.push(previousSeason.id);
+  }
 
-  const homeWinPct = total > 0 ? clampPredictionPct((homeAvg / total) * 100) : 50;
+  // 2. Fetch stats for the players in these seasons
+  let statsRows: any[] = [];
+  if (allPlayerIds.length > 0) {
+    statsRows = await sequelize.query<any>(
+      `SELECT ms.user_id as "userId", m."seasonId", COUNT(*)::int as played, SUM(ms.goals)::int as goals
+       FROM "match_statistics" ms
+       JOIN "Matches" m ON ms.match_id = m.id
+       WHERE ms.user_id IN (:allPlayerIds)
+         AND m."seasonId" IN (:seasonIds)
+         AND m.deleted = false
+         AND m.status IN ('RESULT_PUBLISHED', 'RESULT_UPLOADED')
+       GROUP BY ms.user_id, m."seasonId"`,
+      {
+        replacements: { allPlayerIds, seasonIds },
+        type: QueryTypes.SELECT
+      }
+    );
+  }
+
+  // Group by player and season
+  const statsMap: Record<string, Record<string, { played: number; goals: number }>> = {};
+  statsRows.forEach(row => {
+    const uid = String(row.userId);
+    const sid = String(row.seasonId);
+    if (!statsMap[uid]) statsMap[uid] = {};
+    statsMap[uid][sid] = {
+      played: Number(row.played || 0),
+      goals: Number(row.goals || 0)
+    };
+  });
+
+  // Calculate average for each player
+  const getPlayerAverage = (uid: string): number => {
+    const playerStats = statsMap[uid];
+    if (!playerStats) return 0;
+    
+    // Check current season
+    const curr = playerStats[String(seasonId)];
+    if (curr && curr.played > 0) {
+      return curr.goals / curr.played;
+    }
+
+    // Check previous season
+    if (previousSeason) {
+      const prev = playerStats[String(previousSeason.id)];
+      if (prev && prev.played > 0) {
+        return prev.goals / prev.played;
+      }
+    }
+
+    return 0;
+  };
+
+  // 3. Sum averages for home and away
+  let homePredictedSum = 0;
+  homeIds.forEach(id => {
+    homePredictedSum += getPlayerAverage(id);
+  });
+
+  let awayPredictedSum = 0;
+  awayIds.forEach(id => {
+    awayPredictedSum += getPlayerAverage(id);
+  });
+
+  const totalPredictedGoals = homePredictedSum + awayPredictedSum;
+  let homeWinPct = 50;
+  if (totalPredictedGoals > 0) {
+    const rawPct = (homePredictedSum / totalPredictedGoals) * 100;
+    homeWinPct = clampPredictionPct(rawPct);
+  }
+
   return {
     homeWinPct,
     awayWinPct: 100 - homeWinPct,
@@ -229,6 +300,7 @@ type LeagueListRow = {
   adminId?: string | null;
   adminName?: string | null;
   memberCount?: number;
+  totalMatchCount?: number;
 };
 
 const fetchUserLeaguesBasic = async (userId: string): Promise<LeagueListRow[]> => {
@@ -253,7 +325,8 @@ const fetchUserLeaguesBasic = async (userId: string): Promise<LeagueListRow[]> =
            (SELECT "userId" FROM "LeagueAdmin" la3 WHERE la3."leagueId" = l.id LIMIT 1),
            (SELECT "userId" FROM "LeagueMember" lm4 WHERE lm4."leagueId" = l.id ORDER BY "createdAt" ASC LIMIT 1)
          ) LIMIT 1) AS "adminName",
-        (SELECT COUNT(*)::int FROM "LeagueMember" lm2 WHERE lm2."leagueId" = l.id) AS "memberCount"
+        (SELECT COUNT(*)::int FROM "LeagueMember" lm2 WHERE lm2."leagueId" = l.id) AS "memberCount",
+        (SELECT COUNT(*)::int FROM "Matches" m WHERE m."leagueId" = l.id) AS "totalMatchCount"
       FROM "Leagues" l
       LEFT JOIN "LeagueMember" lm
         ON lm."leagueId" = l.id
@@ -279,9 +352,11 @@ const fetchUserLeaguesBasic = async (userId: string): Promise<LeagueListRow[]> =
     createdAt: row.createdAt ? ((row.createdAt as any) instanceof Date ? (row.createdAt as any).toISOString() : String(row.createdAt)) : undefined,
     adminId: row.adminId || null,
     adminName: row.adminName || null,
-    memberCount: row.memberCount ? Number(row.memberCount) : 0
+    memberCount: row.memberCount ? Number(row.memberCount) : 0,
+    totalMatchCount: row.totalMatchCount ? Number(row.totalMatchCount) : 0,
   }));
 };
+
 
 const deriveLeagueLifecycle = (
   active: boolean,
@@ -437,6 +512,7 @@ export const getAllLeagues = async (ctx: Context) => {
         adminId: league.adminId,
         adminName: league.adminName,
         memberCount: league.memberCount,
+        totalMatchCount: league.totalMatchCount ?? 0,
         computedStatus: {
           isCompleted: lifecycle.isCompleted,
           isComplete: lifecycle.isComplete,
@@ -445,6 +521,7 @@ export const getAllLeagues = async (ctx: Context) => {
           allStatsSubmitted: Boolean(completionInfo?.allStatsSubmitted),
           matchesPlayed: completionInfo?.totalCompletedMatches ?? 0,
           gamesPlayed: completionInfo?.totalCompletedMatches ?? 0,
+          totalMatchCount: league.totalMatchCount ?? 0,
           maxGames: league.maxGames ?? 0,
           totalMaxGames: completionInfo?.totalMaxGames ?? 0,
           missing: completionInfo?.missing ?? [],
@@ -500,6 +577,7 @@ export const getTrophyRoom = async (ctx: Context) => {
     teamGoalsFor: number;
     teamGoalsConceded: number;
     defensiveImpactVotes: number;
+    cleanSheets: number;
   };
 
   type TrophySnapshotEntry = {
@@ -605,7 +683,8 @@ export const getTrophyRoom = async (ctx: Context) => {
           motmVotes: 0,
           teamGoalsFor: 0,
           teamGoalsConceded: 0,
-          defensiveImpactVotes: 0
+          defensiveImpactVotes: 0,
+          cleanSheets: 0
         };
       }
     };
@@ -626,10 +705,11 @@ export const getTrophyRoom = async (ctx: Context) => {
           if (!stats[pid]) return;
           stats[pid].played++;
 
-          // Add goals and assists from playerStats
+          // Add goals, assists and cleanSheets from playerStats
           if (m.playerStats && m.playerStats[pid]) {
             stats[pid].goals += Number(m.playerStats[pid].goals || 0);
             stats[pid].assists += Number(m.playerStats[pid].assists || 0);
+            stats[pid].cleanSheets += Number(m.playerStats[pid].cleanSheets || 0);
           }
         });
 
@@ -843,7 +923,7 @@ export const getTrophyRoom = async (ctx: Context) => {
       const [matchStatRows, voteRows, matchesWithTeams] = await Promise.all([
         MatchStatistics.findAll({
           where: { match_id: { [Op.in]: allMatchIds } },
-          attributes: ['match_id', 'user_id', 'goals', 'assists'],
+          attributes: ['match_id', 'user_id', 'goals', 'assists', 'cleanSheets'],
           raw: true,
         }),
         Vote.findAll({
@@ -869,7 +949,7 @@ export const getTrophyRoom = async (ctx: Context) => {
         });
       });
 
-      const psMap: Record<string, Record<string, { goals: number; assists: number }>> = {};
+      const psMap: Record<string, Record<string, { goals: number; assists: number; cleanSheets: number }>> = {};
       (matchStatRows || []).forEach((ms: any) => {
         const mid = String(ms.match_id);
         if (!psMap[mid]) psMap[mid] = {};
@@ -878,8 +958,13 @@ export const getTrophyRoom = async (ctx: Context) => {
         if (existing) {
           existing.goals += Number(ms.goals || 0);
           existing.assists += Number(ms.assists || 0);
+          existing.cleanSheets += Number(ms.cleanSheets || 0);
         } else {
-          psMap[mid][uid] = { goals: Number(ms.goals || 0), assists: Number(ms.assists || 0) };
+          psMap[mid][uid] = {
+            goals: Number(ms.goals || 0),
+            assists: Number(ms.assists || 0),
+            cleanSheets: Number(ms.cleanSheets || 0)
+          };
         }
       });
       const motmMap: Record<string, Record<string, string>> = {};
@@ -1002,21 +1087,20 @@ export const getTrophyRoom = async (ctx: Context) => {
       };
 
       // Calculate GK-specific stats for Star Keeper
-      const gkIds: string[] = (league.members || [])
+      let gkIds: string[] = (league.members || [])
         .filter((p: any) => isGoalkeeperRole(p.positionType || p.position))
         .map((p: any) => String(p.id));
 
-      const cleanSheets: Record<string, number> = {};
-      gkIds.forEach(id => (cleanSheets[id] = 0));
+      const gkCandidatesPlayed = gkIds.filter(id => stats[id]?.played > 0 && (stats[id]?.cleanSheets || 0) > 0);
+      if (gkCandidatesPlayed.length === 0) {
+        // Fallback to all members who have at least one clean sheet
+        gkIds = playerIds.filter(id => (stats[id]?.cleanSheets || 0) > 0);
+      }
 
-      matchesToUse
-        .filter((m: any) => normalizeStatus(m.status) === 'RESULT_PUBLISHED')
-        .forEach((m: any) => {
-          const homeGk: string[] = (m.homeTeamUsers || []).filter((u: any) => gkIds.includes(String(u.id))).map((u: any) => String(u.id));
-          const awayGk: string[] = (m.awayTeamUsers || []).filter((u: any) => gkIds.includes(String(u.id))).map((u: any) => String(u.id));
-          if (Number(m.awayTeamGoals || 0) === 0) homeGk.forEach(id => (cleanSheets[id] = (cleanSheets[id] || 0) + 1));
-          if (Number(m.homeTeamGoals || 0) === 0) awayGk.forEach(id => (cleanSheets[id] = (cleanSheets[id] || 0) + 1));
-        });
+      const cleanSheets: Record<string, number> = {};
+      gkIds.forEach(id => {
+        cleanSheets[id] = stats[id]?.cleanSheets || 0;
+      });
 
       // Legendary Shield criteria:
       // lowest average team goals conceded among all players who played.
@@ -1960,6 +2044,7 @@ export const getUserLeagues = async (ctx: Context) => {
           adminId: league.adminId,
           adminName: league.adminName,
           memberCount: league.memberCount,
+          totalMatchCount: league.totalMatchCount ?? 0,
           computedStatus: {
             isCompleted: lifecycle.isCompleted,
             isComplete: lifecycle.isComplete,
@@ -1968,6 +2053,7 @@ export const getUserLeagues = async (ctx: Context) => {
             allStatsSubmitted: Boolean(completionInfo?.allStatsSubmitted),
             matchesPlayed: completionInfo?.totalCompletedMatches ?? 0,
             gamesPlayed: completionInfo?.totalCompletedMatches ?? 0,
+            totalMatchCount: league.totalMatchCount ?? 0,
             maxGames: league.maxGames ?? 0,
             totalMaxGames: completionInfo?.totalMaxGames ?? 0,
             missing: completionInfo?.missing ?? [],
@@ -4459,10 +4545,10 @@ export const createMatchInLeague = async (ctx: Context) => {
     if (parsedHomeIds.length > 0 || parsedAwayIds.length > 0) {
       try {
         const prediction = await computeTeamWinPercentages({
+          leagueId,
+          seasonId: activeSeason.id,
           homeIds: parsedHomeIds,
           awayIds: parsedAwayIds,
-          homeTotal: parsedHomeIds.length,
-          awayTotal: parsedAwayIds.length,
         });
         await (match as any).update({
           homeWinPct: prediction.homeWinPct,
@@ -4725,10 +4811,10 @@ export const updateMatchInLeague = async (ctx: Context) => {
     if (teamUploadRequested && !isFinalizedMatchStatus((match as any).status)) {
       try {
         const prediction = await computeTeamWinPercentages({
+          leagueId: match.leagueId || null,
+          seasonId: match.seasonId || null,
           homeIds,
           awayIds,
-          homeTotal: homeIds.length + homeGuestsData.length,
-          awayTotal: awayIds.length + awayGuestsData.length,
         });
         await match.update({
           homeWinPct: prediction.homeWinPct,

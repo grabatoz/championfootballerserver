@@ -646,7 +646,7 @@ router.get('/:id/trophies', required, async (ctx) => {
       const [matchStatRows, voteRows] = await Promise.all([
         MatchStatistics.findAll({
           where: { match_id: { [Op.in]: allMatchIds } },
-          attributes: ['match_id', 'user_id', 'goals', 'assists'],
+          attributes: ['match_id', 'user_id', 'goals', 'assists', 'cleanSheets'],
           raw: true,
         }),
         Vote.findAll({
@@ -655,8 +655,8 @@ router.get('/:id/trophies', required, async (ctx) => {
           raw: true,
         }),
       ]);
-      // Build playerStats map: { matchId -> { playerId -> { goals, assists } } }
-      const psMap: Record<string, Record<string, { goals: number; assists: number }>> = {};
+      // Build playerStats map: { matchId -> { playerId -> { goals, assists, cleanSheets } } }
+      const psMap: Record<string, Record<string, { goals: number; assists: number; cleanSheets: number }>> = {};
       (matchStatRows || []).forEach((ms: any) => {
         const mid = String(ms.match_id);
         if (!psMap[mid]) psMap[mid] = {};
@@ -665,8 +665,13 @@ router.get('/:id/trophies', required, async (ctx) => {
         if (existing) {
           existing.goals += Number(ms.goals || 0);
           existing.assists += Number(ms.assists || 0);
+          existing.cleanSheets += Number(ms.cleanSheets || 0);
         } else {
-          psMap[mid][uid] = { goals: Number(ms.goals || 0), assists: Number(ms.assists || 0) };
+          psMap[mid][uid] = {
+            goals: Number(ms.goals || 0),
+            assists: Number(ms.assists || 0),
+            cleanSheets: Number(ms.cleanSheets || 0)
+          };
         }
       });
       // Build MOTM votes map: { matchId -> { voterId -> votedForId } }
@@ -729,6 +734,7 @@ router.get('/:id/trophies', required, async (ctx) => {
       teamGoalsFor: number;
       teamGoalsConceded: number;
       defensiveImpactVotes: number;
+      cleanSheets: number;
     };
 
     const calcStats = (league: any): Record<string, PlayerStats> => {
@@ -752,7 +758,8 @@ router.get('/:id/trophies', required, async (ctx) => {
             motmVotes: 0,
             teamGoalsFor: 0,
             teamGoalsConceded: 0,
-            defensiveImpactVotes: 0
+            defensiveImpactVotes: 0,
+            cleanSheets: 0
           };
         }
       };
@@ -769,12 +776,13 @@ router.get('/:id/trophies', required, async (ctx) => {
           const home: string[] = (m.homeTeamUsers || []).map((p: any) => String(p.id));
           const away: string[] = (m.awayTeamUsers || []).map((p: any) => String(p.id));
           [...home, ...away].forEach((pid: string) => { if (stats[pid]) stats[pid].played += 1; });
-          // Aggregate simple goals/assists if present on m.playerStats
-          const ps = (m.playerStats || {}) as Record<string, { goals?: number; assists?: number }>;
+          // Aggregate simple goals/assists/cleanSheets if present on m.playerStats
+          const ps = (m.playerStats || {}) as Record<string, { goals?: number; assists?: number; cleanSheets?: number }>;
           Object.entries(ps).forEach(([pid, s]) => {
             if (!stats[pid]) return;
             stats[pid].goals += Number(s?.goals || 0);
             stats[pid].assists += Number(s?.assists || 0);
+            stats[pid].cleanSheets += Number(s?.cleanSheets || 0);
           });
           // MOTM votes if present (best-effort)
           const motmVals = Object.values((m as any).manOfTheMatchVotes || {}) as Array<string | number>;
@@ -847,19 +855,19 @@ router.get('/:id/trophies', required, async (ctx) => {
         const role = String(rawRole || '').trim().toLowerCase();
         return role === 'gk' || role.includes('goalkeeper') || role.includes('keeper');
       };
-      const gkIds: string[] = (league.members || [])
+      let gkIds: string[] = (league.members || [])
         .filter((p: any) => isGoalkeeperRole(p.positionType || p.position))
         .map((p: any) => String(p.id));
+      const gkCandidatesPlayed = gkIds.filter(id => statsMap[id]?.played > 0 && (statsMap[id]?.cleanSheets || 0) > 0);
+      if (gkCandidatesPlayed.length === 0) {
+        // Fallback to all members who have at least one clean sheet
+        gkIds = eligible.filter(id => (statsMap[id]?.cleanSheets || 0) > 0);
+      }
       // Compute clean sheets for GKs
-      const cleanSheets: Record<string, number> = {}; gkIds.forEach((id: string) => (cleanSheets[id] = 0));
-      (league.matches || [])
-        .filter((m: any) => normalizeStatus(m.status) === 'RESULT_PUBLISHED')
-        .forEach((m: any) => {
-          const homeGk: string[] = (m.homeTeamUsers || []).filter((u: any) => gkIds.includes(String(u.id))).map((u: any) => String(u.id));
-          const awayGk: string[] = (m.awayTeamUsers || []).filter((u: any) => gkIds.includes(String(u.id))).map((u: any) => String(u.id));
-          if (Number(m.awayTeamGoals || 0) === 0) homeGk.forEach((id: string) => (cleanSheets[id] = (cleanSheets[id] || 0) + 1));
-          if (Number(m.homeTeamGoals || 0) === 0) awayGk.forEach((id: string) => (cleanSheets[id] = (cleanSheets[id] || 0) + 1));
-        });
+      const cleanSheets: Record<string, number> = {};
+      gkIds.forEach(id => {
+        cleanSheets[id] = statsMap[id]?.cleanSheets || 0;
+      });
 
       const pickByMax = (arr: string[], metric: (id: string) => number, min: number) => {
         if (!arr.length) return null;

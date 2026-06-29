@@ -59,6 +59,7 @@ type PlayerStats = {
   teamGoalsFor: number;
   teamGoalsConceded: number;
   defensiveImpactVotes: number;
+  cleanSheets: number;
 };
 
 const calcStats = (matches: any[], members: any[]): Record<string, PlayerStats> => {
@@ -82,7 +83,8 @@ const calcStats = (matches: any[], members: any[]): Record<string, PlayerStats> 
         motmVotes: 0,
         teamGoalsFor: 0,
         teamGoalsConceded: 0,
-        defensiveImpactVotes: 0
+        defensiveImpactVotes: 0,
+        cleanSheets: 0
       };
     }
   };
@@ -103,10 +105,11 @@ const calcStats = (matches: any[], members: any[]): Record<string, PlayerStats> 
         if (!stats[pid]) return;
         stats[pid].played++;
 
-        // Add goals and assists from playerStats
+        // Add goals, assists and cleanSheets from playerStats
         if (m.playerStats && m.playerStats[pid]) {
           stats[pid].goals += Number(m.playerStats[pid].goals || 0);
           stats[pid].assists += Number(m.playerStats[pid].assists || 0);
+          stats[pid].cleanSheets += Number(m.playerStats[pid].cleanSheets || 0);
         }
       });
 
@@ -201,7 +204,7 @@ async function recalculate() {
           ),
           models.MatchStatistics.findAll({
             where: { match_id: { [Op.in]: matchIds } },
-            attributes: ['match_id', 'user_id', 'goals', 'assists'],
+            attributes: ['match_id', 'user_id', 'goals', 'assists', 'cleanSheets'],
             raw: true,
           }),
           models.Vote.findAll({
@@ -229,7 +232,7 @@ async function recalculate() {
           if (u) awayUsersMap.get(mid)!.push(u);
         });
 
-        const psMap: Record<string, Record<string, { goals: number; assists: number }>> = {};
+        const psMap: Record<string, Record<string, { goals: number; assists: number; cleanSheets: number }>> = {};
         (matchStatRows || []).forEach((ms: any) => {
           const mid = String(ms.match_id);
           if (!psMap[mid]) psMap[mid] = {};
@@ -238,8 +241,13 @@ async function recalculate() {
           if (existing) {
             existing.goals += Number(ms.goals || 0);
             existing.assists += Number(ms.assists || 0);
+            existing.cleanSheets += Number(ms.cleanSheets || 0);
           } else {
-            psMap[mid][uid] = { goals: Number(ms.goals || 0), assists: Number(ms.assists || 0) };
+            psMap[mid][uid] = {
+              goals: Number(ms.goals || 0),
+              assists: Number(ms.assists || 0),
+              cleanSheets: Number(ms.cleanSheets || 0)
+            };
           }
         });
 
@@ -260,9 +268,10 @@ async function recalculate() {
       }
 
       // Recalculate snapshot if there is an existing snapshot or if we want to build one
-      const existingSnapshot = parseSnapshot(season.trophyAwardSnapshot);
-      if (!existingSnapshot || Object.keys(existingSnapshot).length === 0) {
-        // No snapshot exists, and maybe season isn't complete. Skip so we don't force snapshooting uncompleted seasons
+      const existingSnapshot = parseSnapshot(season.trophyAwardSnapshot) || {};
+      const isCompletedSeason = season.isActive === false || Object.keys(existingSnapshot).length > 0;
+      if (!isCompletedSeason) {
+        // No snapshot exists, and season isn't complete. Skip so we don't force snapshooting uncompleted seasons
         continue;
       }
 
@@ -296,21 +305,20 @@ async function recalculate() {
 
       const leagueTable = [...playerIds].sort(sortByStandings);
 
-      const gkIds: string[] = (plainLeague.members || [])
+      let gkIds: string[] = (plainLeague.members || [])
         .filter((p: any) => isGoalkeeperRole(p.positionType || p.position))
         .map((p: any) => String(p.id));
 
-      const cleanSheets: Record<string, number> = {};
-      gkIds.forEach(id => (cleanSheets[id] = 0));
+      const gkCandidatesPlayed = gkIds.filter(id => stats[id]?.played > 0 && (stats[id]?.cleanSheets || 0) > 0);
+      if (gkCandidatesPlayed.length === 0) {
+        // Fallback to all members who have at least one clean sheet
+        gkIds = playerIds.filter(id => (stats[id]?.cleanSheets || 0) > 0);
+      }
 
-      plainMatches
-        .filter((m: any) => normalizeStatus(m.status) === 'RESULT_PUBLISHED')
-        .forEach((m: any) => {
-          const homeGk: string[] = (m.homeTeamUsers || []).filter((u: any) => gkIds.includes(String(u.id))).map((u: any) => String(u.id));
-          const awayGk: string[] = (m.awayTeamUsers || []).filter((u: any) => gkIds.includes(String(u.id))).map((u: any) => String(u.id));
-          if (Number(m.awayTeamGoals || 0) === 0) homeGk.forEach(id => (cleanSheets[id] = (cleanSheets[id] || 0) + 1));
-          if (Number(m.homeTeamGoals || 0) === 0) awayGk.forEach(id => (cleanSheets[id] = (cleanSheets[id] || 0) + 1));
-        });
+      const cleanSheets: Record<string, number> = {};
+      gkIds.forEach(id => {
+        cleanSheets[id] = stats[id]?.cleanSheets || 0;
+      });
 
       const nameMap = new Map<string, string>();
       (plainLeague.members || []).forEach((p: any) => {
