@@ -325,7 +325,7 @@ const fetchUserLeaguesBasic = async (userId: string): Promise<LeagueListRow[]> =
            (SELECT "userId" FROM "LeagueAdmin" la3 WHERE la3."leagueId" = l.id LIMIT 1),
            (SELECT "userId" FROM "LeagueMember" lm4 WHERE lm4."leagueId" = l.id ORDER BY "createdAt" ASC LIMIT 1)
          ) LIMIT 1) AS "adminName",
-        (SELECT COUNT(*)::int FROM "LeagueMember" lm2 WHERE lm2."leagueId" = l.id) AS "memberCount",
+        (SELECT COUNT(*)::int FROM "LeagueMember" lm2 JOIN "users" u_count ON lm2."userId" = u_count.id WHERE lm2."leagueId" = l.id AND COALESCE(u_count.email, '') NOT ILIKE '%guest%' AND COALESCE(u_count.email, '') NOT ILIKE '%@local.invalid%' AND COALESCE(u_count.provider, '') != 'guest') AS "memberCount",
         (SELECT COUNT(*)::int FROM "Matches" m WHERE m."leagueId" = l.id) AS "totalMatchCount"
       FROM "Leagues" l
       LEFT JOIN "LeagueMember" lm
