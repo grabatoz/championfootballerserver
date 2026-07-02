@@ -20,8 +20,8 @@ export const getWorldRanking = async (ctx: Context) => {
   const playerId = ctx.query.playerId as string | undefined;
   const requestedLimit = Number(ctx.query.limit);
   const requestedPage = Number(ctx.query.page);
-  const MAX_LIMIT = 500;
-  const DEFAULT_LIMIT = 100;
+  const MAX_LIMIT = 100000000;
+  const DEFAULT_LIMIT = 50000000;
   const limit = Number.isFinite(requestedLimit) && requestedLimit > 0
     ? Math.min(Math.floor(requestedLimit), MAX_LIMIT)
     : DEFAULT_LIMIT;
