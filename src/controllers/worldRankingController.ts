@@ -68,6 +68,10 @@ export const getWorldRanking = async (ctx: Context) => {
     whereConditions.push(`LOWER(COALESCE(u."email", '')) NOT LIKE 'migrated+%@local.invalid'`);
     whereConditions.push(`LOWER(COALESCE(u."firstName", '')) <> 'guest'`);
     whereConditions.push(`LOWER(COALESCE(u."lastName", '')) <> 'guest'`);
+    whereConditions.push(`LOWER(COALESCE(u."firstName", '')) NOT LIKE '%guest%'`);
+    whereConditions.push(`LOWER(COALESCE(u."lastName", '')) NOT LIKE '%guest%'`);
+    whereConditions.push(`u."id"::text NOT ILIKE 'guest-%'`);
+    whereConditions.push(`u."id"::text NOT ILIKE 'guest\\_%'`);
 
     if (positionType) {
       whereConditions.push(`u."positionType" = :positionType`);
