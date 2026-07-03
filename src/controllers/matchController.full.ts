@@ -138,7 +138,7 @@ const calculateMatchupPrediction = async (
   const getPlayerAverage = (uid: string): number => {
     const playerStats = statsMap[uid];
     if (!playerStats) return 0;
-    
+
     // Check current season
     const curr = playerStats[String(seasonId)];
     if (curr && curr.played > 0) {
@@ -1409,7 +1409,7 @@ export const submitMatchStats = async (ctx: Context) => {
       const homeUsers = await (match as any).getHomeTeamUsers();
       const awayUsers = await (match as any).getAwayTeamUsers();
       const isInMatch = homeUsers.some((u: any) => String(u.id) === currentUserId) ||
-                        awayUsers.some((u: any) => String(u.id) === currentUserId);
+        awayUsers.some((u: any) => String(u.id) === currentUserId);
       if (!isInMatch) {
         ctx.status = 403;
         ctx.body = {
