@@ -80,6 +80,25 @@ export const deleteNotification = async (ctx: Context) => {
   const { id } = ctx.params;
   const userId = ctx.state.user?.userId;
 
+  if (!userId) {
+    ctx.throw(401, 'Not authenticated');
+    return;
+  }
+
+  // Handle "clear-all" special case: delete ALL notifications for this user
+  if (id === 'clear-all') {
+    await Notification.destroy({ where: { user_id: userId } });
+    ctx.status = 204;
+    return;
+  }
+
+  // Validate UUID format before querying to avoid PostgreSQL errors
+  const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  if (!uuidRegex.test(id)) {
+    ctx.throw(400, 'Invalid notification ID');
+    return;
+  }
+
   const notification = await Notification.findOne({
     where: { 
       id,
