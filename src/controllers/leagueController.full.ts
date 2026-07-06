@@ -2287,32 +2287,36 @@ export const getLeagueById = async (ctx: Context) => {
         ? await MatchAvailability.findAll({
           where: {
             match_id: matchIds,
-            status: 'available' // Only get users who are AVAILABLE
+            status: ['available', 'unavailable']
           }
         })
         : [];
 
-      // Get all user IDs who are available
-      const availableUserIds: string[] = Array.from(new Set<string>(availabilityRecords.map((a: any) => String(a.user_id))));
-      const availableUsersData = availableUserIds.length > 0
+      // Get all user IDs who responded (available or unavailable)
+      const respondedUserIds: string[] = Array.from(new Set<string>(availabilityRecords.map((a: any) => String(a.user_id))));
+      const availabilityUsersData = respondedUserIds.length > 0
         ? await User.findAll({
-          where: { id: { [Op.in]: availableUserIds } },
+          where: { id: { [Op.in]: respondedUserIds } },
           attributes: ['id', 'firstName', 'lastName', 'profilePicture']
         })
         : [];
 
       // Create a map of userId -> user data
-      const userMap = new Map(availableUsersData.map((u: any) => [u.id, u.toJSON()]));
+      const userMap = new Map(availabilityUsersData.map((u: any) => [u.id, u.toJSON()]));
 
-      // Create a map of matchId -> available users
-      const matchAvailabilityMap: Record<string, any[]> = {};
+      // Create maps for available and unavailable users per match
+      const matchAvailableMap: Record<string, any[]> = {};
+      const matchUnavailableMap: Record<string, any[]> = {};
       availabilityRecords.forEach((a: any) => {
-        if (!matchAvailabilityMap[a.match_id]) {
-          matchAvailabilityMap[a.match_id] = [];
-        }
         const userData = userMap.get(a.user_id);
         if (userData) {
-          matchAvailabilityMap[a.match_id].push(userData);
+          if (a.status === 'available') {
+            if (!matchAvailableMap[a.match_id]) matchAvailableMap[a.match_id] = [];
+            matchAvailableMap[a.match_id].push(userData);
+          } else if (a.status === 'unavailable') {
+            if (!matchUnavailableMap[a.match_id]) matchUnavailableMap[a.match_id] = [];
+            matchUnavailableMap[a.match_id].push(userData);
+          }
         }
       });
 
@@ -2355,7 +2359,8 @@ export const getLeagueById = async (ctx: Context) => {
               matchNumber: index + 1, // Keep for backward compatibility
               manOfTheMatchVotes,
               guests,
-              availableUsers: matchAvailabilityMap[match.id] || []
+              availableUsers: matchAvailableMap[match.id] || [],
+              unavailableUsers: matchUnavailableMap[match.id] || []
             };
           });
 
@@ -2524,32 +2529,36 @@ export const getLeagueById = async (ctx: Context) => {
       ? await MatchAvailability.findAll({
         where: {
           match_id: matchIds,
-          status: 'available' // Only get users who are AVAILABLE
+          status: ['available', 'unavailable']
         }
       })
       : [];
 
-    // Get all user IDs who are available
-    const availableUserIds: string[] = Array.from(new Set<string>(availabilityRecords.map((a: any) => String(a.user_id))));
-    const availableUsersData = availableUserIds.length > 0
+    // Get all user IDs who responded (available or unavailable)
+    const respondedUserIds: string[] = Array.from(new Set<string>(availabilityRecords.map((a: any) => String(a.user_id))));
+    const availabilityUsersData = respondedUserIds.length > 0
       ? await User.findAll({
-        where: { id: { [Op.in]: availableUserIds } },
+        where: { id: { [Op.in]: respondedUserIds } },
         attributes: ['id', 'firstName', 'lastName', 'profilePicture']
       })
       : [];
 
     // Create a map of userId -> user data
-    const userMap = new Map(availableUsersData.map((u: any) => [u.id, u.toJSON()]));
+    const userMap = new Map(availabilityUsersData.map((u: any) => [u.id, u.toJSON()]));
 
-    // Create a map of matchId -> available users
-    const matchAvailabilityMap: Record<string, any[]> = {};
+    // Create maps for available and unavailable users per match
+    const matchAvailableMap: Record<string, any[]> = {};
+    const matchUnavailableMap: Record<string, any[]> = {};
     availabilityRecords.forEach((a: any) => {
-      if (!matchAvailabilityMap[a.match_id]) {
-        matchAvailabilityMap[a.match_id] = [];
-      }
       const userData = userMap.get(a.user_id);
       if (userData) {
-        matchAvailabilityMap[a.match_id].push(userData);
+        if (a.status === 'available') {
+          if (!matchAvailableMap[a.match_id]) matchAvailableMap[a.match_id] = [];
+          matchAvailableMap[a.match_id].push(userData);
+        } else if (a.status === 'unavailable') {
+          if (!matchUnavailableMap[a.match_id]) matchUnavailableMap[a.match_id] = [];
+          matchUnavailableMap[a.match_id].push(userData);
+        }
       }
     });
 
@@ -2592,7 +2601,8 @@ export const getLeagueById = async (ctx: Context) => {
             matchNumber: index + 1, // Keep for backward compatibility
             manOfTheMatchVotes,
             guests,
-            availableUsers: matchAvailabilityMap[match.id] || []
+            availableUsers: matchAvailableMap[match.id] || [],
+            unavailableUsers: matchUnavailableMap[match.id] || []
           };
         });
 
