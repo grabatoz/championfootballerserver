@@ -214,6 +214,16 @@ try {
       action: 'updated'
     });
   });
+
+  Season.addHook('afterCreate', (s: any) => {
+    try { clearLeagueCompletionCache(s.leagueId); } catch { }
+  });
+  Season.addHook('afterUpdate', (s: any) => {
+    try { clearLeagueCompletionCache(s.leagueId); } catch { }
+  });
+  Season.addHook('afterDestroy', (s: any) => {
+    try { clearLeagueCompletionCache(s.leagueId); } catch { }
+  });
 } catch (e) {
   // Hooks are best-effort; log but don't crash startup
   console.warn('[Realtime] Failed to attach model hooks:', e);

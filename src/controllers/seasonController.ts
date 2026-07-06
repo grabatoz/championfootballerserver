@@ -1,4 +1,4 @@
-﻿import { Context } from 'koa';
+import { Context } from 'koa';
 import Season from '../models/Season';
 import League from '../models/League';
 import User from '../models/User';
@@ -142,6 +142,13 @@ const invalidateLeagueMutationCaches = async (
   invalidateAuthRelatedCaches(gatheredUserIds);
   cache.clearPattern(`league_${leagueId}`);
   cache.clearPattern(`matches_league_${leagueId}`);
+
+  try {
+    const { invalidateLeagueCompletionCache } = require('../utils/leagueCompletion');
+    invalidateLeagueCompletionCache(leagueId);
+  } catch (err) {
+    console.error('Failed to invalidate league completion cache in invalidateLeagueMutationCaches:', err);
+  }
 };
 
 export const getAllSeasons = async (ctx: Context) => {

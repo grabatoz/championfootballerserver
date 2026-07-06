@@ -2068,6 +2068,7 @@ export const getUserLeagues = async (ctx: Context) => {
               last2MatchesStatsComplete: s.last2MatchesStatsComplete,
               missingStatsPlayers: s.missingStatsPlayers,
               inviteCode: s.inviteCode,
+              archived: s.archived,
             })),
           },
         };

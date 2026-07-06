@@ -35,6 +35,7 @@ export interface SeasonCompletionInfo {
   last2MatchesStatsComplete: boolean;
   missingStatsPlayers: string[]; // player IDs who haven't submitted stats in last 2 matches
   inviteCode?: string;
+  archived?: boolean;
 }
 
 export interface LeagueCompletionInfo {
@@ -380,6 +381,7 @@ export const checkLeagueCompletion = async (
       last2MatchesStatsComplete: statsCheck.allComplete,
       missingStatsPlayers: statsCheck.missingPlayerIds,
       inviteCode: season.inviteCode,
+      archived: Boolean((season as any).archived),
     });
   }
 
