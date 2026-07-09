@@ -305,6 +305,7 @@ router.post("/auth/register", none, async (ctx: Context) => {
     // Send verification email with 6-digit code
     try {
       if (newUser.email) {
+        console.log(`[EMAIL] Attempting to send verification email to: ${newUser.email}`);
         await transporter.sendMail({
           to: newUser.email,
           subject: `Your Champion Footballer Verification Code`,
@@ -329,11 +330,12 @@ router.post("/auth/register", none, async (ctx: Context) => {
             </div>
           `,
         });
+        console.log(`[EMAIL] Verification email sent successfully to: ${newUser.email}`);
       } else {
-        console.warn('Verification email skipped: user has no email');
+        console.warn('[EMAIL] Verification email skipped: user has no email');
       }
     } catch (emailError) {
-      console.error('Error sending verification email:', emailError);
+      console.error('[EMAIL] Error sending verification email:', emailError);
     }
 
     // Return success - requiresVerification flag tells client to show OTP dialog

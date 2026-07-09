@@ -23,6 +23,8 @@ const transporter: Transporter = nodemailer.createTransport({
     user: SMTP_USER,
     pass: SMTP_PASS,
   },
+}, {
+  from: `"Champion Footballer" <${SMTP_USER}>`,
 });
 
 // Verify connection configuration

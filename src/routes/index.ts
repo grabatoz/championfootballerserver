@@ -85,7 +85,7 @@ router.post('/api/contact', async (ctx) => {
       <p><strong>Message:</strong><br/>${message.replace(/\n/g, '<br/>')}</p>
     `;
     const mailOptions = createMailOptions({
-      to: process.env.CONTACT_EMAIL || 'mw951390@gmail.com', // Set your email here or in env
+      to: process.env.CONTACT_EMAIL || 'support@championfootballer.com', // Set your email here or in env
       subject: 'New Contact Form Submission',
       htmlContent,
     });
